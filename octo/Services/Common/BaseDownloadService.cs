@@ -521,7 +521,8 @@ public abstract class BaseDownloadService : IDownloadService
             // otherwise arrive bare (YouTube: artist/title and a video thumbnail; Soulseek:
             // whatever the peer tagged), so this is what makes every fetched song a
             // properly-tagged library citizen.
-            await WriteMetadataAsync(localPath, song, CancellationToken.None);
+            var cover = await WriteMetadataAsync(localPath, song, CancellationToken.None);
+            if (!isCache) await WriteSidecarsAsync(song, placement, cover, CancellationToken.None);
 
             downloadInfo.Status = DownloadStatus.Completed;
             downloadInfo.LocalPath = localPath;
@@ -907,8 +908,14 @@ public abstract class BaseDownloadService : IDownloadService
         }
     }
 
-    protected async Task WriteMetadataAsync(string filePath, Song song, CancellationToken cancellationToken)
+    /// <summary>
+    /// Write the Song's tags and the chosen cover onto the file. Returns the cover it settled on,
+    /// embedded or already there, so the same picture can go beside the file as cover.jpg; null
+    /// when there was none or the write failed.
+    /// </summary>
+    protected async Task<byte[]?> WriteMetadataAsync(string filePath, Song song, CancellationToken cancellationToken)
     {
+        byte[]? chosenCover = null;
         try
         {
             Logger.LogInformation("Writing metadata to: {Path}", filePath);
@@ -1026,57 +1033,48 @@ public abstract class BaseDownloadService : IDownloadService
             if (song.MusicBrainzArtistIds.Count == 1) tagFile.Tag.MusicBrainzArtistId = song.MusicBrainzArtistIds[0];
             if (song.IsCompilation) TagWriterExtras.SetCompilation(tagFile, true);
             
-            // Download and embed cover art
-            var coverUrl = song.CoverArtUrlLarge ?? song.CoverArtUrl;
-            if (!string.IsNullOrEmpty(coverUrl))
+            // One chain (#51) instead of one Deezer URL: the Cover Art Archive when a fingerprint
+            // named the release, then the catalog's own cover, then Deezer, iTunes and Last.fm by
+            // name, then the file's own art. A cover that is not square counts as missing, and a
+            // letterboxed video frame gives up its centre.
+            try
             {
-                try
+                var embedded = tagFile.Tag.Pictures.FirstOrDefault(picture => picture.Type == TagLib.PictureType.FrontCover)
+                    ?? tagFile.Tag.Pictures.FirstOrDefault();
+                var resolver = _serviceProvider.GetService<Octo.Services.CoverArt.DownloadCoverResolver>();
+                var cover = resolver is null ? null
+                    : await resolver.ResolveAsync(song, embedded?.Data?.Data, cancellationToken);
+                if (cover is not null)
                 {
-                    var coverData = await DownloadCoverArtAsync(coverUrl, cancellationToken);
-                    if (coverData != null && coverData.Length > 0)
+                    chosenCover = cover.Bytes;
+                    if (!cover.KeepsExisting)
                     {
-                        var mimeType = coverUrl.Contains(".png") ? "image/png" : "image/jpeg";
-                        var picture = new TagLib.Picture
+                        tagFile.Tag.Pictures = new TagLib.IPicture[]
                         {
-                            Type = TagLib.PictureType.FrontCover,
-                            MimeType = mimeType,
-                            Description = "Cover",
-                            Data = new TagLib.ByteVector(coverData)
+                            new TagLib.Picture
+                            {
+                                Type = TagLib.PictureType.FrontCover,
+                                MimeType = Octo.Services.CoverArt.CoverImage.MimeType(cover.Bytes),
+                                Description = "Cover",
+                                Data = new TagLib.ByteVector(cover.Bytes),
+                            },
                         };
-                        tagFile.Tag.Pictures = new TagLib.IPicture[] { picture };
-                        Logger.LogInformation("Cover art embedded: {Size} bytes", coverData.Length);
+                        Logger.LogInformation("Cover art embedded from {Source}: {Size} bytes", cover.Source, cover.Bytes.Length);
                     }
                 }
-                catch (Exception ex)
-                {
-                    Logger.LogWarning(ex, "Failed to download cover art from {Url}", coverUrl);
-                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Could not choose a cover for {Path}", filePath);
             }
             
             tagFile.Save();
             Logger.LogInformation("Metadata written successfully to: {Path}", filePath);
+            return chosenCover;
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to write metadata to: {Path}", filePath);
-        }
-    }
-    
-    /// <summary>
-    /// Downloads cover art from a URL
-    /// </summary>
-    protected async Task<byte[]?> DownloadCoverArtAsync(string url, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var httpClient = new HttpClient();
-            var response = await httpClient.GetAsync(url, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsByteArrayAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to download cover art from {Url}", url);
             return null;
         }
     }
@@ -1103,6 +1101,35 @@ public abstract class BaseDownloadService : IDownloadService
             Logger.LogError(ex, "Failed to create directory: {Path}", path);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Files beside the audio file. Best-effort; never fails a download.
+    ///
+    /// cover.jpg only in the Organized layout and only in a folder this download created.
+    /// Navidrome ranks cover.* above embedded art, so in Flat every download shares one folder,
+    /// in ByArtist one folder holds all of an artist's albums, and in an album folder that was
+    /// already there one new track would change the whole album's cover.
+    /// </summary>
+    protected Task WriteSidecarsAsync(Song song, Placement placement, byte[]? cover, CancellationToken ct)
+    {
+        try
+        {
+            if (MetadataSettingsValue.WriteCoverFile && cover is { Length: > 0 } && placement.CreatedFolder
+                && SubsonicSettings.FolderStructure == FolderStructure.Organized
+                && Path.GetDirectoryName(placement.Path) is { Length: > 0 } dir
+                && !Directory.EnumerateFiles(dir, "cover.*").Any()
+                && !Directory.EnumerateFiles(dir, "folder.*").Any())
+            {
+                IOFile.WriteAllBytes(Path.Combine(dir, "cover.jpg"), Octo.Services.CoverArt.CoverImage.ToJpeg(cover));
+                Logger.LogInformation("Wrote cover.jpg beside {Path}", placement.Path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning("Could not write cover.jpg beside {Path}: {M}", placement.Path, ex.Message);
+        }
+        return Task.CompletedTask;
     }
 
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)

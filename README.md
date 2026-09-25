@@ -419,6 +419,12 @@ Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for
 
 A download is filed once it has been tagged, so the album Deezer finds for a track that arrived without one names its folder. When no album turns up anywhere (the source, Deezer or the file's own tags), the track is filed as a single under its title (`ALBUM_FROM_TITLE`, on by default) rather than joining the one `[Unknown Album]` Navidrome gives every album-less track; a compilation is left alone, since a hundred one-track albums would be worse. A collaboration's folder is named after its first artist, and only when MusicBrainz or Deezer says who that is: `Bizarrap, Rauw Alejandro` is filed under `Bizarrap/`, while `Earth, Wind & Fire` and `Tyler, The Creator` stay whole because every source names them whole. The full credit stays in the artist tag, and each artist also gets a value of their own in the `ARTISTS` tag, so Navidrome lists the track under every one of them. File names keep annotations that name a different recording, such as `(Live)`, `[Remix]` and `(feat. X)`, and drop only upload noise like `(Official Video)`. A file already at the chosen path is replaced only when it is provably the same song; anything else keeps both.
 
+### Tags, covers and lyrics
+
+Every download is tagged from its source, Deezer and, with verification on, MusicBrainz. A fingerprint-confirmed recording's id is written to `MUSICBRAINZ_TRACKID`, so no later pass has to identify the file again; the album id is deliberately not written, because Navidrome groups albums by it before the album name and a track carrying it beside one without it splits an album.
+
+Cover art comes from a chain: the Cover Art Archive when a fingerprint named the release (`COVER_ART_ARCHIVE`), then the catalog's own cover, then Deezer, iTunes and Last.fm by name, and last the file's own art. A cover that is not square is a video thumbnail and counts as missing (`REPLACE_VIDEO_COVERS`); when nothing better turns up its centre square is used, which for a YouTube "Topic" upload is the real cover inside the letterbox. `COVER_FILE` also writes `cover.jpg` beside the file, only in the `Organized` layout and only in a folder the download created, because Navidrome ranks `cover.*` above embedded art and a new file in an existing album folder would change that album's cover.
+
 ### Subsonic API surface
 
 Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:

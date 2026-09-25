@@ -575,6 +575,9 @@ public class AdminController : ControllerBase
             {
                 ["Language"] = _metadataOpts.CurrentValue.Language ?? "",
                 ["AlbumFromTitle"] = _metadataOpts.CurrentValue.AlbumFromTitle,
+                ["UseCoverArtArchive"] = _metadataOpts.CurrentValue.UseCoverArtArchive,
+                ["ReplaceVideoCovers"] = _metadataOpts.CurrentValue.ReplaceVideoCovers,
+                ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
             },
             ["Genre"] = new Dictionary<string, object>
             {
@@ -1201,6 +1204,9 @@ public class AdminController : ControllerBase
             {
                 ["Language"] = _metadataOpts.CurrentValue.Language ?? "",
                 ["AlbumFromTitle"] = _metadataOpts.CurrentValue.AlbumFromTitle,
+                ["UseCoverArtArchive"] = _metadataOpts.CurrentValue.UseCoverArtArchive,
+                ["ReplaceVideoCovers"] = _metadataOpts.CurrentValue.ReplaceVideoCovers,
+                ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
             },
             ["Genre"] = new JsonObject
             {
@@ -1351,7 +1357,8 @@ public class AdminController : ControllerBase
             "LastFm:HistoryRetentionDays", "LastFm:DiscoveryPercent",
             "LastFm:RefreshIntervalHours",
             "LastFm:MinimumPlays", "LastFm:DiscoveryStations",
-            "Metadata:Language", "Metadata:AlbumFromTitle",
+            "Metadata:Language", "Metadata:AlbumFromTitle", "Metadata:UseCoverArtArchive",
+            "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile",
             "Notifications:NtfyUrl", "Notifications:NtfyToken",
             "Notifications:DiscordWebhookUrl",
             "Notifications:NotifyDownloadStarted", "Notifications:NotifyDownloadCompleted",

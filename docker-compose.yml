@@ -129,6 +129,12 @@ services:
       # A download with no album anywhere is filed as a single under its title, instead
       # of joining Navidrome's one [Unknown Album]. Never applied to a compilation.
       Metadata__AlbumFromTitle: ${ALBUM_FROM_TITLE:-true}
+      # Cover art: the Cover Art Archive for a fingerprinted release, then the catalog,
+      # Deezer, iTunes and Last.fm. A non-square cover is a video frame and counts as
+      # missing. cover.jpg goes beside a download only in a folder it created (Organized).
+      Metadata__UseCoverArtArchive: ${COVER_ART_ARCHIVE:-true}
+      Metadata__ReplaceVideoCovers: ${REPLACE_VIDEO_COVERS:-true}
+      Metadata__WriteCoverFile: ${COVER_FILE:-true}
 
       # ----- Notifications (ntfy / Discord webhook) — both optional -----
       Notifications__NtfyUrl: ${NTFY_URL:-}

@@ -481,6 +481,63 @@ public sealed class DownloadPlacementTests : IDisposable
         Assert.Equal("T", song.Album);
     }
 
+    // ---- cover.jpg (#51) ----------------------------------------------------------------
+
+    private static readonly byte[] CoverBytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+
+    [Fact]
+    public async Task WriteSidecars_NewAlbumFolderInOrganized_GetsACoverFile()
+    {
+        var service = Service(FolderStructure.Organized);
+        var placement = await service.Place(new Song { Artist = "A", Title = "T" }, Requested("A", "T", "Album", 1), Landed("x.mp3"));
+
+        await service.Sidecars(new Song(), placement, CoverBytes);
+
+        Assert.True(File.Exists(Path.Combine(_root, "A", "Album", "cover.jpg")));
+    }
+
+    /// <summary>Navidrome ranks cover.* above embedded art, so an album that was already there must not change cover.</summary>
+    [Fact]
+    public async Task WriteSidecars_ExistingAlbumFolder_GetsNoCoverFile()
+    {
+        var service = Service(FolderStructure.Organized);
+        var albumDir = Path.Combine(_root, "A", "Album");
+        Directory.CreateDirectory(albumDir);
+        File.WriteAllBytes(Path.Combine(albumDir, "01 - Other.mp3"), AudioFixtures.Mp3());
+        var placement = await service.Place(new Song { Artist = "A", Title = "T" }, Requested("A", "T", "Album", 2), Landed("x.mp3"));
+
+        await service.Sidecars(new Song(), placement, CoverBytes);
+
+        Assert.False(File.Exists(Path.Combine(albumDir, "cover.jpg")));
+    }
+
+    /// <summary>In Flat every download shares one folder: one cover.jpg would cover every album.</summary>
+    [Fact]
+    public async Task WriteSidecars_Flat_NeverGetsACoverFile()
+    {
+        var service = Service(FolderStructure.Flat);
+        var placement = new BaseDownloadService.Placement(Path.Combine(_root, "A - T.mp3"), CreatedFolder: true);
+        File.WriteAllBytes(placement.Path, AudioFixtures.Mp3());
+
+        await service.Sidecars(new Song(), placement, CoverBytes);
+
+        Assert.False(File.Exists(Path.Combine(_root, "cover.jpg")));
+    }
+
+    [Fact]
+    public async Task WriteSidecars_NeverReplacesAnExistingCover()
+    {
+        var service = Service(FolderStructure.Organized);
+        var placement = await service.Place(new Song { Artist = "A", Title = "T" }, Requested("A", "T", "Album", 1), Landed("x.mp3"));
+        var existing = Path.Combine(_root, "A", "Album", "folder.png");
+        File.WriteAllBytes(existing, [1, 2, 3]);
+
+        await service.Sidecars(new Song(), placement, CoverBytes);
+
+        Assert.False(File.Exists(Path.Combine(_root, "A", "Album", "cover.jpg")));
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(existing));
+    }
+
     /// <summary>The download service with the transfer stubbed out, so placement and tagging can
     /// be driven against real files in a temp folder.</summary>
     private sealed class PlacementService(string root, FolderStructure layout, ILocalLibraryService library)
@@ -512,6 +569,9 @@ public sealed class DownloadPlacementTests : IDisposable
         public Task Write(string path, Song song) => WriteMetadataAsync(path, song, CancellationToken.None);
 
         public Task Enrich(string path, Song song) => EnrichAsync(song, path, CancellationToken.None);
+
+        public Task Sidecars(Song song, Placement placement, byte[]? cover) =>
+            WriteSidecarsAsync(song, placement, cover, CancellationToken.None);
     }
 }
 

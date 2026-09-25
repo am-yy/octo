@@ -271,6 +271,18 @@ builder.Services.AddSingleton<Octo.Services.CoverArt.ICoverArtSource, Octo.Servi
 builder.Services.AddSingleton<Octo.Services.CoverArt.ICoverArtSource, Octo.Services.CoverArt.LastFmCoverArtLookup>();
 builder.Services.AddSingleton<Octo.Services.CoverArt.CoverArtAggregator>();
 
+// The download-time cover chain (#51). The Cover Art Archive answers a known MusicBrainz release
+// directly; it redirects to archive.org, which the default handler follows. Short timeout because
+// the whole finalize phase runs under the download lock.
+builder.Services.AddHttpClient(Octo.Services.CoverArt.CoverArtArchiveLookup.ClientName, c =>
+{
+    c.BaseAddress = new Uri("https://coverartarchive.org/");
+    c.Timeout = TimeSpan.FromSeconds(8);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd(Octo.Services.Common.OctoUserAgent.Value);
+});
+builder.Services.AddSingleton<Octo.Services.CoverArt.CoverArtArchiveLookup>();
+builder.Services.AddSingleton<Octo.Services.CoverArt.DownloadCoverResolver>();
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>

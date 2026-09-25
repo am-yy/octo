@@ -41,7 +41,7 @@ public sealed record NotificationEvent
     public long? SizeBytes { get; init; }
 
     /// <summary>Track length in seconds. On the completed path this is the enriched
-    /// song's duration (EnrichAndTagAsync runs before the hook); on started it is
+    /// song's duration (EnrichAsync runs before the hook); on started it is
     /// the routing's expected duration.</summary>
     public int? DurationSeconds { get; init; }
 

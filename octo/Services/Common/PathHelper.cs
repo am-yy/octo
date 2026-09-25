@@ -50,6 +50,44 @@ public static class PathHelper
                 "Unhandled folder layout."),
         };
     }
+
+    private static readonly System.Text.RegularExpressions.Regex Annotation =
+        new(@"\s*[\(\[]([^\)\]]*)[\)\]]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Words that only ever describe how a video was uploaded, never which recording it is.</summary>
+    private static readonly HashSet<string> UploadNoise = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "official", "music", "video", "audio", "lyric", "lyrics", "visualizer", "visualiser",
+        "hd", "hq", "4k", "8k", "1080p", "720p", "480p", "mv", "m/v", "clip", "videoclip",
+    };
+
+    /// <summary>
+    /// A title as a file name. Drops a leading "Artist - " and any bracket that is nothing but
+    /// upload noise ("(Official Video)", "[HD]"), and keeps every other annotation, because
+    /// "(Live)", "[Remix]" and "(feat. X)" each name a different recording.
+    ///
+    /// Naming used to strip EVERY bracket, so "Song (Live)" and "Song" landed on one path and
+    /// the second download deleted the first: the silent collapse of versions a library must
+    /// never suffer (#53).
+    /// </summary>
+    public static string FileTitle(string title, string artist)
+    {
+        var t = (title ?? "").Trim();
+        if (t.Length == 0) return t;
+        var a = (artist ?? "").Trim();
+        if (a.Length > 0 && t.StartsWith(a + " - ", StringComparison.OrdinalIgnoreCase))
+            t = t[(a.Length + 3)..].Trim();
+
+        var kept = Annotation.Replace(t, match =>
+        {
+            var words = match.Groups[1].Value.Split([' ', '-', '_'], StringSplitOptions.RemoveEmptyEntries);
+            return words.Length > 0 && words.All(UploadNoise.Contains) ? "" : match.Value;
+        });
+        kept = System.Text.RegularExpressions.Regex.Replace(kept, @"\s+", " ").Trim();
+        // A title that is only noise ("(Official Video)") keeps its original text rather than
+        // becoming an empty file name.
+        return kept.Length == 0 ? t : kept;
+    }
     /// <summary>
     /// Gets the cache directory path for temporary file storage.
     /// Uses system temp directory combined with octo-cache subfolder.

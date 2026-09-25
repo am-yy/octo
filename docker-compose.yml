@@ -64,6 +64,9 @@ services:
       Soulseek__AcoustIdApiKey: ${ACOUSTID_API_KEY:-}
       Soulseek__MinMatchScore: ${SLSKD_MIN_MATCH_SCORE:-85}
       Soulseek__TagFromMusicBrainz: ${SLSKD_TAG_FROM_MUSICBRAINZ:-false}
+      # Name the file from the matched recording too (artist folder, title, album,
+      # track). Off by default; only files Octo downloads and confirms are named this way.
+      Soulseek__NameFromMatch: ${NAME_FROM_MATCH:-false}
       Soulseek__RejectedPeerTtlDays: ${SLSKD_REJECTED_PEER_DAYS:-30}
       Soulseek__FingerprintSeconds: ${SLSKD_FINGERPRINT_SECONDS:-120}
       Soulseek__FingerprintTimeoutSeconds: ${SLSKD_FINGERPRINT_TIMEOUT_SECONDS:-30}

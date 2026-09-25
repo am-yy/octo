@@ -171,7 +171,7 @@ public class SoulseekDownloadService : BaseDownloadService
         switch (sourceOverride ?? SubsonicSettings.DownloadSource)
         {
             case DownloadSource.YouTube:
-                return await DownloadViaYouTubeAsync(routing, suppressNotify, announceStart: true, cancellationToken);
+                return await DownloadViaYouTubeAsync(routing, song, suppressNotify, announceStart: true, cancellationToken);
             case DownloadSource.SoulseekThenYouTube:
                 // The filter matters: a cancelled token means nobody is waiting for
                 // this any more, so falling back would start a second download only
@@ -195,16 +195,23 @@ public class SoulseekDownloadService : BaseDownloadService
                     }
                     // announceStart false: the fallback event above already announces
                     // the MP3, and one gesture should never ping twice.
-                    return await DownloadViaYouTubeAsync(routing, suppressNotify, announceStart: false, cancellationToken);
+                    return await DownloadViaYouTubeAsync(routing, song, suppressNotify, announceStart: false, cancellationToken);
                 }
             default:
                 return await DownloadViaSoulseekAsync(routing, song, suppressNotify, cancellationToken);
         }
     }
 
-    // Lossy MP3 via the yt-dlp shim's /download. The shim writes <dest>.mp3 in
-    // the final layout with clean tags + cover, so there is no post-move.
-    private async Task<string> DownloadViaYouTubeAsync(SoulseekRouting routing, bool suppressNotify, bool announceStart, CancellationToken cancellationToken)
+    /// <summary>
+    /// Where the shim writes a download before Octo has decided its name. A dot folder, which
+    /// Navidrome's scanner skips (Scanner.IgnoreDotFolders, on by default), the same way it
+    /// skips the library-action quarantine.
+    /// </summary>
+    internal const string IncomingFolderName = ".octo-incoming";
+
+    // Lossy MP3 via the yt-dlp shim's /download. The shim writes <dest>.mp3 into the staging
+    // folder with clean tags and a cover; PlaceInLibraryAsync moves it once the tags are settled.
+    private async Task<string> DownloadViaYouTubeAsync(SoulseekRouting routing, Song song, bool suppressNotify, bool announceStart, CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(DownloadPath))
             throw new InvalidOperationException("DownloadPath is not configured");
@@ -233,22 +240,68 @@ public class SoulseekDownloadService : BaseDownloadService
             });
         }
 
-        var ytArtist = SanitizeForFs(routing.Artist) ?? "Unknown Artist";
-        // Strip a redundant "Artist - " prefix from the title before naming the file,
-        // so a Last.fm title like "Massive Attack - Teardrop" doesn't produce
-        // "Massive Attack - Massive Attack - Teardrop.mp3".
-        var ytTitle  = SanitizeForFs(NormalizeTitle(routing.Title ?? "", routing.Artist ?? "")) ?? "Unknown Title";
-        // Extension is left empty: the shim appends .mp3 itself.
-        var destWithoutExt = PathHelper.BuildLayoutPath(
-            SubsonicSettings.FolderStructure, DownloadPath, ytArtist,
-            routing.Album ?? "", ytTitle, routing.Track, "");
+        // Staged, not written into the library. Writing straight to the layout path let the shim
+        // overwrite a different file that happened to share the name before anything could
+        // protect it. Extension left empty: the shim appends .mp3 itself.
+        var incoming = Path.Combine(DownloadPath, IncomingFolderName);
+        SweepIncoming(incoming);
+        var destWithoutExt = Path.Combine(incoming, $"{videoId}-{Guid.NewGuid():N}");
 
         var path = await _youtube.DownloadAsync(videoId, destWithoutExt, routing.Artist, routing.Title, cancellationToken);
         if (string.IsNullOrEmpty(path) || !IOFile.Exists(path))
             throw new FileNotFoundException($"YouTube MP3 download failed for '{routing.Artist} - {routing.Title}'");
 
         Logger.LogInformation("YouTube MP3 download complete: {Path}", path);
+
+        // Identification only. YouTube has no second candidate to fall back to, so a
+        // disagreement is something to ask a person about (the Review playlist), never a reason
+        // to throw the song away.
+        var verdict = await _verification.VerifyAsync(path, routing.Artist, routing.Title);
+        if (verdict.Verdict == Octo.Services.Fingerprint.VerificationVerdict.Mismatch)
+        {
+            if (verdict.Match is null && string.IsNullOrEmpty(verdict.MatchedTitle))
+            {
+                // No decodable audio at all: a broken file, not a question.
+                try { IOFile.Delete(path); } catch { /* best effort */ }
+                throw new InvalidOperationException(
+                    $"YouTube delivered no decodable audio for '{routing.Artist} - {routing.Title}'");
+            }
+            Logger.LogWarning(
+                "AcoustID says the YouTube file for '{Artist} - {Title}' is {Actual}; keeping it and asking about it",
+                routing.Artist, routing.Title, verdict.Describe());
+            verdict = verdict with
+            {
+                Verdict = Octo.Services.Fingerprint.VerificationVerdict.Inconclusive,
+                Reason = Octo.Services.Fingerprint.InconclusiveReason.SourceDisagreed,
+            };
+        }
+        else verdict.ApplyTagsTo(song);
+        song.Verification = verdict;
         return path;
+    }
+
+    /// <summary>
+    /// Clear what a crash or a failed download left in the staging folder. A day old is long past
+    /// any download still in flight, and nothing outside this one folder is touched.
+    /// </summary>
+    private void SweepIncoming(string incoming)
+    {
+        try
+        {
+            if (!Directory.Exists(incoming)) return;
+            var root = Path.GetFullPath(incoming) + Path.DirectorySeparatorChar;
+            foreach (var file in Directory.EnumerateFiles(incoming))
+            {
+                if (!Path.GetFullPath(file).StartsWith(root, StringComparison.Ordinal)) continue;
+                if (IOFile.GetLastWriteTimeUtc(file) > DateTime.UtcNow.AddHours(-24)) continue;
+                IOFile.Delete(file);
+                Logger.LogInformation("Removed a stale staged download {Path}", file);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug("Could not sweep {Incoming}: {M}", incoming, ex.Message);
+        }
     }
 
     // Lossless FLAC via Soulseek/slskd: walk the top-N peers in quality order,
@@ -445,16 +498,14 @@ public class SoulseekDownloadService : BaseDownloadService
                     continue;
                 }
 
-                // No-op unless the match was confirmed AND TagFromMusicBrainz is on. Reads and
-                // writes the Song, never the routing, so the file's name and layout below are
-                // decided exactly as they were before this setting existed.
-                //
-                // This reaches the tagger because DownloadSongInternalAsync passes ONE Song
-                // instance to DownloadTrackAsync and then to EnrichAndTagAsync
-                // (BaseDownloadService 455 and 468), and that one fills only missing fields.
-                // A refactor that clones the song between those two calls turns this setting
+                // Records the ids of a confirmed match, and its name too when tagging from
+                // MusicBrainz is on. Reads and writes the Song, never the routing. It reaches the
+                // tagger and PlaceInLibraryAsync because DownloadSongInternalAsync passes ONE
+                // Song instance through the download, EnrichAsync, placement and
+                // WriteMetadataAsync. A refactor that clones the song between those turns this
                 // into a silent no-op.
                 verdict.ApplyTagsTo(song);
+                song.Verification = verdict;
 
                 // Write down who delivered this. It is the only chance: after the transfer
                 // ends nothing else in Octo remembers, and "Wrong song" needs it to blacklist
@@ -462,7 +513,8 @@ public class SoulseekDownloadService : BaseDownloadService
                 song.SourcePeer = hit.Username;
                 song.SourceFile = hit.Filename;
 
-                localPath = MoveToConfiguredLayout(localPath, routing) ?? localPath;
+                // The file stays where slskd put it; PlaceInLibraryAsync moves it once it knows
+                // the album and the credit it will be filed under.
                 Logger.LogInformation("Soulseek download complete (attempt {N}, slskd state={State}{Aborted}): {Path}",
                     attemptIdx, state?.ToString() ?? "interrupted", callerGaveUp ? ", caller had already left" : "", localPath);
                 return localPath;
@@ -487,95 +539,6 @@ public class SoulseekDownloadService : BaseDownloadService
             $"All {ranked.Count} Soulseek peer attempts failed for '{routing.Artist} - {routing.Title}'. Last error: {lastError?.Message}. "
             + $"If slskd shows these transfers as Completed, slskd's downloads directory is not the directory Octo watches ({DownloadPath}); "
             + "set SLSKD_DOWNLOADS_DIR=/music on the slskd container (see issue #17).");
-    }
-
-    /// <summary>
-    /// Move/rename the just-downloaded file into the configured layout so
-    /// Navidrome sees a consistent path regardless of how the original Soulseek
-    /// peer organized their share.
-    ///
-    /// Layouts (driven by <c>Subsonic__FolderStructure</c>):
-    ///   Flat       → <c>{DownloadPath}/{Artist} - {Title}.flac</c>   (no subfolder)
-    ///   Organized  → <c>{DownloadPath}/{Artist}/{Album}/{NN - Title}.flac</c>
-    ///
-    /// Returns the new path, or null if the move failed (caller falls back to
-    /// the original path so the song still ends up registered).
-    /// </summary>
-    private string? MoveToConfiguredLayout(string currentPath, SoulseekRouting routing)
-    {
-        try
-        {
-            if (string.IsNullOrEmpty(DownloadPath) || !IOFile.Exists(currentPath)) return null;
-
-            var artist = SanitizeForFs(routing.Artist) ?? "Unknown Artist";
-            // Same prefix cleanup as the YouTube path, so FLAC files don't double the
-            // artist ("Massive Attack - Massive Attack - Teardrop.flac").
-            var title  = SanitizeForFs(NormalizeTitle(routing.Title ?? "", routing.Artist ?? "")) ?? "Unknown Title";
-            var ext    = Path.GetExtension(currentPath);
-
-            var targetPath = PathHelper.BuildLayoutPath(
-                SubsonicSettings.FolderStructure, DownloadPath, artist,
-                routing.Album ?? "", title, routing.Track, ext);
-
-            if (string.Equals(Path.GetFullPath(targetPath), Path.GetFullPath(currentPath), StringComparison.OrdinalIgnoreCase))
-                return currentPath;
-
-            var targetDir = Path.GetDirectoryName(targetPath);
-            if (!string.IsNullOrEmpty(targetDir)) Directory.CreateDirectory(targetDir);
-
-            // If the destination already exists (re-download or hash collision),
-            // overwrite — the user explicitly starred again, so they want the
-            // freshly-downloaded copy.
-            if (IOFile.Exists(targetPath)) IOFile.Delete(targetPath);
-
-            IOFile.Move(currentPath, targetPath);
-            Logger.LogInformation("Repositioned download to {Layout}: {From} -> {To}",
-                SubsonicSettings.FolderStructure, currentPath, targetPath);
-
-            // Clean up any now-empty parent directories slskd dumped into
-            // (e.g. "/music/Return of the Mack/" if it's empty after we moved
-            // the only file out). Don't recurse past DownloadPath.
-            TryRemoveEmptyParents(Path.GetDirectoryName(currentPath), DownloadPath);
-
-            return targetPath;
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to apply FolderStructure={Layout} to {Path}; leaving in place",
-                SubsonicSettings.FolderStructure, currentPath);
-            return null;
-        }
-    }
-
-    private static string? SanitizeForFs(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return null;
-        var invalid = Path.GetInvalidFileNameChars();
-        var cleaned = new string(s.Trim().Select(c => invalid.Contains(c) ? '_' : c).ToArray());
-        // Avoid trailing dots/spaces (Windows-hostile, also looks ugly on Linux).
-        cleaned = cleaned.TrimEnd('.', ' ');
-        return string.IsNullOrEmpty(cleaned) ? null : cleaned;
-    }
-
-    private static void TryRemoveEmptyParents(string? startDir, string stopAt)
-    {
-        if (string.IsNullOrEmpty(startDir) || string.IsNullOrEmpty(stopAt)) return;
-        var stop = Path.GetFullPath(stopAt).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var current = Path.GetFullPath(startDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        // Walk up while we're inside DownloadPath and the directory is empty.
-        while (!string.IsNullOrEmpty(current)
-            && current.Length > stop.Length
-            && current.StartsWith(stop, StringComparison.OrdinalIgnoreCase)
-            && Directory.Exists(current))
-        {
-            try
-            {
-                if (Directory.EnumerateFileSystemEntries(current).Any()) break;
-                Directory.Delete(current);
-            }
-            catch { break; }
-            current = Path.GetDirectoryName(current) ?? "";
-        }
     }
 
     /// <summary>

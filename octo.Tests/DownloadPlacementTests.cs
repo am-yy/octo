@@ -1,0 +1,452 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
+using Octo.Models.Domain;
+using Octo.Models.Settings;
+using Octo.Services;
+using Octo.Services.Common;
+using Octo.Services.Fingerprint;
+using Octo.Services.Local;
+using Octo.Services.Notifications;
+using Octo.Services.Subsonic;
+
+namespace Octo.Tests;
+
+/// <summary>
+/// A download is placed after it is tagged and from the Song (#48), a list of artists never
+/// names a folder (#49), and a path that is already taken is only ever replaced by the same song.
+/// Each of these used to be decided from the search request before anything knew what the file was.
+/// </summary>
+public sealed class DownloadPlacementTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "octo-place-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+    }
+
+    private static BaseDownloadService.RequestedIdentity Requested(string artist, string title, string album = "", int? track = null)
+        => new(artist, title, album, track);
+
+    private static VerificationResult Confirmed(AcoustIdRecording match) => new()
+    {
+        Verdict = VerificationVerdict.Confirmed,
+        Match = match,
+        RecordingId = match.RecordingId,
+    };
+
+    // ---- PrimaryCredit: split only on proof ---------------------------------------------
+
+    [Theory]
+    [InlineData("Earth, Wind & Fire", "Earth, Wind & Fire")]
+    [InlineData("Tyler, The Creator", "Tyler, The Creator")]
+    [InlineData("Simon & Garfunkel", "Simon & Garfunkel")]
+    public void PrimaryCredit_WholeStringNamedByASource_IsKeptWhole(string requested, string structured)
+        => Assert.Equal(requested, BaseDownloadService.PrimaryCredit(requested, structured));
+
+    [Theory]
+    [InlineData("Bizarrap, Rauw Alejandro", "Bizarrap", "Bizarrap")]
+    [InlineData("Kavinsky & Lovefoxxx", "Kavinsky", "Kavinsky")]
+    [InlineData("Bizarrap x Rauw Alejandro", "Bizarrap", "Bizarrap")]
+    [InlineData("Drake feat. Rihanna", "Drake", "Drake")]
+    public void PrimaryCredit_SourceNamesTheFirstCredit_SplitsThere(string requested, string structured, string expected)
+        => Assert.Equal(expected, BaseDownloadService.PrimaryCredit(requested, structured));
+
+    /// <summary>"Tyler, The Creator" would become "Tyler" under any rule that splits on a comma.</summary>
+    [Theory]
+    [InlineData("Tyler, The Creator")]
+    [InlineData("Bizarrap, Rauw Alejandro")]
+    public void PrimaryCredit_NoStructuredSource_NeverSplits(string requested)
+        => Assert.Equal(requested, BaseDownloadService.PrimaryCredit(requested, null, null));
+
+    [Fact]
+    public void PrimaryCredit_SourceNamingALaterCredit_DoesNotSplit()
+        => Assert.Equal("Bizarrap, Rauw Alejandro",
+            BaseDownloadService.PrimaryCredit("Bizarrap, Rauw Alejandro", "Rauw Alejandro"));
+
+    /// <summary>A source that names the whole credit wins over one that names only its first artist.</summary>
+    [Fact]
+    public void PrimaryCredit_AnySourceNamingTheWholeCredit_KeepsItWhole()
+        => Assert.Equal("Tyler, The Creator",
+            BaseDownloadService.PrimaryCredit("Tyler, The Creator", "Tyler", "Tyler, The Creator"));
+
+    // ---- ChooseLayout -------------------------------------------------------------------
+
+    [Fact]
+    public void ChooseLayout_NameFromMatchOff_UsesTheRequestButThePrimaryFolder()
+    {
+        var song = new Song { Artist = "Bizarrap, Rauw Alejandro", Title = "Tagged Title", PrimaryArtist = "Bizarrap" };
+        var choice = BaseDownloadService.ChooseLayout(song,
+            Requested("Bizarrap, Rauw Alejandro", "Requested Title", "Requested Album", 4), nameFromMatch: false);
+
+        Assert.Equal("Bizarrap", choice.FolderArtist);
+        Assert.Equal("Bizarrap, Rauw Alejandro", choice.FileArtist);
+        Assert.Equal("Requested Title", choice.Title);
+        Assert.Equal("Requested Album", choice.Album);
+        Assert.Equal(4, choice.Track);
+    }
+
+    [Fact]
+    public void ChooseLayout_NameFromMatchOn_Confirmed_UsesTheRecording()
+    {
+        var match = new AcoustIdRecording("rec", "Teardrop", ["Massive Attack"], "Mezzanine", 1998);
+        var song = new Song
+        {
+            Artist = "Massive Attack", Title = "Teardrop", Album = "Mezzanine", Track = 3,
+            Verification = Confirmed(match),
+        };
+        var choice = BaseDownloadService.ChooseLayout(song,
+            Requested("massive attack", "Teardrop (Official Video)"), nameFromMatch: true);
+
+        Assert.Equal("Massive Attack", choice.FolderArtist);
+        Assert.Equal("Teardrop", choice.Title);
+        Assert.Equal("Mezzanine", choice.Album);
+        Assert.Equal(3, choice.Track);
+    }
+
+    [Fact]
+    public void ChooseLayout_NameFromMatchOn_Inconclusive_UsesTheRequest()
+    {
+        var song = new Song
+        {
+            Artist = "X", Title = "Tagged", Album = "Tagged Album",
+            Verification = new VerificationResult { Reason = InconclusiveReason.NoEntry },
+        };
+        var choice = BaseDownloadService.ChooseLayout(song, Requested("Req Artist", "Req Title", "Req Album"), nameFromMatch: true);
+
+        Assert.Equal("Req Artist", choice.FolderArtist);
+        Assert.Equal("Req Title", choice.Title);
+        Assert.Equal("Req Album", choice.Album);
+    }
+
+    /// <summary>A request with no album takes the album it was tagged with, and that album's track (#50).</summary>
+    [Fact]
+    public void ChooseLayout_RequestWithoutAlbum_TakesTheTaggedAlbumAndItsTrack()
+    {
+        var song = new Song { Artist = "A", Title = "T", Album = "Deezer Album", Track = 7 };
+        var choice = BaseDownloadService.ChooseLayout(song, Requested("A", "T", "", null), nameFromMatch: false);
+
+        Assert.Equal("Deezer Album", choice.Album);
+        Assert.Equal(7, choice.Track);
+    }
+
+    // ---- PlaceInLibraryAsync ------------------------------------------------------------
+
+    private PlacementService Service(FolderStructure layout, IReadOnlyList<LocalSongMapping>? mappings = null)
+    {
+        Directory.CreateDirectory(_root);
+        var library = new Mock<ILocalLibraryService>();
+        library.Setup(l => l.GetMappingsAsync()).ReturnsAsync(mappings ?? []);
+        return new PlacementService(_root, layout, library.Object);
+    }
+
+    private string Landed(string name, byte[]? bytes = null)
+    {
+        var dir = Path.Combine(_root, "peer share", "some folder");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, name);
+        File.WriteAllBytes(path, bytes ?? AudioFixtures.Mp3());
+        return path;
+    }
+
+    [Fact]
+    public async Task PlaceInLibrary_Organized_FilesUnderThePrimaryArtistAndKeepsTheVersion()
+    {
+        var service = Service(FolderStructure.Organized);
+        var landed = Landed("x.mp3");
+        var song = new Song { Artist = "Bizarrap, Rauw Alejandro", Title = "Session (Live)", PrimaryArtist = "Bizarrap" };
+
+        var placement = await service.Place(song, Requested("Bizarrap, Rauw Alejandro", "Session (Live)", "An Album", 2), landed);
+
+        Assert.Equal(Path.Combine(_root, "Bizarrap", "An Album", "02 - Session (Live).mp3"), placement.Path);
+        Assert.True(File.Exists(placement.Path));
+        Assert.True(placement.CreatedFolder);
+        // The peer's own folders are gone once empty; the music root is never touched.
+        Assert.False(Directory.Exists(Path.Combine(_root, "peer share")));
+        Assert.True(Directory.Exists(_root));
+    }
+
+    /// <summary>Flat has no folder to scatter, so the whole credit stays in the file name (#49).</summary>
+    [Fact]
+    public async Task PlaceInLibrary_Flat_KeepsTheWholeCreditInTheFileName()
+    {
+        var service = Service(FolderStructure.Flat);
+        var song = new Song { Artist = "Bizarrap, Rauw Alejandro", Title = "T", PrimaryArtist = "Bizarrap" };
+
+        var placement = await service.Place(song, Requested("Bizarrap, Rauw Alejandro", "T"), Landed("x.mp3"));
+
+        Assert.Equal(Path.Combine(_root, "Bizarrap, Rauw Alejandro - T.mp3"), placement.Path);
+    }
+
+    /// <summary>The bug this replaces: "Song (Live)" used to be named "Song" and delete it.</summary>
+    [Fact]
+    public async Task PlaceInLibrary_ForeignFileAtTheTarget_KeepsBoth()
+    {
+        var service = Service(FolderStructure.Flat);
+        var existing = Path.Combine(_root, "A - Song.mp3");
+        File.WriteAllBytes(existing, AudioFixtures.Mp3());
+        var before = File.ReadAllBytes(existing);
+
+        var placement = await service.Place(new Song { Artist = "A", Title = "Song" }, Requested("A", "Song"), Landed("new.mp3"));
+
+        Assert.Equal(Path.Combine(_root, "A - Song (1).mp3"), placement.Path);
+        Assert.Equal(before, File.ReadAllBytes(existing));
+    }
+
+    /// <summary>A second download of a song Octo itself placed replaces it rather than doubling it.</summary>
+    [Fact]
+    public async Task PlaceInLibrary_OctoOwnedSameSong_Replaces()
+    {
+        var existing = Path.Combine(_root, "A - Song.mp3");
+        Directory.CreateDirectory(_root);
+        File.WriteAllBytes(existing, AudioFixtures.Mp3());
+        var service = Service(FolderStructure.Flat,
+            [new LocalSongMapping { LocalPath = existing, Artist = "A", Title = "Song" }]);
+
+        var placement = await service.Place(new Song { Artist = "A", Title = "Song" }, Requested("A", "Song"), Landed("new.mp3"));
+
+        Assert.Equal(existing, placement.Path);
+        Assert.False(File.Exists(Path.Combine(_root, "A - Song (1).mp3")));
+    }
+
+    [Fact]
+    public async Task PlaceInLibrary_SameRecordingId_Replaces()
+    {
+        var service = Service(FolderStructure.Flat);
+        var existing = Path.Combine(_root, "A - Song.mp3");
+        File.WriteAllBytes(existing, AudioFixtures.Mp3());
+        using (var tagged = TagLib.File.Create(existing))
+        {
+            TagWriterExtras.SetRecordingId(tagged, "rec-1");
+            tagged.Save();
+        }
+
+        var song = new Song { Artist = "A", Title = "Song", MusicBrainzRecordingId = "rec-1" };
+        var placement = await service.Place(song, Requested("A", "Song"), Landed("new.mp3"));
+
+        Assert.Equal(existing, placement.Path);
+    }
+
+    [Fact]
+    public async Task PlaceInLibrary_DifferentRecordingId_KeepsBoth()
+    {
+        var service = Service(FolderStructure.Flat);
+        var existing = Path.Combine(_root, "A - Song.mp3");
+        File.WriteAllBytes(existing, AudioFixtures.Mp3());
+        using (var tagged = TagLib.File.Create(existing))
+        {
+            TagWriterExtras.SetRecordingId(tagged, "rec-1");
+            tagged.Save();
+        }
+
+        var song = new Song { Artist = "A", Title = "Song", MusicBrainzRecordingId = "rec-2" };
+        var placement = await service.Place(song, Requested("A", "Song"), Landed("new.mp3"));
+
+        Assert.Equal(Path.Combine(_root, "A - Song (1).mp3"), placement.Path);
+    }
+
+    [Fact]
+    public async Task PlaceInLibrary_IntoAnAlbumFolderThatAlreadyHasMusic_IsNotANewFolder()
+    {
+        var service = Service(FolderStructure.Organized);
+        var albumDir = Path.Combine(_root, "A", "Album");
+        Directory.CreateDirectory(albumDir);
+        File.WriteAllBytes(Path.Combine(albumDir, "01 - Other.mp3"), AudioFixtures.Mp3());
+
+        var placement = await service.Place(new Song { Artist = "A", Title = "T" }, Requested("A", "T", "Album", 2), Landed("x.mp3"));
+
+        Assert.False(placement.CreatedFolder);
+    }
+
+    [Fact]
+    public async Task PlaceInLibrary_MissingFile_ReturnsTheLandedPath()
+    {
+        var service = Service(FolderStructure.Flat);
+        var missing = Path.Combine(_root, "nope.mp3");
+
+        var placement = await service.Place(new Song { Artist = "A", Title = "T" }, Requested("A", "T"), missing);
+
+        Assert.Equal(missing, placement.Path);
+    }
+
+    // ---- Tags ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// TagLib# after 2.3.0 writes Tag.MusicBrainzTrackId as the release TRACK id on ID3. Writing
+    /// the UFID frame directly keeps the recording id where Navidrome reads it whatever the package.
+    /// </summary>
+    [Fact]
+    public void SetRecordingId_Mp3_WritesTheMusicBrainzOrgUfid()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "t.mp3");
+        File.WriteAllBytes(path, AudioFixtures.Mp3());
+        using (var file = TagLib.File.Create(path))
+        {
+            TagWriterExtras.SetRecordingId(file, "rec-1");
+            file.Save();
+        }
+
+        using var read = TagLib.File.Create(path);
+        var id3 = (TagLib.Id3v2.Tag)read.GetTag(TagLib.TagTypes.Id3v2, false);
+        var ufid = TagLib.Id3v2.UniqueFileIdentifierFrame.Get(id3, "http://musicbrainz.org", false);
+        Assert.NotNull(ufid);
+        Assert.Equal("rec-1", ufid.Identifier.ToString());
+        Assert.Equal("rec-1", TagWriterExtras.ReadRecordingId(read));
+    }
+
+    [Fact]
+    public void SetRecordingId_Flac_WritesMusicbrainzTrackid()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "t.flac");
+        File.WriteAllBytes(path, AudioFixtures.Flac());
+        using (var file = TagLib.File.Create(path))
+        {
+            TagWriterExtras.SetRecordingId(file, "rec-1");
+            file.Save();
+        }
+
+        using var read = TagLib.File.Create(path);
+        var xiph = (TagLib.Ogg.XiphComment)read.GetTag(TagLib.TagTypes.Xiph, false);
+        Assert.Equal("rec-1", xiph.GetFirstField("MUSICBRAINZ_TRACKID"));
+    }
+
+    [Theory]
+    [InlineData("t.mp3")]
+    [InlineData("t.flac")]
+    public void SetMultiValue_WritesOneValuePerArtist(string name)
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, name);
+        File.WriteAllBytes(path, name.EndsWith(".mp3") ? AudioFixtures.Mp3() : AudioFixtures.Flac());
+        using (var file = TagLib.File.Create(path))
+        {
+            TagWriterExtras.SetMultiValue(file, "ARTISTS", ["Bizarrap", "Rauw Alejandro"]);
+            file.Save();
+        }
+
+        using var read = TagLib.File.Create(path);
+        string[] values = name.EndsWith(".mp3")
+            ? TagLib.Id3v2.UserTextInformationFrame.Get((TagLib.Id3v2.Tag)read.GetTag(TagLib.TagTypes.Id3v2, false), "ARTISTS", false)!.Text
+            : ((TagLib.Ogg.XiphComment)read.GetTag(TagLib.TagTypes.Xiph, false)).GetField("ARTISTS");
+        Assert.Equal(["Bizarrap", "Rauw Alejandro"], values);
+    }
+
+    [Fact]
+    public async Task WriteMetadata_ConfirmedMatch_WritesIdsArtistsAndNoAlbumId()
+    {
+        var service = Service(FolderStructure.Flat);
+        var path = Path.Combine(_root, "t.flac");
+        File.WriteAllBytes(path, AudioFixtures.Flac());
+        var song = new Song
+        {
+            Title = "Session", Artist = "Bizarrap, Rauw Alejandro", Album = "Session",
+            PrimaryArtist = "Bizarrap", Artists = ["Bizarrap", "Rauw Alejandro"],
+            MusicBrainzRecordingId = "rec-1", MusicBrainzReleaseId = "rel-1",
+            MusicBrainzReleaseGroupId = "rg-1", MusicBrainzAlbumTitle = "Session",
+        };
+
+        await service.Write(path, song);
+
+        using var read = TagLib.File.Create(path);
+        var xiph = (TagLib.Ogg.XiphComment)read.GetTag(TagLib.TagTypes.Xiph, false);
+        Assert.Equal("rec-1", xiph.GetFirstField("MUSICBRAINZ_TRACKID"));
+        Assert.Equal(["Bizarrap", "Rauw Alejandro"], xiph.GetField("ARTISTS"));
+        Assert.Equal("rg-1", read.Tag.MusicBrainzReleaseGroupId);
+        // Navidrome groups albums by MUSICBRAINZ_ALBUMID before the album name.
+        Assert.True(string.IsNullOrEmpty(read.Tag.MusicBrainzReleaseId));
+        // With no album artist of its own, the first credit stands in, not the list.
+        Assert.Equal(["Bizarrap"], read.Tag.AlbumArtists);
+    }
+
+    /// <summary>A group id beside an album name from somewhere else would describe another album.</summary>
+    [Fact]
+    public async Task WriteMetadata_AlbumFromAnotherSource_GetsNoGroupId()
+    {
+        var service = Service(FolderStructure.Flat);
+        var path = Path.Combine(_root, "t.flac");
+        File.WriteAllBytes(path, AudioFixtures.Flac());
+        var song = new Song
+        {
+            Title = "Song", Artist = "A", Album = "Now That's What I Call Music! 42",
+            MusicBrainzRecordingId = "rec-1", MusicBrainzReleaseGroupId = "rg-1", MusicBrainzAlbumTitle = "The Real Album",
+        };
+
+        await service.Write(path, song);
+
+        using var read = TagLib.File.Create(path);
+        Assert.True(string.IsNullOrEmpty(read.Tag.MusicBrainzReleaseGroupId));
+    }
+
+    /// <summary>The download service with the transfer stubbed out, so placement and tagging can
+    /// be driven against real files in a temp folder.</summary>
+    private sealed class PlacementService(string root, FolderStructure layout, ILocalLibraryService library)
+        : BaseDownloadService(
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Library:DownloadPath"] = root }).Build(),
+            library,
+            Mock.Of<IMusicMetadataService>(),
+            TestOptions.Monitor(new SubsonicSettings { FolderStructure = layout, AutoDetectDownloadPath = false }),
+            TestOptions.Monitor(new GenreSettings()),
+            new NavidromeIdentityService(
+                TestOptions.Monitor(new SubsonicSettings { AutoDetectDownloadPath = false }),
+                Mock.Of<IHttpClientFactory>(), NullLogger<NavidromeIdentityService>.Instance),
+            new DownloadHistoryService(Path.Combine(root, "history.json"), NullLogger<DownloadHistoryService>.Instance),
+            new NotificationService([], TestOptions.Monitor(new NotificationSettings()), NullLogger<NotificationService>.Instance),
+            new ServiceCollection()
+                .AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<SoulseekSettings>>(TestOptions.Monitor(new SoulseekSettings()))
+                .BuildServiceProvider(),
+            NullLogger.Instance)
+    {
+        protected override string ProviderName => "test";
+        public override Task<bool> IsAvailableAsync() => Task.FromResult(true);
+        protected override Task<string> DownloadTrackAsync(string trackId, Song song, bool suppressNotify,
+            DownloadSource? sourceOverride, CancellationToken cancellationToken) => throw new NotSupportedException();
+        protected override string? ExtractExternalIdFromAlbumId(string albumId) => null;
+
+        public Task<Placement> Place(Song song, RequestedIdentity requested, string path) =>
+            PlaceInLibraryAsync(song, requested, path);
+
+        public Task Write(string path, Song song) => WriteMetadataAsync(path, song, CancellationToken.None);
+    }
+}
+
+/// <summary>
+/// The smallest real audio files TagLib will open as the formats Octo downloads, built in memory
+/// so the tests need neither fixtures on disk nor ffmpeg.
+/// </summary>
+internal static class AudioFixtures
+{
+    /// <summary>Twenty silent MPEG-1 Layer III frames, 128 kbps, 44.1 kHz.</summary>
+    public static byte[] Mp3()
+    {
+        const int frameLength = 417;
+        var bytes = new byte[frameLength * 20];
+        for (var frame = 0; frame < 20; frame++)
+        {
+            var offset = frame * frameLength;
+            bytes[offset] = 0xFF;
+            bytes[offset + 1] = 0xFB;
+            bytes[offset + 2] = 0x90;
+            bytes[offset + 3] = 0x64;
+        }
+        return bytes;
+    }
+
+    /// <summary>A FLAC with a STREAMINFO block describing two seconds of 16-bit stereo and no frames.</summary>
+    public static byte[] Flac()
+    {
+        using var stream = new MemoryStream();
+        stream.Write("fLaC"u8);
+        stream.Write([0x80, 0x00, 0x00, 0x22]);
+        stream.Write([0x10, 0x00, 0x10, 0x00]);
+        stream.Write([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        const ulong sampleRate = 44100, channelsMinusOne = 1, bitsMinusOne = 15, totalSamples = 88200;
+        var packed = (sampleRate << 44) | (channelsMinusOne << 41) | (bitsMinusOne << 36) | totalSamples;
+        for (var shift = 56; shift >= 0; shift -= 8) stream.WriteByte((byte)(packed >> shift));
+        stream.Write(new byte[16]);
+        return stream.ToArray();
+    }
+}

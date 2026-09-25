@@ -104,4 +104,36 @@ public class PathHelperTests
         // Windows silently drops trailing dots on folder names.
         Assert.Equal("Album", PathHelper.SanitizeFolderName("Album..."));
     }
+
+    /// <summary>
+    /// Every one of these names a different recording. Naming used to strip all brackets, so a
+    /// live take and the studio cut shared one path and the second download deleted the first.
+    /// </summary>
+    [Theory]
+    [InlineData("Song (Live)", "Song (Live)")]
+    [InlineData("Song [Remix]", "Song [Remix]")]
+    [InlineData("Song (feat. Guest)", "Song (feat. Guest)")]
+    [InlineData("Song (Acoustic Version)", "Song (Acoustic Version)")]
+    public void FileTitle_KeepsWhatNamesADifferentRecording(string title, string expected)
+        => Assert.Equal(expected, PathHelper.FileTitle(title, "Artist"));
+
+    [Theory]
+    [InlineData("Song (Official Video)", "Song")]
+    [InlineData("Song (Official Music Video) [HD]", "Song")]
+    [InlineData("Song [Official Audio]", "Song")]
+    [InlineData("Song (Lyric Video)", "Song")]
+    [InlineData("Song (Live) (Official Video)", "Song (Live)")]
+    public void FileTitle_DropsOnlyUploadNoise(string title, string expected)
+        => Assert.Equal(expected, PathHelper.FileTitle(title, "Artist"));
+
+    [Fact]
+    public void FileTitle_DropsARedundantArtistPrefix()
+        => Assert.Equal("Teardrop", PathHelper.FileTitle("Massive Attack - Teardrop", "Massive Attack"));
+
+    /// <summary>Mezzanine's "(Exchange)" is the whole title, not an annotation.</summary>
+    [Theory]
+    [InlineData("(Exchange)")]
+    [InlineData("(Official Video)")]
+    public void FileTitle_TitleThatIsOnlyABracket_IsKept(string title)
+        => Assert.Equal(title, PathHelper.FileTitle(title, "Massive Attack"));
 }

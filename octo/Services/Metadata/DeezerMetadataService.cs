@@ -21,11 +21,15 @@ public class DeezerMetadataService : IDisposable
         string? ArtistName, string? ArtistImageUrl);
     public record ArtistMeta(string? Name, string? ImageUrl);
 
-    /// <summary>Everything Deezer knows about a track, for writing rich file tags.</summary>
+    /// <summary>
+    /// Everything Deezer knows about a track, for writing rich file tags. Contributors is every
+    /// Main and Featured artist, in order; the search hit only names the main one, so it comes
+    /// from the track's own record.
+    /// </summary>
     public record FullTrackMeta(
         string? AlbumTitle, string? AlbumCoverUrl, int? Year, int? Duration, string? ArtistName,
         int? TrackNumber, int? DiscNumber, string? Isrc, int? TotalTracks, string? Genre,
-        string? Label, string? ReleaseDate);
+        string? Label, string? ReleaseDate, IReadOnlyList<string>? Contributors = null);
 
     /// <summary>One album from a catalog search. Year is not on the search payload;
     /// the detail call fills it.</summary>
@@ -275,8 +279,33 @@ public class DeezerMetadataService : IDisposable
                     }
                 }
 
+                // The search hit carries neither the track's position nor anyone but the main
+                // artist, so the track number was never written (#48) and a collaboration was one
+                // artist (#49). The track's own record has both.
+                int? trackNumber = Int(t, "track_position"), discNumber = Int(t, "disk_number");
+                List<string>? contributors = null;
+                if (t.TryGetProperty("id", out var tid) && tid.ValueKind == JsonValueKind.Number)
+                {
+                    using var tr = await GetJsonAsync($"{Base}/track/{tid.GetInt64()}", ct);
+                    detailUnresolved |= tr.Transient;
+                    if (tr.Doc != null)
+                    {
+                        var track = tr.Doc.RootElement;
+                        trackNumber ??= Int(track, "track_position");
+                        discNumber ??= Int(track, "disk_number");
+                        if (track.TryGetProperty("contributors", out var people) && people.ValueKind == JsonValueKind.Array)
+                            contributors = people.EnumerateArray()
+                                .Where(person => Str(person, "role") is null or "Main" or "Featured")
+                                .Select(person => Str(person, "name"))
+                                .Where(name => !string.IsNullOrWhiteSpace(name))
+                                .Select(name => name!)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+                    }
+                }
+
                 meta = new FullTrackMeta(albTitle, cover, year, Int(t, "duration"), artName,
-                    Int(t, "track_position"), Int(t, "disk_number"), isrc, totalTracks, genre, label, releaseDate);
+                    trackNumber, discNumber, isrc, totalTracks, genre, label, releaseDate, contributors);
             }
         }
         catch (Exception ex)

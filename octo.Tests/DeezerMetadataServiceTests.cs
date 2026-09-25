@@ -479,6 +479,34 @@ public class DeezerMetadataServiceTests
         Assert.DoesNotContain("track:", query);
     }
 
+    /// <summary>
+    /// The search hit names only the main artist and carries no track position, so a
+    /// collaboration was tagged as one artist (#49) and the track number was never written (#48).
+    /// Both come from the track's own record. Shape taken from a live answer, 2026-09-25.
+    /// </summary>
+    [Fact]
+    public async Task EnrichTrackFullAsync_ReadsContributorsAndPositionFromTheTrack()
+    {
+        var search = @"{""data"":[{""id"":2334934765,""title"":""Rauw Alejandro: Bzrp Music Sessions, Vol. 56/66"",
+            ""duration"":210,""album"":{""id"":1,""title"":""Session 56""},""artist"":{""name"":""Bizarrap""}}]}";
+        var track = @"{""id"":2334934765,""track_position"":1,""disk_number"":1,""contributors"":[
+            {""name"":""Bizarrap"",""role"":""Main""},{""name"":""Rauw Alejandro"",""role"":""Main""}]}";
+        var svc = BuildService(new()
+        {
+            ["/track/2334934765"] = track,
+            ["/album/1"] = @"{""id"":1,""nb_tracks"":1}",
+            ["/search"] = search,
+        });
+
+        var meta = await svc.EnrichTrackFullAsync("Bizarrap, Rauw Alejandro", "Rauw Alejandro: Bzrp Music Sessions, Vol. 56/66");
+
+        Assert.NotNull(meta);
+        Assert.Equal("Bizarrap", meta.ArtistName);
+        Assert.Equal(["Bizarrap", "Rauw Alejandro"], meta.Contributors);
+        Assert.Equal(1, meta.TrackNumber);
+        Assert.Equal(1, meta.DiscNumber);
+    }
+
     [Fact]
     public async Task FindAlbumIdAsync_SendsPlainTerms_WithoutFieldQualifiers()
     {

@@ -76,6 +76,15 @@ public sealed record VerificationResult
 
     public static readonly VerificationResult Inconclusive = new() { Reason = InconclusiveReason.Disabled };
 
+    /// <summary>
+    /// Whether a song's album IS the MusicBrainz release its fingerprint matched, so the ids and
+    /// artwork that belong to that release describe the album the tags name. A download tagged
+    /// with a compilation's name must not get the original album's cover or group id.
+    /// </summary>
+    public static bool AlbumIsFromRelease(Song song) =>
+        !string.IsNullOrWhiteSpace(song.MusicBrainzAlbumTitle)
+        && TrackMatchComparer.Normalize(song.Album) == TrackMatchComparer.Normalize(song.MusicBrainzAlbumTitle);
+
     public string Describe() => string.IsNullOrEmpty(MatchedArtist) && string.IsNullOrEmpty(MatchedTitle)
         ? "a different recording"
         : $"'{MatchedArtist} - {MatchedTitle}'";
@@ -221,8 +230,11 @@ public sealed class DownloadVerificationService
             };
         }
 
+        // NameFromMatch implies authoritative tags: a path from MusicBrainz beside tags from the
+        // source is exactly the split it exists to remove (#48).
         var verdict = Decide(lookup, requestedArtist, requestedTitle,
-            settings.EffectiveMinScoreFraction, settings.TagFromMusicBrainz, seconds) with
+            settings.EffectiveMinScoreFraction, settings.TagFromMusicBrainz || settings.NameFromMatch,
+            seconds) with
         {
             Fingerprint = fingerprint.Fingerprint,
             DurationSeconds = seconds,

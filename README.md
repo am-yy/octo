@@ -360,8 +360,14 @@ at once. `SLSKD_MIN_MATCH_SCORE` (50-99, default 85) is how sure AcoustID must b
 answer may reject anything, so raising it makes Octo *more* permissive, because weaker matches
 are ignored rather than acted on. A track with no AcoustID entry at all is always accepted.
 `SLSKD_TAG_FROM_MUSICBRAINZ` writes the matched recording's MusicBrainz title, artist, album
-and year over the peer's own tags. Verification needs `fpcalc` in the runtime image
-(`libchromaprint-tools`); without it the feature logs once and accepts everything.
+and year over the peer's own tags. `NAME_FROM_MATCH` goes one step further and names the file
+from the match as well (artist folder, title, album and track number), so the path and the
+tags come from one decision; it is off by default because a canonical name is not always the
+one you file under, and it only ever names files Octo downloads and confirms. YouTube
+downloads are identified too, but never rejected: YouTube has no second candidate, so a
+disagreement is kept and, with the Review playlist on, asked about. Verification needs
+`fpcalc` in the runtime image (`libchromaprint-tools`); without it the feature logs once and
+accepts everything.
 
 Each kind of dynamic station is configured on its own, so a listener can keep Your Mix
 without collecting an artist radio per favourite band. `LASTFM_ENABLE_YOUR_MIX` and
@@ -410,6 +416,8 @@ Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for
 - `Flat` *(default)*: `Artist - Title.flac`.
 - `ByArtist`: `Artist/Title.flac`.
 - `Organized`: `Artist/Album/01 - Title.flac`. A track with no known album falls back to its own title as the folder. Existing files are never moved; this only affects new downloads.
+
+A download is filed once it has been tagged, so the album Deezer finds for a track that arrived without one names its folder. A collaboration's folder is named after its first artist, and only when MusicBrainz or Deezer says who that is: `Bizarrap, Rauw Alejandro` is filed under `Bizarrap/`, while `Earth, Wind & Fire` and `Tyler, The Creator` stay whole because every source names them whole. The full credit stays in the artist tag, and each artist also gets a value of their own in the `ARTISTS` tag, so Navidrome lists the track under every one of them. File names keep annotations that name a different recording, such as `(Live)`, `[Remix]` and `(feat. X)`, and drop only upload noise like `(Official Video)`. A file already at the chosen path is replaced only when it is provably the same song; anything else keeps both.
 
 ### Subsonic API surface
 

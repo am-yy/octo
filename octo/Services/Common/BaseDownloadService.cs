@@ -79,6 +79,21 @@ public abstract class BaseDownloadService : IDownloadService
     /// <summary>Read through the monitor, never captured: a settings change has to reach a
     /// singleton without a restart.</summary>
     protected GenreSettings GenreSettings => _genreOptions.CurrentValue;
+
+    /// <summary>Resolved per read for the same reason; through the provider so the constructor
+    /// every subclass calls stays as it is.</summary>
+    private SoulseekSettings SoulseekSettingsValue =>
+        _serviceProvider.GetService<IOptionsMonitor<SoulseekSettings>>()?.CurrentValue ?? new SoulseekSettings();
+
+    /// <summary>The name a download was asked for under, captured before anything corrects it.</summary>
+    protected internal sealed record RequestedIdentity(string Artist, string Title, string Album, int? Track);
+
+    /// <summary>What a download's path is built from.</summary>
+    internal sealed record LayoutChoice(string FolderArtist, string FileArtist, string Title, string Album, int? Track);
+
+    /// <summary>Where a download was placed, and whether its folder is new, which is the only
+    /// place a cover.jpg may go without changing an album that was already there.</summary>
+    protected internal sealed record Placement(string Path, bool CreatedFolder);
     
     protected BaseDownloadService(
         IConfiguration configuration,
@@ -301,7 +316,7 @@ public abstract class BaseDownloadService : IDownloadService
                     Source = ext == "FLAC" ? "Soulseek" : "YouTube",
                     CoverArtUrl = cover,
                     SizeBytes = size,
-                    // EnrichAndTagAsync ran before this hook, so these are the
+                    // EnrichAsync and WriteMetadataAsync ran before this hook, so these are the
                     // Deezer-enriched values the file itself was tagged with.
                     DurationSeconds = song.Duration,
                     Year = song.Year,
@@ -481,20 +496,34 @@ public abstract class BaseDownloadService : IDownloadService
                     $"'{song.Artist} - {song.Title}' was deleted with a library action");
             }
 
-            var localPath = await DownloadTrackAsync(
+            // Snapshot before anything can correct it: with NameFromMatch off this is still what
+            // names the file, which is how every existing library was built.
+            var requested = new RequestedIdentity(song.Artist, song.Title, song.Album ?? "", song.Track);
+
+            var landedPath = await DownloadTrackAsync(
                 externalId, song, silence, sourceOverride, cancellationToken);
+            song.LocalPath = landedPath;
+
+            // Enrich from Deezer before the file is placed: the album it finds names the folder
+            // (#50) and its main artist names the artist folder (#49). Reads only; nothing is
+            // written to the file until it sits where it will stay.
+            await EnrichAsync(song, landedPath, CancellationToken.None);
+
+            // Placed from the Song, so the path and the tags come from one decision (#48). The
+            // file used to be moved inside DownloadTrackAsync, before any of this was known.
+            var placement = await PlaceInLibraryAsync(song, requested, landedPath);
+            var localPath = placement.Path;
+            song.LocalPath = localPath;
+
+            // Rich tags and real album art, written where the file will stay. Downloads
+            // otherwise arrive bare (YouTube: artist/title and a video thumbnail; Soulseek:
+            // whatever the peer tagged), so this is what makes every fetched song a
+            // properly-tagged library citizen.
+            await WriteMetadataAsync(localPath, song, CancellationToken.None);
 
             downloadInfo.Status = DownloadStatus.Completed;
             downloadInfo.LocalPath = localPath;
             downloadInfo.CompletedAt = DateTime.UtcNow;
-
-            song.LocalPath = localPath;
-
-            // Enrich from Deezer and write rich tags + real album art onto the file.
-            // Downloads otherwise arrive bare (YouTube: artist/title + a video
-            // thumbnail; Soulseek: whatever the peer tagged), so this is what makes
-            // every fetched song a properly-tagged library citizen.
-            await EnrichAndTagAsync(song, localPath, CancellationToken.None);
 
             // Check if this track belongs to a playlist and update M3U
             if (PlaylistSyncService != null)
@@ -720,13 +749,12 @@ public abstract class BaseDownloadService : IDownloadService
     /// Writes ID3/Vorbis metadata and cover art to the audio file
     /// </summary>
     /// <summary>
-    /// Fills any missing metadata on <paramref name="song"/> from Deezer, then writes
-    /// full tags + real album art onto the downloaded file. Existing values win (a
-    /// well-tagged Soulseek FLAC is enriched, not overwritten); Deezer fills the gaps
-    /// and supplies the cover. Best-effort — a miss or write failure never breaks the
-    /// download, the file just keeps whatever tags it already had.
+    /// Fills any missing metadata on <paramref name="song"/> from Deezer. Existing values win (a
+    /// well-tagged Soulseek FLAC is enriched, not overwritten); Deezer fills the gaps and
+    /// supplies the cover. Reads only: the tags are written by WriteMetadataAsync once the file
+    /// has been placed. Best-effort; a miss never breaks the download.
     /// </summary>
-    protected async Task EnrichAndTagAsync(Song song, string filePath, CancellationToken cancellationToken)
+    protected async Task EnrichAsync(Song song, string filePath, CancellationToken cancellationToken)
     {
         // Last.fm/YouTube titles often carry a redundant "Artist - " prefix (e.g.
         // "Radiohead - No Surprises") which both mislabels the file and breaks the
@@ -743,6 +771,11 @@ public abstract class BaseDownloadService : IDownloadService
                 var m = await deezer.EnrichTrackFullAsync(song.Artist, queryTitle, cancellationToken);
                 if (m != null)
                 {
+                    // Deezer's main artist names the folder when the request carried a list of
+                    // credits (#49); its contributors give every credited artist a value of
+                    // their own, so Navidrome files a collaboration under each of them.
+                    if (string.IsNullOrEmpty(song.PrimaryArtist) && !string.IsNullOrEmpty(m.ArtistName)) song.PrimaryArtist = m.ArtistName;
+                    if (song.Artists.Count == 0 && m.Contributors is { Count: > 1 } contributors) song.Artists = contributors.ToList();
                     if (string.IsNullOrEmpty(song.Album) && !string.IsNullOrEmpty(m.AlbumTitle)) song.Album = m.AlbumTitle;
                     if (string.IsNullOrEmpty(song.AlbumArtist) && !string.IsNullOrEmpty(m.ArtistName)) song.AlbumArtist = m.ArtistName;
                     if (string.IsNullOrEmpty(song.CoverArtUrlLarge)) song.CoverArtUrlLarge = m.AlbumCoverUrl;
@@ -762,8 +795,6 @@ public abstract class BaseDownloadService : IDownloadService
         {
             Logger.LogWarning(ex, "Deezer enrichment for tagging failed for '{Artist} - {Title}'", song.Artist, song.Title);
         }
-
-        await WriteMetadataAsync(filePath, song, cancellationToken);
     }
 
     /// <summary>Drop a redundant leading "Artist - " from a track title.</summary>
@@ -847,11 +878,16 @@ public abstract class BaseDownloadService : IDownloadService
             // FLAC keeps its own album if Deezer had no match.
             if (!string.IsNullOrEmpty(song.Title)) tagFile.Tag.Title = song.Title;
             if (!string.IsNullOrEmpty(song.Artist)) tagFile.Tag.Performers = new[] { song.Artist };
+            // The full credit stays in the artist tag; each artist also gets a value of their own,
+            // so Navidrome files a collaboration under every one of them (#49).
+            if (song.Artists.Count > 1) TagWriterExtras.SetMultiValue(tagFile, "ARTISTS", song.Artists);
             if (!string.IsNullOrEmpty(song.Album)) tagFile.Tag.Album = song.Album;
             if (!string.IsNullOrEmpty(song.AlbumArtist))
                 tagFile.Tag.AlbumArtists = new[] { song.AlbumArtist };
             else if (!string.IsNullOrEmpty(song.Artist))
-                tagFile.Tag.AlbumArtists = new[] { song.Artist };
+                // A list of credits as album artist scatters the album view the way it scattered
+                // folders, so the first credit stands in when a source named one.
+                tagFile.Tag.AlbumArtists = new[] { song.PrimaryArtist ?? song.Artist };
             
             // Only write the track number when we actually have one, and only pair
             // the total with it — avoids a bogus "0/11" when Deezer's search result
@@ -935,6 +971,18 @@ public abstract class BaseDownloadService : IDownloadService
             
             if (comments.Count > 0)
                 tagFile.Tag.Comment = string.Join(" | ", comments);
+
+            // What the fingerprint proved (#48), so no later pass has to identify this file
+            // again. No album id: Navidrome groups albums by MUSICBRAINZ_ALBUMID before the
+            // album name, so one track carrying it beside another without it splits an album.
+            // The group id is written only when the album really is that release.
+            if (!string.IsNullOrEmpty(song.MusicBrainzRecordingId))
+                TagWriterExtras.SetRecordingId(tagFile, song.MusicBrainzRecordingId);
+            if (!string.IsNullOrEmpty(song.MusicBrainzReleaseGroupId)
+                && Octo.Services.Fingerprint.VerificationResult.AlbumIsFromRelease(song))
+                tagFile.Tag.MusicBrainzReleaseGroupId = song.MusicBrainzReleaseGroupId;
+            if (song.MusicBrainzArtistIds.Count == 1) tagFile.Tag.MusicBrainzArtistId = song.MusicBrainzArtistIds[0];
+            if (song.IsCompilation) TagWriterExtras.SetCompilation(tagFile, true);
             
             // Download and embed cover art
             var coverUrl = song.CoverArtUrlLarge ?? song.CoverArtUrl;
@@ -1012,6 +1060,170 @@ public abstract class BaseDownloadService : IDownloadService
         {
             Logger.LogError(ex, "Failed to create directory: {Path}", path);
             throw;
+        }
+    }
+
+    private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac", ".mp3", ".m4a", ".aac", ".alac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
+        ".ape", ".wv", ".wma", ".dsf",
+    };
+
+    /// <summary>
+    /// Move a finished download into the configured layout, named by ChooseLayout.
+    ///
+    /// Never overwrites a different file. A path that is already taken is replaced only when it
+    /// provably holds this same song (see IsSameSongAsync); anything else keeps both. The move
+    /// used to delete whatever sat at the target, which is how "Song (Live)" replaced "Song".
+    /// Returns the landed path when the move fails, so the song is still registered.
+    /// </summary>
+    protected async Task<Placement> PlaceInLibraryAsync(Song song, RequestedIdentity requested, string currentPath)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(DownloadPath) || !IOFile.Exists(currentPath)) return new(currentPath, false);
+
+            var choice = ChooseLayout(song, requested, SoulseekSettingsValue.NameFromMatch);
+            var structure = SubsonicSettings.FolderStructure;
+            // Flat has no folder to scatter, so its file name keeps the whole credit (#49).
+            var artist = structure == FolderStructure.Flat ? choice.FileArtist : choice.FolderArtist;
+            var target = PathHelper.BuildLayoutPath(structure, DownloadPath,
+                string.IsNullOrWhiteSpace(artist) ? "Unknown Artist" : artist,
+                choice.Album, PathHelper.FileTitle(choice.Title, choice.FileArtist),
+                choice.Track, Path.GetExtension(currentPath));
+
+            if (string.Equals(Path.GetFullPath(target), Path.GetFullPath(currentPath), StringComparison.OrdinalIgnoreCase))
+                return new(currentPath, false);
+
+            var targetDir = Path.GetDirectoryName(target);
+            var folderHadAudio = !string.IsNullOrEmpty(targetDir) && Directory.Exists(targetDir)
+                && Directory.EnumerateFiles(targetDir).Any(file => AudioExtensions.Contains(Path.GetExtension(file)));
+
+            if (IOFile.Exists(target))
+            {
+                if (await IsSameSongAsync(target, song))
+                {
+                    Logger.LogInformation("{Target} already holds this song; replacing it with the new download", target);
+                    IOFile.Delete(target);
+                }
+                else
+                {
+                    var unique = PathHelper.ResolveUniquePath(target);
+                    Logger.LogInformation("{Target} already holds a different file; keeping both as {Unique}", target, unique);
+                    target = unique;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(targetDir)) Directory.CreateDirectory(targetDir);
+            IOFile.Move(currentPath, target);
+            Logger.LogInformation("Placed download in {Layout}: {From} -> {To}", structure, currentPath, target);
+
+            // Clean up any now-empty folder the file came from (a Soulseek peer's own layout, or
+            // the YouTube staging folder), never walking above the music root.
+            TryRemoveEmptyParents(Path.GetDirectoryName(currentPath), DownloadPath);
+            return new(target, !folderHadAudio);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not place {Path} in the configured layout; leaving it where it landed", currentPath);
+            return new(currentPath, false);
+        }
+    }
+
+    /// <summary>
+    /// Whether an occupied path holds this same song: both carry the same MusicBrainz recording,
+    /// or, lacking an id on either side, it is a file Octo itself downloaded for the same artist
+    /// and title. Anything short of that is somebody's other file and is never replaced.
+    /// </summary>
+    private async Task<bool> IsSameSongAsync(string target, Song song)
+    {
+        var existingId = TagWriterExtras.ReadIdentity(target).RecordingId;
+        if (!string.IsNullOrEmpty(existingId) && !string.IsNullOrEmpty(song.MusicBrainzRecordingId))
+            return string.Equals(existingId, song.MusicBrainzRecordingId, StringComparison.OrdinalIgnoreCase);
+
+        var full = Path.GetFullPath(target);
+        var mappings = await LocalLibraryService.GetMappingsAsync();
+        return mappings.Any(mapping =>
+            !string.IsNullOrEmpty(mapping.LocalPath)
+            && string.Equals(Path.GetFullPath(mapping.LocalPath), full, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(mapping.Artist, song.Artist, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(mapping.Title, song.Title, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Which name a download is filed under. With NameFromMatch on and a confirmed match, the
+    /// recording's, already applied to the Song. Otherwise the request's, except that a list of
+    /// credits never names a folder and a request with no album takes the album it was tagged
+    /// with, together with that album's track number.
+    /// </summary>
+    internal static LayoutChoice ChooseLayout(Song song, RequestedIdentity requested, bool nameFromMatch)
+    {
+        var match = song.Verification is { Verdict: Octo.Services.Fingerprint.VerificationVerdict.Confirmed, Match: { } m }
+            ? m : null;
+
+        if (nameFromMatch && match is not null)
+            return new LayoutChoice(
+                match.PrimaryArtist ?? song.PrimaryArtist ?? song.Artist, song.Artist,
+                song.Title, song.Album ?? "", song.Track);
+
+        var fromRequest = requested.Album.Length > 0;
+        return new LayoutChoice(
+            PrimaryCredit(requested.Artist, match?.PrimaryArtist, song.PrimaryArtist),
+            requested.Artist,
+            requested.Title,
+            fromRequest ? requested.Album : song.Album ?? "",
+            fromRequest ? requested.Track : song.Track);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex CreditSeparator = new(
+        @"^\s*(,|&|\+|/|;|\bx\b|\bvs\.?|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\band\b)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// The artist a folder is named after (#49). Splits only on proof: a structured source (the
+    /// MusicBrainz credit, Deezer's main artist) that names either the whole requested string,
+    /// which keeps it whole, or its FIRST credit followed by a separator, which splits there.
+    /// "Earth, Wind &amp; Fire" and "Tyler, The Creator" survive because every structured source
+    /// names them whole. A separator on its own never splits anything.
+    /// </summary>
+    internal static string PrimaryCredit(string requested, params string?[] structured)
+    {
+        var whole = (requested ?? "").Trim();
+        var candidates = structured.Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim()).ToList();
+
+        if (whole.Length == 0) return candidates.FirstOrDefault() ?? "";
+        if (candidates.Any(candidate => candidate.Equals(whole, StringComparison.OrdinalIgnoreCase))) return whole;
+
+        foreach (var candidate in candidates)
+            if (whole.Length > candidate.Length
+                && whole.StartsWith(candidate, StringComparison.OrdinalIgnoreCase)
+                && CreditSeparator.IsMatch(whole[candidate.Length..]))
+                return candidate;
+
+        return whole;
+    }
+
+    /// <summary>Walk up from <paramref name="startDir"/> removing empty folders, never past
+    /// <paramref name="stopAt"/>.</summary>
+    protected static void TryRemoveEmptyParents(string? startDir, string stopAt)
+    {
+        if (string.IsNullOrEmpty(startDir) || string.IsNullOrEmpty(stopAt)) return;
+        var stop = Path.GetFullPath(stopAt).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = Path.GetFullPath(startDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // Walk up while we're inside DownloadPath and the directory is empty.
+        while (!string.IsNullOrEmpty(current)
+            && current.Length > stop.Length
+            && current.StartsWith(stop, StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(current))
+        {
+            try
+            {
+                if (Directory.EnumerateFileSystemEntries(current).Any()) break;
+                Directory.Delete(current);
+            }
+            catch { break; }
+            current = Path.GetDirectoryName(current) ?? "";
         }
     }
     

@@ -1025,7 +1025,7 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Verify downloads</div>
-                <div class="set-info-d">Catches covers, karaoke versions, live takes and mislabelled compilation tracks, which all survive the existing length check. A track AcoustID has never heard of is always accepted, never rejected.</div>
+                <div class="set-info-d">Catches covers, karaoke versions, live takes and mislabelled compilation tracks, which all survive the existing length check. A track AcoustID has never heard of is always accepted, never rejected. YouTube downloads are identified too but never rejected, since there is no second candidate to try.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Soulseek.VerifyDownloads" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -1046,9 +1046,16 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Tag from MusicBrainz</div>
-                <div class="set-info-d">On a confident match, write the matched recording's title, artist, album and year over the peer's own tags instead of trusting them.</div>
+                <div class="set-info-d">On a confident match, write the matched recording's title, artist, album and year over the source's own tags instead of trusting them.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Soulseek.TagFromMusicBrainz" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row">
+              <div class="set-info">
+                <div class="set-info-t">Name files from the match</div>
+                <div class="set-info-d">On a confident match, also name the file from the matched recording: artist folder, title, album and track number, so the path and the tags agree. A canonical name is not always the one you file under, which is why this is off. Only files Octo downloads and confirms; nothing already in your library is renamed.</div>
+              </div>
+              <label class="switch"><input type="checkbox" name="Soulseek.NameFromMatch" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">

@@ -66,8 +66,10 @@ public class SoulseekSettings
     public int DownloadTimeoutSeconds { get; set; } = 180;
 
     /// <summary>
-    /// Fingerprint every finished Soulseek download with Chromaprint and ask AcoustID what
-    /// it actually is before accepting it. Off by default: it needs a free AcoustID key and
+    /// Fingerprint every finished download with Chromaprint and ask AcoustID what it actually
+    /// is before accepting it. A Soulseek file identified as a different recording is discarded
+    /// and the next peer tried; a YouTube file has no second candidate, so it is kept and, with
+    /// the Review playlist on, asked about. Off by default: it needs a free AcoustID key and
     /// the fpcalc binary, and without both it can only ever be a no-op.
     ///
     /// This also switches on the rejected-peer memory. A file discarded for being the wrong
@@ -87,11 +89,24 @@ public class SoulseekSettings
 
     /// <summary>
     /// On a confident AcoustID match, write that recording's title, artist, album and year,
-    /// which are MusicBrainz's, onto the file instead of trusting the peer's tags. Does
-    /// nothing unless VerifyDownloads is on and a key is set.
+    /// which are MusicBrainz's, onto the file instead of trusting the source's tags. Applies to
+    /// Soulseek and YouTube downloads alike. Does nothing unless VerifyDownloads is on and a key
+    /// is set.
     /// Environment variable: SLSKD_TAG_FROM_MUSICBRAINZ
     /// </summary>
     public bool TagFromMusicBrainz { get; set; } = false;
+
+    /// <summary>
+    /// On a confident AcoustID match, name the file from the matched recording as well as
+    /// tagging it: artist folder, title, album and track number all come from MusicBrainz, so
+    /// the path and the tags are one decision (#48). Implies TagFromMusicBrainz for that file,
+    /// because a path from MusicBrainz beside tags from the source is the split this removes.
+    /// Off by default: a canonical name is not always the one a user wants on disk (a legal
+    /// name, or a composer where the library files the performer). Only files Octo downloads
+    /// and confirms are affected; nothing already in the library is renamed.
+    /// Environment variable: NAME_FROM_MATCH
+    /// </summary>
+    public bool NameFromMatch { get; set; } = false;
 
     /// <summary>
     /// Minimum AcoustID fingerprint score, as a percentage, before a lookup result is

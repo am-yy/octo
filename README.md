@@ -336,7 +336,7 @@ turn it on, by rating it (`LIBRARY_ACTIONS_RATINGS`). `LIBRARY_ACTIONS_ENABLED` 
 default, and the feature stays inert even when on until at least one username is added to the
 allowlist in the dashboard: **an empty allowlist means nobody, never everybody.** The action
 names, which actions exist, and which star count maps to which action are all editable, and
-five stars is deliberately unmapped so the top of the scale is never destructive.
+five stars means Keep, which removes nothing, so the top of the scale is never destructive.
 
 `LIBRARY_ACTIONS_DRY_RUN` is on by default, so the first run of a newly enabled install is a
 rehearsal you can read before anything is real. Nothing is ever deleted outright: removed files
@@ -350,6 +350,21 @@ owner's own credentials, because Subsonic ratings are per user, so **Octo caches
 Subsonic auth triplet per user in memory** for as long as it runs. And because no client asks
 for confirmation before setting a star, a mis-tap is a request. The playlists carry no such
 risk, which is why they are the default.
+
+`LIBRARY_ACTIONS_REVIEW` gives each allowed user a Review playlist, where Octo asks about the
+downloads a person can settle by listening: AcoustID had never heard the recording, was not
+sure of it, or heard a different one in a YouTube download. A download is asked about in the
+playlist of the person who requested it when they are on the allowlist, and of every allowed
+user otherwise. Answer by adding the track to an action playlist, by Keep (a fifth action that
+removes nothing, on five stars by default), or by removing it from Review, which means "fine,
+stop asking". Nothing in Review is ever acted on by itself, and a settled track is not asked
+about again. `LIBRARY_ACTIONS_NOTICE_PREFIX` (`▸ ` by default) sets Octo's playlists apart
+from the action playlists, since in one Octo asks you something and in the other you tell Octo
+something, and `LIBRARY_ACTIONS_NOTICE_MAX` (default 100) is how many questions one playlist
+holds at once; the rest wait their turn. `LIBRARY_ACTIONS_RATINGS_SCOPE` says where a star
+counts as a command: `NoticeOnly` only on a track in Review, where the only reason to rate it
+is to answer, and `Global` on any track. `Auto`, the default, is `NoticeOnly` while Review is
+on and `Global` otherwise, which is how ratings behaved before Review existed.
 
 `SLSKD_VERIFY_DOWNLOADS` fingerprints each finished Soulseek download with Chromaprint and
 identifies it through AcoustID before it joins the library, using the free key in
@@ -368,6 +383,16 @@ downloads are identified too, but never rejected: YouTube has no second candidat
 disagreement is kept and, with the Review playlist on, asked about. Verification needs
 `fpcalc` in the runtime image (`libchromaprint-tools`); without it the feature logs once and
 accepts everything.
+
+`ACOUSTID_SUBMIT` sends answers back. When someone Keeps a track from Review that AcoustID had
+never heard or was not sure of, Octo submits its fingerprint with the MusicBrainz recording it
+belongs to, so the next lookup of that recording is a confident one. It needs your own
+AcoustID user key in `ACOUSTID_USER_KEY` (from acoustid.org/api-key once signed in) as well as
+the application key, and sends the fingerprint, its length, the recording id and the file
+format, never a file name, a path or a username. Nothing is sent in rehearsal mode, for a
+track AcoustID named as something else, for a fingerprint other than the standard 120 seconds
+(`SLSKD_FINGERPRINT_SECONDS`), or when no single MusicBrainz recording fits the track's title,
+artist and length.
 
 Each kind of dynamic station is configured on its own, so a listener can keep Your Mix
 without collecting an artist radio per favourite band. `LASTFM_ENABLE_YOUR_MIX` and

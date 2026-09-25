@@ -1,9 +1,23 @@
 namespace Octo.Models.Settings;
 
-public enum LibraryAction { Delete, WrongSong, WrongVersion, BetterQuality }
+/// <summary>
+/// Keep is appended, never inserted: the journal stores actions as numbers, so moving one would
+/// change what every entry already written means.
+/// </summary>
+public enum LibraryAction { Delete, WrongSong, WrongVersion, BetterQuality, Keep }
 
 /// <summary>How a user asks for an action.</summary>
 public enum LibraryActionTrigger { Playlists, Ratings }
+
+/// <summary>
+/// Where a star rating counts as a command. Auto means only on a track in one of Octo's notice
+/// playlists when Review or Duplicates is on, and anywhere otherwise, which is exactly how
+/// ratings behaved before this setting existed.
+/// </summary>
+public enum LibraryRatingScope { Auto, NoticeOnly, Global }
+
+/// <summary>The playlists Octo fills to ask a person something (#47, #53).</summary>
+public enum NoticeKind { Review, Duplicates }
 
 public sealed class LibraryActionDefinition
 {
@@ -122,6 +136,59 @@ public class LibraryActionSettings
     /// </summary>
     public bool KeepReplacedOriginals { get; set; } = true;
 
+    /// <summary>
+    /// Prefix on the playlists Octo fills, so "Octo is telling me something" sorts apart from the
+    /// action playlists, where the user tells Octo something (#47).
+    /// Environment variable: LIBRARY_ACTIONS_NOTICE_PREFIX
+    /// </summary>
+    public string NoticePrefix { get; set; } = "▸ ";
+
+    /// <summary>
+    /// A "Review" playlist per allowed user, filled with downloads a person can settle by
+    /// listening: AcoustID had never heard the recording, was not sure, or (for YouTube) thought it
+    /// was something else. Empty it by moving tracks into the action playlists, by Keep, or by
+    /// removing a track, which counts as an answer too.
+    /// Environment variable: LIBRARY_ACTIONS_REVIEW
+    /// </summary>
+    public bool ReviewEnabled { get; set; } = false;
+
+    /// <summary>The Review playlist's name, after the notice prefix.</summary>
+    public string ReviewPlaylistName { get; set; } = "Review";
+
+    /// <summary>
+    /// Most tracks a notice playlist holds at once. A newly enabled install with a large library
+    /// would otherwise get a wall, not a queue.
+    /// Environment variable: LIBRARY_ACTIONS_NOTICE_MAX
+    /// </summary>
+    public int NoticeMaxTracks { get; set; } = 100;
+
+    /// <summary>
+    /// Where a star rating counts as a command. NoticeOnly: only on a track in one of Octo's
+    /// notice playlists, where the only reason to rate it is to answer. Global: any track. Auto
+    /// (the default) is NoticeOnly while Review or Duplicates is on, Global otherwise.
+    /// Environment variable: LIBRARY_ACTIONS_RATINGS_SCOPE
+    /// </summary>
+    public LibraryRatingScope RatingsScope { get; set; } = LibraryRatingScope.Auto;
+
+    public int EffectiveNoticeMaxTracks => Math.Clamp(NoticeMaxTracks, 1, 500);
+
+    public bool NoticesEnabled => ReviewEnabled;
+
+    public LibraryRatingScope EffectiveRatingsScope => RatingsScope != LibraryRatingScope.Auto
+        ? RatingsScope
+        : NoticesEnabled ? LibraryRatingScope.NoticeOnly : LibraryRatingScope.Global;
+
+    public IEnumerable<NoticeKind> EnabledNoticeKinds()
+    {
+        if (ReviewEnabled) yield return NoticeKind.Review;
+    }
+
+    public string NoticeTitle(NoticeKind kind) => (NoticePrefix ?? "") + kind switch
+    {
+        NoticeKind.Review => string.IsNullOrWhiteSpace(ReviewPlaylistName) ? "Review" : ReviewPlaylistName.Trim(),
+        _ => kind.ToString(),
+    };
+
     public TimeSpan EffectivePollInterval =>
         TimeSpan.FromSeconds(Math.Clamp(PollIntervalSeconds, 15, 3600));
 
@@ -154,6 +221,7 @@ public class LibraryActionSettings
         [LibraryAction.WrongSong] = ("Wrong song", 2),
         [LibraryAction.WrongVersion] = ("Wrong version", 3),
         [LibraryAction.BetterQuality] = ("Better quality", 4),
+        [LibraryAction.Keep] = ("Keep", 5),
     };
 
     /// <summary>
@@ -189,7 +257,8 @@ public class LibraryActionSettings
             {
                 Action = action,
                 Name = name,
-                Enabled = configured?.Enabled ?? false,
+                // Keep removes nothing, so it comes on by itself with the playlists it answers.
+                Enabled = configured?.Enabled ?? (action == LibraryAction.Keep && NoticesEnabled),
                 Rating = rating,
             });
         }
@@ -198,8 +267,8 @@ public class LibraryActionSettings
 
     public string PlaylistTitle(LibraryActionDefinition definition) => EffectivePrefix + definition.Name;
 
-    /// <summary>The action a star count asks for, or null. 5 is deliberately unmapped by
-    /// default and means "keep", so the top of the scale is never destructive.</summary>
+    /// <summary>The action a star count asks for, or null. 5 is Keep by default, which removes
+    /// nothing, so the top of the scale is never destructive.</summary>
     public LibraryActionDefinition? ActionForRating(int rating) =>
         rating is < 1 or > 5
             ? null

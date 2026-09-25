@@ -1214,6 +1214,7 @@ const libraryActionLabels = {
   WrongSong: 'Wrong song: replace it, and blacklist the peer that sent it',
   WrongVersion: 'Wrong version: find the plain recording instead',
   BetterQuality: 'Better quality: upgrade only to a larger lossless copy',
+  Keep: 'Keep: the track is right, so stop asking. Removes nothing',
 };
 
 function normalizeLibraryAction(action = {}) {
@@ -1309,13 +1310,14 @@ libraryActionList?.addEventListener('change', event => {
 });
 document.getElementById('f-action-users')?.addEventListener('input', syncLibraryActionUsers);
 
-document.getElementById('library-actions-refresh')?.addEventListener('click', async () => {
-  const holder = document.getElementById('library-actions-history');
+// The action history and Octo's questions both sit behind the admin browse session and read the
+// same way: fetch, sign in once on a 401, then one row per entry.
+async function showSessionTable(holder, path, head, row) {
   if (!holder) return;
   try {
-    let response = await api('/api/admin/library-actions', { credentials: 'same-origin' });
+    let response = await api(path, { credentials: 'same-origin' });
     if (response.status === 401 && await browseAuthenticate(holder)) {
-      response = await api('/api/admin/library-actions', { credentials: 'same-origin' });
+      response = await api(path, { credentials: 'same-origin' });
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
@@ -1324,20 +1326,41 @@ document.getElementById('library-actions-refresh')?.addEventListener('click', as
     holder.innerHTML = `
       <div class="config-table">
         <div class="config-row config-row-head genre-change-row">
-          <span>Track</span><span>Action</span><span>Who</span><span>Result</span>
+          ${head.map(label => `<span>${esc(label)}</span>`).join('')}
         </div>
         ${body.entries.map(entry => `
-          <div class="config-row genre-change-row">
-            <span class="key">${esc(entry.artist)} - ${esc(entry.title)}</span>
-            <span class="value">${esc(entry.action)}${entry.dryRun ? ' (rehearsal)' : ''}</span>
-            <span class="value">${esc(entry.username)}</span>
-            <span class="value">${esc(entry.state)}${entry.detail ? `: ${esc(entry.detail)}` : ''}</span>
+          <div class="config-row genre-change-row">${row(entry)}
           </div>`).join('')}
       </div>`;
   } catch (error) {
     holder.innerHTML = `<div class="field-error" role="alert">${esc(error.message)}</div>`;
   }
-});
+}
+
+document.getElementById('library-actions-refresh')?.addEventListener('click', () =>
+  showSessionTable(document.getElementById('library-actions-history'), '/api/admin/library-actions',
+    ['Track', 'Action', 'Who', 'Result'], entry => `
+            <span class="key">${esc(entry.artist)} - ${esc(entry.title)}</span>
+            <span class="value">${esc(entry.action)}${entry.dryRun ? ' (rehearsal)' : ''}</span>
+            <span class="value">${esc(entry.username)}</span>
+            <span class="value">${esc(entry.state)}${entry.detail ? `: ${esc(entry.detail)}` : ''}</span>`));
+
+const noticeStates = {
+  Waiting: 'Waiting its turn',
+  Queued: 'Asked',
+  Kept: 'Kept',
+  Acted: 'Acted on',
+  Dismissed: 'Taken out of the playlist',
+  Expired: 'Expired',
+};
+
+document.getElementById('notices-refresh')?.addEventListener('click', () =>
+  showSessionTable(document.getElementById('notices-list'), '/api/admin/notices',
+    ['Track', 'Why', 'Who', 'Answer'], entry => `
+            <span class="key">${esc(entry.artist)} - ${esc(entry.title)}</span>
+            <span class="value">${esc(entry.reason)}</span>
+            <span class="value">${esc(entry.username)}</span>
+            <span class="value">${esc(noticeStates[entry.state] || entry.state)}${entry.submitted ? ', sent to AcoustID' : ''}</span>`));
 
 document.getElementById('lidarr-test-connection')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;

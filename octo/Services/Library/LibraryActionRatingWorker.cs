@@ -58,6 +58,9 @@ public sealed class LibraryActionRatingWorker : BackgroundService
         return _queue.Writer.TryWrite(request);
     }
 
+    /// <summary>Ratings waiting to be applied.</summary>
+    internal int Pending => _queue.Reader.Count;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
@@ -75,8 +78,10 @@ public sealed class LibraryActionRatingWorker : BackgroundService
 
                 // Only clear a rating the action actually consumed. Leaving it set on a failure
                 // means the user can see it did not take, rather than the rating vanishing and
-                // nothing having happened.
-                if (outcome.Consumed) await ClearRatingAsync(request, stoppingToken);
+                // nothing having happened. Keep never clears it: five stars is also what someone
+                // who loves a track gives it, and Keep changed nothing that needs undoing.
+                if (outcome.Consumed && request.Action != LibraryAction.Keep)
+                    await ClearRatingAsync(request, stoppingToken);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)

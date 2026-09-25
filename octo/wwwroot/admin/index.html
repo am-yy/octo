@@ -1110,6 +1110,20 @@
             </div>
             <div class="set-row">
               <div class="set-info">
+                <div class="set-info-t">Send confirmed fingerprints to AcoustID</div>
+                <div class="set-info-d">When you Keep a track from Review that AcoustID did not know or was not sure of, send its fingerprint with the MusicBrainz recording it belongs to, so the next person gets a confident answer. Only the fingerprint, its length, the recording id and the file format leave Octo; never a file name, a path or a username. Nothing is sent in rehearsal mode, for a track AcoustID named as something else, or when no single MusicBrainz recording fits.</div>
+              </div>
+              <label class="switch"><input type="checkbox" name="Soulseek.SubmitConfirmedFingerprints" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">AcoustID user key</div>
+                <div class="set-info-d">Your own key, from your profile at <a href="https://acoustid.org/api-key" target="_blank" rel="noopener">acoustid.org/api-key</a> once signed in. Submissions are credited to it. The application key above is not enough on its own.</div>
+              </div>
+              <input class="set-input" type="password" name="Soulseek.AcoustIdUserApiKey" autocomplete="new-password" />
+            </div>
+            <div class="set-row">
+              <div class="set-info">
                 <div class="set-info-t">Rejected peers</div>
                 <div class="set-info-d">Files a download proved were the wrong recording. Entries lapse on their own after 30 days; clear them if a track has stopped being fetchable and you think this list is why.</div>
               </div>
@@ -1162,9 +1176,42 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Star ratings as commands</div>
-                <div class="set-info-d"><strong>Worth leaving off.</strong> A star is a one-tap gesture with no confirmation in any client, and rating a track you dislike is an ordinary thing to do. Five stars is never mapped, so the top of the scale is always safe. Applies as soon as you save.</div>
+                <div class="set-info-d"><strong>Worth leaving off.</strong> A star is a one-tap gesture with no confirmation in any client, and rating a track you dislike is an ordinary thing to do. Five stars means Keep, which removes nothing, so the top of the scale is always safe. Applies as soon as you save.</div>
               </div>
               <label class="switch"><input type="checkbox" name="LibraryActions.RatingsEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Where a star counts</div><div class="set-info-d"><strong>Only in Octo's playlists</strong> makes a star a command only on a track sitting in Review, where the only reason to rate it is to answer; everywhere else a star is just a rating. Automatic does that while Review is on, and counts a star on any track otherwise, which is how ratings worked before Review existed.</div></div>
+              <select class="set-input" name="LibraryActions.RatingsScope">
+                <option value="Auto">Automatic</option>
+                <option value="NoticeOnly">Only in Octo's playlists</option>
+                <option value="Global">Any track</option>
+              </select>
+            </div>
+          </form>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head">
+            <h3 class="set-title">Review</h3>
+            <p class="set-desc">Octo asks about the downloads you can settle by listening: AcoustID had never heard the recording, was not sure of it, or heard a different one in a YouTube download. Each allowed user gets a playlist of their own. Needs library actions on.</p>
+          </div>
+          <form data-section="library-actions-review" class="set-card">
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Review playlist</div><div class="set-info-d">Answer by adding a track to an action playlist, by Keep (its playlist, or five stars), or by removing it from Review, which means "fine, stop asking". Nothing in Review is ever acted on by itself. Takes effect at the next check, no restart.</div></div>
+              <label class="switch"><input type="checkbox" name="LibraryActions.ReviewEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Playlist name</div></div>
+              <input class="set-input" name="LibraryActions.ReviewPlaylistName" maxlength="80" placeholder="Review" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Prefix for Octo's playlists</div><div class="set-info-d">Sets the playlists where Octo asks you something apart from the action playlists, where you tell Octo something. Leave empty for none.</div></div>
+              <input class="set-input" name="LibraryActions.NoticePrefix" maxlength="16" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">At most <span class="set-opt">tracks</span></div><div class="set-info-d">How many questions one playlist holds at once. The rest wait their turn, so a busy week arrives as a queue rather than a wall.</div></div>
+              <input class="set-input" name="LibraryActions.NoticeMaxTracks" type="number" min="1" max="500" data-number="true" />
             </div>
           </form>
         </div>
@@ -1172,7 +1219,7 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">The actions</h3>
-            <p class="set-desc">Rename them, switch them on individually, and choose which star count asks for each. Set a rating to 0 to leave that action playlist-only.</p>
+            <p class="set-desc">Rename them, switch them on individually, and choose which star count asks for each. Set a rating to 0 to leave that action playlist-only. Keep removes nothing: it answers Review with "this is right", and switches itself on with Review unless you set it.</p>
           </div>
           <form data-section="library-actions-list" class="set-card" id="library-actions-list-form">
             <div id="library-action-list" class="genre-mapping-list"></div>
@@ -1217,6 +1264,20 @@
               <button class="btn btn-ghost" type="button" id="library-actions-refresh">Show history</button>
             </div>
             <div id="library-actions-history"></div>
+          </div>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head">
+            <h3 class="set-title">Questions</h3>
+            <p class="set-desc">What Octo has asked, of whom, why, and how each was answered.</p>
+          </div>
+          <div class="set-card">
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Recent questions</div><div class="set-info-d">Signing in with your Navidrome admin account is required, the same as the history above.</div></div>
+              <button class="btn btn-ghost" type="button" id="notices-refresh">Show questions</button>
+            </div>
+            <div id="notices-list"></div>
           </div>
         </div>
       </section>

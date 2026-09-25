@@ -66,6 +66,7 @@ public class SubsonicController : ControllerBase
     private readonly SyncCatalogService? _syncCatalog;
     private readonly Octo.Services.Lyrics.LyricsService? _lyricsService;
     private readonly IOptionsMonitor<MetadataSettings>? _metadataSettings;
+    private readonly Octo.Services.Library.NoticeQueue? _noticeQueue;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -99,12 +100,14 @@ public class SubsonicController : ControllerBase
         Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
         SyncCatalogService? syncCatalog = null,
         Octo.Services.Lyrics.LyricsService? lyricsService = null,
-        IOptionsMonitor<MetadataSettings>? metadataSettings = null)
+        IOptionsMonitor<MetadataSettings>? metadataSettings = null,
+        Octo.Services.Library.NoticeQueue? noticeQueue = null)
     {
         _listenBrainz = listenBrainz;
         _syncCatalog = syncCatalog;
         _lyricsService = lyricsService;
         _metadataSettings = metadataSettings;
+        _noticeQueue = noticeQueue;
         subsonicSettingsOptions = subsonicSettings;
         _metadataService = metadataService;
         _localLibraryService = localLibraryService;
@@ -638,12 +641,20 @@ public class SubsonicController : ControllerBase
     /// already there without a second request. Best-effort: an unreadable body simply means
     /// nothing is known to exist, and creating a duplicate is refused by Navidrome anyway.
     /// </summary>
-    private static IReadOnlyCollection<string> PlaylistNames(byte[]? body, string format)
+    internal static IReadOnlyCollection<string> PlaylistNames(byte[]? body, string format)
     {
         if (body is not { Length: > 0 }) return [];
         try
         {
-            if (!format.Equals("json", StringComparison.OrdinalIgnoreCase)) return [];
+            // XML too: Navidrome does not refuse a second playlist with the same name, so a client
+            // that asks for XML used to get every action playlist created again on each boot.
+            if (!format.Equals("json", StringComparison.OrdinalIgnoreCase))
+                return XDocument.Parse(Encoding.UTF8.GetString(body)).Descendants()
+                    .Where(element => element.Name.LocalName == "playlist")
+                    .Select(element => element.Attribute("name")?.Value)
+                    .Where(name => !string.IsNullOrEmpty(name))
+                    .Select(name => name!)
+                    .ToList();
             var rows = JsonNode.Parse(body)?["subsonic-response"]?["playlists"]?["playlist"];
             if (rows is not JsonArray array) return [];
             return array.Select(row => row?["name"]?.GetValue<string>())
@@ -2208,7 +2219,8 @@ public class SubsonicController : ControllerBase
             && parameters.GetValueOrDefault("u") is { Length: > 0 } username
             && parameters.GetValueOrDefault("t") is { Length: > 0 } token
             && parameters.GetValueOrDefault("s") is { Length: > 0 } salt
-            && _libraryActionSettings.CurrentValue.ActionForRating(rating) is { } definition)
+            && _libraryActionSettings.CurrentValue.ActionForRating(rating) is { } definition
+            && RatingInScope(username, itemId))
         {
             // Navidrome answered ok to a call carrying this u/t/s, which IS the auth check.
             // Octo does not validate the password itself; it trusts it exactly as far as
@@ -2219,6 +2231,14 @@ public class SubsonicController : ControllerBase
 
         return File(body, contentType ?? $"application/{format}");
     }
+
+    /// <summary>
+    /// Whether a star is a command here. NoticeOnly: only on a track in one of Octo's notice
+    /// playlists, where the only reason to rate it is to answer (#47). Global: any track.
+    /// </summary>
+    private bool RatingInScope(string username, string itemId) =>
+        _libraryActionSettings.CurrentValue.EffectiveRatingsScope == LibraryRatingScope.Global
+        || (_noticeQueue?.IsQueued(username, itemId) ?? false);
 
     /// <summary>
     /// Gets similar songs for radio feature using Last.fm recommendations.

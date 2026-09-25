@@ -38,6 +38,7 @@ public sealed class LibraryActionExecutor
     private readonly IOptionsMonitor<SoulseekSettings> _soulseek;
     private readonly IOptionsMonitor<SubsonicSettings> _subsonicSettings;
     private readonly ILogger<LibraryActionExecutor> _logger;
+    private readonly NoticeQueue? _notices;
     private int _reconciled;
 
     public LibraryActionExecutor(NavidromeSongPathResolver resolver, LibraryActionQuarantine quarantine,
@@ -45,8 +46,10 @@ public sealed class LibraryActionExecutor
         RejectedPeerRegistry rejectedPeers, TrackAcquisitionQueue acquisitions,
         IOptionsMonitor<LibraryActionSettings> settings, IOptionsMonitor<SoulseekSettings> soulseek,
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
-        ILogger<LibraryActionExecutor> logger)
+        ILogger<LibraryActionExecutor> logger,
+        NoticeQueue? notices = null)
     {
+        _notices = notices;
         _resolver = resolver;
         _quarantine = quarantine;
         _journal = journal;
@@ -78,6 +81,27 @@ public sealed class LibraryActionExecutor
             .FirstOrDefault(entry => entry.Action == request.Action && entry.Enabled);
         if (definition is null)
             return new(LibraryActionState.Skipped, $"{request.Action} is not enabled.");
+
+        // Keep is an answer, not an operation. It touches no file, so there is nothing to rehearse
+        // and nothing to prove about which file it is.
+        if (request.Action == LibraryAction.Keep)
+        {
+            var kept = _notices?.MarkKept(request.Username, request.NavidromeId);
+            // Not something Octo asked about: nothing to answer and nothing to record. Five stars
+            // on any other track is just a rating, and the journal holds real actions.
+            if (kept is null) return new(LibraryActionState.Skipped, "Octo had not asked about this track.");
+
+            const string keptDetail = "Kept. Octo will not ask about this track again.";
+            _journal.Record(Entry(request, null, LibraryActionState.Applied, keptDetail, dryRun: false) with
+            {
+                Key = LibraryActionJournal.MakeKey(request.Action, request.NavidromeId, $"keep:{DateTime.UtcNow.Ticks}"),
+                Title = kept.Title,
+                Artist = kept.Artist,
+                Album = kept.Album ?? "",
+            });
+            _logger.LogInformation("{User} kept '{Artist} - {Title}'", request.Username, kept.Artist, kept.Title);
+            return new(LibraryActionState.Applied, keptDetail);
+        }
 
         var resolved = await _resolver.ResolveAsync(request.NavidromeId, ct);
         if (resolved is null)
@@ -143,6 +167,8 @@ public sealed class LibraryActionExecutor
         };
 
         _journal.Complete(key, outcome.State, outcome.Detail, moved.QuarantinePath);
+        // The file any open question was about has gone or changed, so the question is answered.
+        if (outcome.State == LibraryActionState.Applied) _notices?.MarkActed(request.NavidromeId);
         // Written now rather than on the next tick: a restart in between would leave this Pending,
         // and reconciling a finished replacement would put the original back beside it.
         _journal.Flush();
@@ -283,6 +309,7 @@ public sealed class LibraryActionExecutor
         LibraryAction.WrongSong => "replace (wrong song)",
         LibraryAction.WrongVersion => "replace (wrong version)",
         LibraryAction.BetterQuality => "upgrade",
+        LibraryAction.Keep => "keep",
         _ => "act on",
     };
 

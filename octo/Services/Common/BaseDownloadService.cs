@@ -551,6 +551,7 @@ public abstract class BaseDownloadService : IDownloadService
             {
                 await LocalLibraryService.RegisterDownloadedSongAsync(song, localPath);
                 await RecordHistoryAsync(song, localPath, silence, requestedBy);
+                AskForReview(song, localPath, requestedBy);
 
                 // Trigger a Subsonic library rescan (with debounce)
                 _ = Task.Run(async () =>
@@ -1139,6 +1140,32 @@ public abstract class BaseDownloadService : IDownloadService
                 Octo.Services.Lyrics.LyricsText.QueryTitle(song.Title, song.Artist),
                 song.Album, song.Duration));
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A download a person can settle by listening goes to their Review playlist (#47): the ones
+    /// who asked for it, or, when nobody on the allowlist did, whoever keeps the library.
+    /// </summary>
+    private void AskForReview(Song song, string localPath, IReadOnlyList<string>? requestedBy)
+    {
+        try
+        {
+            if (song.Verification is not { NeedsReview: true } verdict) return;
+            if (_serviceProvider.GetService<IOptionsMonitor<LibraryActionSettings>>()?.CurrentValue
+                is not { Enabled: true, ReviewEnabled: true } actions) return;
+            if (_serviceProvider.GetService<Octo.Services.Library.NoticeQueue>() is not { } notices) return;
+
+            var owners = (requestedBy ?? []).Where(actions.IsAllowed).ToList();
+            if (owners.Count == 0) owners = (actions.AllowedUsers ?? []).Where(user => !string.IsNullOrWhiteSpace(user)).ToList();
+            foreach (var owner in owners)
+                if (notices.AddReview(owner, localPath, song, verdict))
+                    Logger.LogInformation("Asking {User} about '{Artist} - {Title}': {Reason}",
+                        owner, song.Artist, song.Title, verdict.Reason);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning("Could not queue '{Artist} - {Title}' for review: {M}", song.Artist, song.Title, ex.Message);
+        }
     }
 
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)

@@ -57,7 +57,7 @@ public class LibraryActionSettingsTests
 
         var actions = settings.EffectiveActions();
 
-        Assert.Equal(4, actions.Count);
+        Assert.Equal(5, actions.Count);
         var delete = actions.Single(action => action.Action == LibraryAction.Delete);
         Assert.Equal("Bin it", delete.Name);
         Assert.True(delete.Enabled);
@@ -82,7 +82,7 @@ public class LibraryActionSettingsTests
             ],
         };
 
-        Assert.Equal(3, settings.EffectiveActions().Count);
+        Assert.Equal(4, settings.EffectiveActions().Count);
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public class LibraryActionSettingsTests
     }
 
     /// <summary>
-    /// Five stars is deliberately unmapped by default, so the top of the scale is never
+    /// Five stars is Keep by default, which removes nothing, so the top of the scale is never
     /// destructive and an enthusiastic rating cannot remove a file.
     /// </summary>
     [Fact]
@@ -134,9 +134,68 @@ public class LibraryActionSettingsTests
                 .ToList(),
         };
 
-        Assert.Null(settings.ActionForRating(5));
+        Assert.Equal(LibraryAction.Keep, settings.ActionForRating(5)?.Action);
         Assert.Equal(LibraryAction.Delete, settings.ActionForRating(1)?.Action);
     }
+
+    /// <summary>
+    /// Keep only answers Octo's questions, so it comes on by itself with Review. A choice the
+    /// operator made either way still wins.
+    /// </summary>
+    [Fact]
+    public void EffectiveActions_Keep_ComesOnWithReviewUnlessConfigured()
+    {
+        static bool KeepEnabled(LibraryActionSettings settings) =>
+            settings.EffectiveActions().Single(action => action.Action == LibraryAction.Keep).Enabled;
+
+        Assert.False(KeepEnabled(new LibraryActionSettings()));
+        Assert.True(KeepEnabled(new LibraryActionSettings { ReviewEnabled = true }));
+        Assert.False(KeepEnabled(new LibraryActionSettings
+        {
+            ReviewEnabled = true,
+            Actions = [new() { Action = LibraryAction.Keep, Enabled = false }],
+        }));
+        Assert.True(KeepEnabled(new LibraryActionSettings
+        {
+            Actions = [new() { Action = LibraryAction.Keep, Enabled = true }],
+        }));
+    }
+
+    /// <summary>
+    /// Auto keeps the behaviour ratings had before the setting existed until Review is on, and
+    /// then a star only counts on a track Octo asked about.
+    /// </summary>
+    [Fact]
+    public void EffectiveRatingsScope_Auto_FollowsNotices()
+    {
+        Assert.Equal(LibraryRatingScope.Global, new LibraryActionSettings().EffectiveRatingsScope);
+        Assert.Equal(LibraryRatingScope.NoticeOnly,
+            new LibraryActionSettings { ReviewEnabled = true }.EffectiveRatingsScope);
+    }
+
+    [Theory]
+    [InlineData(LibraryRatingScope.Global, true, LibraryRatingScope.Global)]
+    [InlineData(LibraryRatingScope.NoticeOnly, false, LibraryRatingScope.NoticeOnly)]
+    public void EffectiveRatingsScope_Explicit_Wins(LibraryRatingScope configured, bool review, LibraryRatingScope expected)
+        => Assert.Equal(expected,
+            new LibraryActionSettings { RatingsScope = configured, ReviewEnabled = review }.EffectiveRatingsScope);
+
+    [Fact]
+    public void NoticeTitle_UsesTheNoticePrefixAndFallsBackOnABlankName()
+    {
+        Assert.Equal("▸ Review", new LibraryActionSettings().NoticeTitle(NoticeKind.Review));
+        Assert.Equal("? To check", new LibraryActionSettings { NoticePrefix = "? ", ReviewPlaylistName = " To check " }
+            .NoticeTitle(NoticeKind.Review));
+        Assert.Equal("Review", new LibraryActionSettings { NoticePrefix = "", ReviewPlaylistName = "  " }
+            .NoticeTitle(NoticeKind.Review));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(100, 100)]
+    [InlineData(100000, 500)]
+    public void EffectiveNoticeMaxTracks_IsClamped(int configured, int expected)
+        => Assert.Equal(expected, new LibraryActionSettings { NoticeMaxTracks = configured }.EffectiveNoticeMaxTracks);
 
     [Theory]
     [InlineData(0)]

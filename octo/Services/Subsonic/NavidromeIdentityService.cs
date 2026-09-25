@@ -265,6 +265,20 @@ public class NavidromeIdentityService
     public Task<string?> EnsureAdminJwtAsync(CancellationToken ct = default) => EnsureJwtAsync(ct);
 
     /// <summary>
+    /// Forget an admin JWT Navidrome refused, so the next EnsureAdminJwtAsync logs in again.
+    ///
+    /// Nothing else ever cleared it apart from folder detection, which only runs at boot, on a
+    /// dashboard load or on a captured login, while Navidrome's SessionTimeout defaults to 48
+    /// hours. After two days every native call answered 401, read as "nothing there", and
+    /// library actions stalled without a word. Clears only the token the caller used, so a
+    /// concurrent caller that already logged in again keeps its fresh one.
+    /// </summary>
+    public void InvalidateAdminJwt(string staleToken)
+    {
+        lock (_lock) { if (_jwt == staleToken) _jwt = null; }
+    }
+
+    /// <summary>
     /// True when either credential route is currently usable. Feature gates read this at
     /// startup so a missing credential is one clear log line, not one silent failure per
     /// action.

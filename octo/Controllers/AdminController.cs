@@ -63,6 +63,7 @@ public class AdminController : ControllerBase
     private readonly ILogger<AdminController> _logger;
     private readonly LastFmRadioStateStore? _radioState;
     private readonly LastFmRadioRefreshQueue? _radioRefresh;
+    private readonly Octo.Services.Library.NoticeQueue? _notices;
 
     public AdminController(
         SettingsFileWriter settings,
@@ -99,8 +100,10 @@ public class AdminController : ControllerBase
         LastFmRadioStateStore? radioState = null,
         LastFmRadioRefreshQueue? radioRefresh = null,
         IOptionsMonitor<ListenBrainzSettings>? listenBrainzOpts = null,
-        Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null)
+        Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
+        Octo.Services.Library.NoticeQueue? notices = null)
     {
+        _notices = notices;
         _listenBrainzOpts = listenBrainzOpts;
         _listenBrainz = listenBrainz;
         _deezer = deezer;
@@ -505,6 +508,8 @@ public class AdminController : ControllerBase
                 ["FingerprintSeconds"] = soulseek.FingerprintSeconds,
                 ["FingerprintTimeoutSeconds"] = soulseek.FingerprintTimeoutSeconds,
                 ["AcoustIdTimeoutSeconds"] = soulseek.AcoustIdTimeoutSeconds,
+                ["SubmitConfirmedFingerprints"] = soulseek.SubmitConfirmedFingerprints,
+                ["AcoustIdUserApiKey"] = soulseek.AcoustIdUserApiKey ?? "",
             },
             ["Lidarr"] = new Dictionary<string, object>
             {
@@ -557,6 +562,11 @@ public class AdminController : ControllerBase
                 ["PollIntervalSeconds"] = actions.PollIntervalSeconds,
                 ["MaxActionsPerCycle"] = actions.MaxActionsPerCycle,
                 ["KeepReplacedOriginals"] = actions.KeepReplacedOriginals,
+                ["NoticePrefix"] = actions.NoticePrefix ?? "",
+                ["ReviewEnabled"] = actions.ReviewEnabled,
+                ["ReviewPlaylistName"] = actions.ReviewPlaylistName ?? "",
+                ["NoticeMaxTracks"] = actions.NoticeMaxTracks,
+                ["RatingsScope"] = actions.RatingsScope.ToString(),
                 ["AllowedUsers"] = actions.AllowedUsers ?? [],
                 // Effective rather than raw, because the editor needs every action present
                 // even when the config names only some of them. Projected so the enum lands as
@@ -758,7 +768,7 @@ public class AdminController : ControllerBase
 
         if (actions["Actions"] is JsonArray definitions)
         {
-            if (definitions.Count > 4) return "There are only four library actions";
+            if (definitions.Count > 5) return "There are only five library actions";
             var ratings = new HashSet<int>();
             foreach (var node in definitions)
             {
@@ -832,6 +842,34 @@ public class AdminController : ControllerBase
                 entry.QuarantinePath,
                 resolution = entry.Resolution?.ToString(),
                 entry.AtUtc,
+            }),
+        });
+    }
+
+    /// <summary>
+    /// What Octo has asked people about (#47, #53) and how they answered, newest first. Gated
+    /// like the action history: it names files and people.
+    /// </summary>
+    [HttpGet("notices")]
+    public IActionResult GetNotices([FromHeader(Name = "X-Octo-Browse-Token")] string? token)
+    {
+        if (!HasBrowseSession(token))
+            return Unauthorized(new { error = "Sign in with your Navidrome admin account first." });
+
+        return Ok(new
+        {
+            entries = (_notices?.Recent(200) ?? []).Select(entry => new
+            {
+                kind = entry.Kind.ToString(),
+                entry.Username,
+                entry.Artist,
+                entry.Title,
+                entry.Album,
+                state = entry.State.ToString(),
+                entry.Reason,
+                entry.Submitted,
+                entry.CreatedUtc,
+                entry.ResolvedUtc,
             }),
         });
     }
@@ -1137,6 +1175,8 @@ public class AdminController : ControllerBase
                 ["FingerprintSeconds"] = soulseek.FingerprintSeconds,
                 ["FingerprintTimeoutSeconds"] = soulseek.FingerprintTimeoutSeconds,
                 ["AcoustIdTimeoutSeconds"] = soulseek.AcoustIdTimeoutSeconds,
+                ["SubmitConfirmedFingerprints"] = soulseek.SubmitConfirmedFingerprints,
+                ["AcoustIdUserApiKey"] = soulseek.AcoustIdUserApiKey ?? "",
             },
             ["Lidarr"] = new JsonObject
             {
@@ -1188,6 +1228,11 @@ public class AdminController : ControllerBase
                 ["PollIntervalSeconds"] = actions.PollIntervalSeconds,
                 ["MaxActionsPerCycle"] = actions.MaxActionsPerCycle,
                 ["KeepReplacedOriginals"] = actions.KeepReplacedOriginals,
+                ["NoticePrefix"] = actions.NoticePrefix ?? "",
+                ["ReviewEnabled"] = actions.ReviewEnabled,
+                ["ReviewPlaylistName"] = actions.ReviewPlaylistName ?? "",
+                ["NoticeMaxTracks"] = actions.NoticeMaxTracks,
+                ["RatingsScope"] = actions.RatingsScope.ToString(),
                 ["AllowedUsers"] = JsonSerializer.SerializeToNode(actions.AllowedUsers ?? [])!,
                 // Effective rather than raw, because the editor needs every action present
                 // even when the config names only some of them. Projected so the enum lands as
@@ -1344,6 +1389,10 @@ public class AdminController : ControllerBase
             "LibraryActions:QuarantineRetentionDays", "LibraryActions:PollIntervalSeconds",
             "LibraryActions:MaxActionsPerCycle", "LibraryActions:KeepReplacedOriginals",
             "LibraryActions:Actions", "LibraryActions:AllowedUsers",
+            "LibraryActions:NoticePrefix", "LibraryActions:ReviewEnabled",
+            "LibraryActions:ReviewPlaylistName", "LibraryActions:NoticeMaxTracks",
+            "LibraryActions:RatingsScope",
+            "Soulseek:SubmitConfirmedFingerprints", "Soulseek:AcoustIdUserApiKey",
             "Genre:Enabled", "Genre:MaxGenres", "Genre:OnEmpty", "Genre:Fallback",
             "Genre:UnknownLabel", "Genre:Mappings", "Genre:Blocklist",
             "Soulseek:VerifyDownloads", "Soulseek:AcoustIdApiKey",

@@ -123,4 +123,74 @@ internal static class TrackMatchComparer
         normalized.StartsWith("the", StringComparison.Ordinal) && normalized.Length > 3
             ? normalized[3..]
             : normalized;
+
+    /// <summary>
+    /// Version words that make a different recording. Unlike TitleMatches, "radio edit" is NOT
+    /// neutral here: someone who keeps the album cut and the radio edit keeps both on purpose.
+    /// </summary>
+    internal static readonly string[] VersionMarkers =
+    [
+        "remix", "live", "acoustic", "karaoke", "instrumental", "radio edit", "extended", "edit",
+        "demo", "session", "dub", "reprise", "cover", "unplugged", "acapella", "a cappella",
+        "slowed", "sped up", "nightcore", "mix", "version",
+    ];
+
+    private static readonly Regex FeatureSegment = new(
+        @"[\(\[]\s*(feat\.?|ft\.?|featuring|with)\s[^\)\]]*[\)\]]|\s(feat\.?|ft\.?|featuring)\s.*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>A remaster is the same recording, so its annotation is neutral.</summary>
+    private static readonly Regex Remaster = new(
+        @"(\b\d{4}\s+)?\bremaster(ed)?\b(\s+\d{4})?(\s+version)?", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Same recording AND same version, for telling duplicates apart (#53) and for choosing the
+    /// one MusicBrainz recording a kept fingerprint belongs to (#47). Stricter than TitleMatches in
+    /// three ways, each of which cost someone a real deletion: the letters must be equal, not a
+    /// prefix; version markers must agree both ways, and a marker never matches its absence;
+    /// numbers compare as sets, so "Vol. 53" matches "Vol. 53/66" but "Shotta Flow" never
+    /// matches "Shotta Flow 4".
+    /// </summary>
+    internal static bool SameVersion(string? a, string? b)
+    {
+        var left = Remaster.Replace(FeatureSegment.Replace(a ?? "", ""), " ");
+        var right = Remaster.Replace(FeatureSegment.Replace(b ?? "", ""), " ");
+
+        if (!Markers(left).SetEquals(Markers(right))) return false;
+
+        var leftNumbers = Numbers(left);
+        var rightNumbers = Numbers(right);
+        if (leftNumbers.Count == 0 != (rightNumbers.Count == 0)) return false;
+        if (leftNumbers.Count > 0 && !leftNumbers.IsSubsetOf(rightNumbers) && !rightNumbers.IsSubsetOf(leftNumbers))
+            return false;
+
+        var leftLetters = new string(Normalize(StripMarkers(left)).Where(char.IsLetter).ToArray());
+        var rightLetters = new string(Normalize(StripMarkers(right)).Where(char.IsLetter).ToArray());
+        return leftLetters.Length > 0 && leftLetters == rightLetters;
+    }
+
+    private static HashSet<string> Markers(string title)
+    {
+        var lower = title.ToLowerInvariant();
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var marker in VersionMarkers)
+            if (Regex.IsMatch(lower, $@"\b{Regex.Escape(marker)}\b")) found.Add(marker);
+        // "radio edit" contains "edit"; keep the specific one so both sides read alike.
+        if (found.Contains("radio edit")) found.Remove("edit");
+        return found;
+    }
+
+    private static string StripMarkers(string title)
+    {
+        var result = title;
+        foreach (var marker in VersionMarkers.OrderByDescending(marker => marker.Length))
+            result = Regex.Replace(result, $@"\b{Regex.Escape(marker)}\b", " ", RegexOptions.IgnoreCase);
+        return result;
+    }
+
+    private static HashSet<int> Numbers(string title) =>
+        Regex.Matches(title, @"\d+")
+            .Select(match => int.TryParse(match.Value, out var number) ? number : -1)
+            .Where(number => number >= 0)
+            .ToHashSet();
 }

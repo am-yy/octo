@@ -194,6 +194,22 @@ builder.Services.AddSingleton(sp => new Octo.Services.Library.LibraryActionJourn
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "library-actions.json"),
     sp.GetRequiredService<ILogger<Octo.Services.Library.LibraryActionJournal>>()));
 
+// The playlists Octo fills to ask a person something (#47): what was asked and answered lives
+// beside the journal, and the admin-side playlist calls are shared with the action sweep so both
+// get the same token refresh.
+builder.Services.AddSingleton(sp => new Octo.Services.Library.NoticeQueue(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "notice-queue.json"),
+    sp.GetRequiredService<ILogger<Octo.Services.Library.NoticeQueue>>()));
+builder.Services.AddSingleton<Octo.Services.Library.NavidromePlaylistApi>();
+builder.Services.AddHostedService<Octo.Services.Library.NoticePlaylistWorker>();
+builder.Services.AddHttpClient(Octo.Services.Fingerprint.MusicBrainzClient.ClientName, c =>
+{
+    c.BaseAddress = new Uri("https://musicbrainz.org/ws/2/");
+    c.Timeout = TimeSpan.FromSeconds(10);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd(Octo.Services.Common.OctoUserAgent.Value);
+});
+builder.Services.AddSingleton<Octo.Services.Fingerprint.MusicBrainzClient>();
+
 builder.Services.AddSingleton<Octo.Services.Fingerprint.AudioFingerprinter>();
 
 // AcoustID allows 3 requests/second and, like Deezer, signals refusal with an error envelope

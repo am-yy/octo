@@ -100,20 +100,84 @@ public sealed class NavidromeSongPathResolver
         try
         {
             var url = $"{baseUrl.TrimEnd('/')}/api/song/{Uri.EscapeDataString(id)}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
-
-            using var response = await _http.CreateClient().SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return null;
-
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
-            return FromJson(doc.RootElement, id, PathSource.NativeApi, libraryPathProperty: "libraryPath");
+            var response = await GetNativeAsync(url, jwt, ct);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                // An expired admin token: log in again once, rather than treating every song as
+                // unresolvable until someone happens to open the dashboard.
+                response.Dispose();
+                _identity.InvalidateAdminJwt(jwt);
+                var fresh = await _identity.EnsureAdminJwtAsync(ct);
+                if (string.IsNullOrEmpty(fresh) || fresh == jwt) return null;
+                response = await GetNativeAsync(url, fresh, ct);
+            }
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode) return null;
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+                return FromJson(doc.RootElement, id, PathSource.NativeApi, libraryPathProperty: "libraryPath");
+            }
         }
         catch (Exception ex)
         {
             _logger.LogDebug("native song lookup failed for {Id}: {M}", id, ex.Message);
             return null;
         }
+    }
+
+    private async Task<HttpResponseMessage> GetNativeAsync(string url, string jwt, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
+        return await _http.CreateClient().SendAsync(request, ct);
+    }
+
+    /// <summary>
+    /// The Navidrome id of a file Octo just placed: search3 for its artist and title, keep the
+    /// hits of exactly this file's size, and take the one whose VERIFIED path is this file.
+    /// Null until Navidrome has scanned it. The size filter is what keeps a common title from
+    /// costing a native lookup per hit.
+    /// </summary>
+    public async Task<string?> FindIdByPathAsync(string artist, string title, string absolutePath,
+        CancellationToken ct = default)
+    {
+        var baseUrl = _subsonic.CurrentValue.Url;
+        if (string.IsNullOrWhiteSpace(baseUrl) || !File.Exists(absolutePath)) return null;
+        if (_identity.GetScanAuth() is not { } auth) return null;
+
+        var size = new FileInfo(absolutePath).Length;
+        var target = Path.GetFullPath(absolutePath);
+        try
+        {
+            var url = $"{baseUrl.TrimEnd('/')}/rest/search3?f=json&c=octo&v=1.16.1"
+                + $"&query={Uri.EscapeDataString($"{artist} {title}".Trim())}&songCount=20&albumCount=0&artistCount=0"
+                + $"&u={Uri.EscapeDataString(auth.user)}&t={auth.token}&s={auth.salt}";
+            using var response = await _http.CreateClient().GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+            if (!doc.RootElement.TryGetProperty("subsonic-response", out var envelope)
+                || !envelope.TryGetProperty("searchResult3", out var result)
+                || !result.TryGetProperty("song", out var songs) || songs.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var candidates = songs.EnumerateArray()
+                .Where(song => !song.TryGetProperty("size", out var s) || s.ValueKind != JsonValueKind.Number || s.GetInt64() == size)
+                .Select(song => song.TryGetProperty("id", out var i) ? i.GetString() : null)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .Select(id => id!)
+                .ToList();
+
+            foreach (var id in candidates)
+                if (await ResolveAsync(id, ct) is { } resolved
+                    && string.Equals(Path.GetFullPath(resolved.AbsolutePath), target, StringComparison.Ordinal))
+                    return id;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug("could not find the Navidrome id of {Path}: {M}", absolutePath, ex.Message);
+        }
+        return null;
     }
 
     /// <summary>

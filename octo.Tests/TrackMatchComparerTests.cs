@@ -99,4 +99,40 @@ public class TrackMatchComparerTests
     public void ArtistMatches_RequestNamingOnlySomeOfSeveralCredits_IsNotEveryCredit()
         => Assert.False(TrackMatchComparer.ArtistMatches(
             "Bizarrap, Duki", "Bizarrap & Rauw Alejandro", ["Bizarrap", "Rauw Alejandro"]));
+
+    /// <summary>
+    /// Same recording AND same version: what decides that two files are duplicates (#53), and
+    /// which MusicBrainz recording a kept fingerprint belongs to (#47). A featured artist and a
+    /// remaster note are the same take; a version word, a part number or a volume that is not
+    /// shared is a different one.
+    /// </summary>
+    [Theory]
+    [InlineData("Song", "Song")]
+    [InlineData("Song feat. Someone", "Song")]
+    [InlineData("Song (feat. Someone)", "Song")]
+    [InlineData("Mixtape Vol. 53", "Mixtape Vol. 53/66")]
+    [InlineData("Song (Live)", "Song [Live]")]
+    [InlineData("Song - Remastered 2011", "Song")]
+    [InlineData("Song (2011 Remaster)", "Song")]
+    [InlineData("Song (Remastered Version)", "Song")]
+    public void SameVersion_TheSameTake_IsTheSame(string a, string b)
+    {
+        Assert.True(TrackMatchComparer.SameVersion(a, b));
+        Assert.True(TrackMatchComparer.SameVersion(b, a));
+    }
+
+    [Theory]
+    [InlineData("Song", "Song (Live)")]
+    [InlineData("Song (Remix)", "Song (Live)")]
+    [InlineData("Shotta Flow", "Shotta Flow 4")]
+    [InlineData("Crazy Story", "Crazy Story Pt. 3")]
+    [InlineData("Song", "Song (Radio Edit)")]
+    [InlineData("Song (Radio Edit)", "Song (Edit)")]
+    [InlineData("Song", "Another Song")]
+    [InlineData("", "")]
+    public void SameVersion_ADifferentTake_IsNot(string a, string b)
+    {
+        Assert.False(TrackMatchComparer.SameVersion(a, b));
+        Assert.False(TrackMatchComparer.SameVersion(b, a));
+    }
 }

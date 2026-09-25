@@ -44,14 +44,18 @@ public sealed class LibraryActionPlaylistProvisioner
         IDictionary<string, string> authParameters)
     {
         var settings = _settings.CurrentValue;
-        if (!settings.Enabled || !settings.PlaylistsEnabled) return;
+        if (!settings.Enabled || !(settings.PlaylistsEnabled || settings.NoticesEnabled)) return;
         if (!settings.IsAllowed(username)) return;
         if (!_done.TryAdd(username, 0)) return;
 
-        var wanted = settings.EffectiveActions()
-            .Where(action => action.Enabled)
-            .Select(settings.PlaylistTitle)
+        // The notice playlists Octo fills are the user's own too, for the same reason: they are
+        // private, and the admin identity fills them.
+        var wanted = (settings.PlaylistsEnabled
+                ? settings.EffectiveActions().Where(action => action.Enabled).Select(settings.PlaylistTitle)
+                : [])
+            .Concat(settings.EnabledNoticeKinds().Select(settings.NoticeTitle))
             .Where(title => !existingNames.Contains(title, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         if (wanted.Count == 0) return;
 

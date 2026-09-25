@@ -150,6 +150,24 @@ public class SoulseekSettings
     /// </summary>
     public int AcoustIdTimeoutSeconds { get; set; } = 10;
 
+    /// <summary>
+    /// Send AcoustID the fingerprints a person confirmed with Keep, so the next person who
+    /// downloads that recording gets Confirmed instead of Inconclusive (#47). Only a fingerprint
+    /// whose MusicBrainz recording is unambiguous, only after a human kept it, and never one
+    /// AcoustID confidently called something else. Needs AcoustIdUserApiKey. Off by default: it
+    /// writes to a public database.
+    /// Environment variable: ACOUSTID_SUBMIT
+    /// </summary>
+    public bool SubmitConfirmedFingerprints { get; set; } = false;
+
+    /// <summary>
+    /// Your personal AcoustID key, shown at acoustid.org after signing in. Separate from the
+    /// application key, because AcoustID credits a submission to a person, not an app. Named
+    /// ...ApiKey so the Config-sources tab masks it.
+    /// Environment variable: ACOUSTID_USER_KEY
+    /// </summary>
+    public string AcoustIdUserApiKey { get; set; } = string.Empty;
+
     /// <summary>0 means never forget, so it is not clamped upward.</summary>
     public int EffectiveRejectedPeerTtlDays =>
         RejectedPeerTtlDays <= 0 ? 0 : Math.Clamp(RejectedPeerTtlDays, 1, 3650);

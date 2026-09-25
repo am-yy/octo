@@ -64,6 +64,9 @@ public sealed record AcoustIdResult(double Score, IReadOnlyList<AcoustIdRecordin
 
 public sealed record AcoustIdLookup(bool IsOk, string? Error, IReadOnlyList<AcoustIdResult> Results);
 
+/// <summary>One confirmed fingerprint to send back, with the recording a person vouched for.</summary>
+public sealed record AcoustIdSubmission(string Fingerprint, int DurationSeconds, string RecordingId, string? FileFormat);
+
 public sealed class AcoustIdClient
 {
     /// <summary>
@@ -143,6 +146,59 @@ public sealed class AcoustIdClient
             _logger.LogWarning("acoustid lookup failed: {M}", ex.Message);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Send confirmed fingerprints back to AcoustID (#47). Each carries a MusicBrainz recording a
+    /// person vouched for by keeping the track; nothing is ever sent on Octo's own judgement.
+    /// Posted through the same named client as lookups, so one 3/s budget covers both. True
+    /// when AcoustID accepted the batch.
+    /// </summary>
+    public async Task<bool> SubmitAsync(string clientKey, string userKey, IReadOnlyList<AcoustIdSubmission> items,
+        int timeoutSeconds)
+    {
+        if (items.Count == 0) return true;
+        try
+        {
+            var client = _httpClientFactory.CreateClient(AcoustIdRateLimiter.ClientName);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            using var response = await client.PostAsync("v2/submit",
+                new FormUrlEncodedContent(BuildSubmitForm(clientKey, userKey, items)), cts.Token);
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cts.Token));
+            var status = doc.RootElement.TryGetProperty("status", out var s) ? s.GetString() : null;
+            if (string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)) return true;
+
+            // "invalid user API key" arrives as a 200 with an error envelope, like lookup refusals.
+            var message = doc.RootElement.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object
+                && err.TryGetProperty("message", out var m) ? m.GetString() : status;
+            _logger.LogWarning("acoustid refused the submission: {Error}", message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("acoustid submission failed: {M}", ex.Message);
+            return false;
+        }
+    }
+
+    internal static IReadOnlyList<KeyValuePair<string, string>> BuildSubmitForm(string clientKey, string userKey,
+        IReadOnlyList<AcoustIdSubmission> items)
+    {
+        var form = new List<KeyValuePair<string, string>>
+        {
+            new("client", clientKey),
+            new("user", userKey),
+            new("format", "json"),
+            new("clientversion", $"octo-{Octo.Services.Common.OctoUserAgent.Version}"),
+        };
+        for (var i = 0; i < items.Count; i++)
+        {
+            form.Add(new($"duration.{i}", items[i].DurationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            form.Add(new($"fingerprint.{i}", items[i].Fingerprint));
+            form.Add(new($"mbid.{i}", items[i].RecordingId));
+            if (!string.IsNullOrEmpty(items[i].FileFormat)) form.Add(new($"fileformat.{i}", items[i].FileFormat!));
+        }
+        return form;
     }
 
     /// <summary>

@@ -19,27 +19,22 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
     private readonly LibraryActionQuarantine _quarantine;
     private readonly NavidromeSongPathResolver _resolver;
     private readonly NavidromeIdentityService _identity;
-    private readonly IHttpClientFactory _http;
+    private readonly NavidromePlaylistApi _api;
     private readonly IOptionsMonitor<LibraryActionSettings> _settings;
-    private readonly IOptionsMonitor<SubsonicSettings> _subsonic;
-    private readonly IServiceScopeFactory _scopes;
     private readonly ILogger<LibraryActionPlaylistWorker> _logger;
 
     public LibraryActionPlaylistWorker(LibraryActionExecutor executor, LibraryActionJournal journal,
         LibraryActionQuarantine quarantine, NavidromeSongPathResolver resolver,
-        NavidromeIdentityService identity, IHttpClientFactory http,
-        IOptionsMonitor<LibraryActionSettings> settings, IOptionsMonitor<SubsonicSettings> subsonic,
-        IServiceScopeFactory scopes, ILogger<LibraryActionPlaylistWorker> logger)
+        NavidromeIdentityService identity, NavidromePlaylistApi api,
+        IOptionsMonitor<LibraryActionSettings> settings, ILogger<LibraryActionPlaylistWorker> logger)
     {
         _executor = executor;
         _journal = journal;
         _quarantine = quarantine;
         _resolver = resolver;
         _identity = identity;
-        _http = http;
+        _api = api;
         _settings = settings;
-        _subsonic = subsonic;
-        _scopes = scopes;
         _logger = logger;
     }
 
@@ -85,17 +80,12 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
         var settings = _settings.CurrentValue;
         if (!settings.Enabled || !settings.PlaylistsEnabled) return;
 
-        var jwt = await _identity.EnsureAdminJwtAsync(ct);
-        if (string.IsNullOrEmpty(jwt)) return;
-
-        var wanted = settings.EffectiveActions()
-            .Where(action => action.Enabled)
-            .ToDictionary(settings.PlaylistTitle, action => action, StringComparer.OrdinalIgnoreCase);
+        var wanted = WantedPlaylists(settings);
         if (wanted.Count == 0) return;
 
         var budget = settings.EffectiveMaxActionsPerCycle;
 
-        foreach (var playlist in await ListPlaylistsAsync(jwt, ct))
+        foreach (var playlist in await _api.ListPlaylistsAsync(ct))
         {
             if (budget <= 0) break;
             if (!wanted.TryGetValue(playlist.Name, out var action)) continue;
@@ -109,7 +99,7 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
                 continue;
             }
 
-            var applied = await ApplyPlaylistAsync(playlist, action.Action, jwt, budget, ct);
+            var applied = await ApplyPlaylistAsync(playlist, action.Action, budget, ct);
             budget -= applied;
         }
 
@@ -117,9 +107,9 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
     }
 
     private async Task<int> ApplyPlaylistAsync(PlaylistRow playlist, LibraryAction action,
-        string jwt, int budget, CancellationToken ct)
+        int budget, CancellationToken ct)
     {
-        var tracks = await ListTracksAsync(playlist.Id, jwt, ct);
+        var tracks = await _api.ListTracksAsync(playlist.Id, ct);
         if (tracks.Count == 0) return 0;
 
         var consumed = new List<string>();
@@ -148,7 +138,7 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
             }
         }
 
-        if (consumed.Count > 0) await RemoveTracksAsync(playlist.Id, consumed, jwt, ct);
+        if (consumed.Count > 0) await RemoveTracksAsync(playlist.Id, consumed, ct);
         return applied;
     }
 
@@ -161,12 +151,11 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
     /// is skipped rather than deleting whatever now sits at its old position. The delete is one
     /// bulk call because two sequential single deletes renumber between them.
     /// </summary>
-    private async Task RemoveTracksAsync(string playlistId, List<string> mediaFileIds, string jwt,
-        CancellationToken ct)
+    private async Task RemoveTracksAsync(string playlistId, List<string> mediaFileIds, CancellationToken ct)
     {
         try
         {
-            var current = await ListTracksAsync(playlistId, jwt, ct);
+            var current = await _api.ListTracksAsync(playlistId, ct);
             var positions = current
                 .Where(track => mediaFileIds.Contains(track.MediaFileId, StringComparer.Ordinal))
                 .Select(track => track.Position)
@@ -174,49 +163,31 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
                 .ToList();
             if (positions.Count == 0) return;
 
-            var baseUrl = _subsonic.CurrentValue.Url!.TrimEnd('/');
-            var query = string.Join('&', positions.Select(p => $"id={Uri.EscapeDataString(p)}"));
-            using var request = new HttpRequestMessage(HttpMethod.Delete,
-                $"{baseUrl}/api/playlist/{Uri.EscapeDataString(playlistId)}/tracks?{query}");
-            request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
-
-            using var response = await _http.CreateClient().SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode)
+            if (!await _api.RemovePositionsAsync(playlistId, positions, ct))
                 _logger.LogWarning(
-                    "Could not clear {Count} applied track(s) from playlist {Id}: HTTP {Status}. "
-                    + "They stay put; the journal stops the action running twice.",
-                    positions.Count, playlistId, (int)response.StatusCode);
+                    "Could not clear {Count} applied track(s) from playlist {Id}. They stay put; the "
+                    + "journal stops the action running twice.", positions.Count, playlistId);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning("Could not clear applied tracks from playlist {Id}: {M}", playlistId, ex.Message);
         }
     }
 
-    internal sealed record PlaylistRow(string Id, string Name, string Owner);
-    internal sealed record PlaylistTrackRow(string Position, string MediaFileId);
-
-    private async Task<IReadOnlyList<PlaylistRow>> ListPlaylistsAsync(string jwt, CancellationToken ct)
+    /// <summary>The playlists whose tracks are commands, by title.</summary>
+    internal static IReadOnlyDictionary<string, LibraryActionDefinition> WantedPlaylists(LibraryActionSettings settings)
     {
-        try
-        {
-            var baseUrl = _subsonic.CurrentValue.Url!.TrimEnd('/');
-            using var request = new HttpRequestMessage(HttpMethod.Get,
-                $"{baseUrl}/api/playlist?_start=0&_end=1000");
-            request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
-
-            using var response = await _http.CreateClient().SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return [];
-
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
-            return ParsePlaylists(doc.RootElement);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning("Could not list playlists: {M}", ex.Message);
-            return [];
-        }
+        var wanted = settings.EffectiveActions()
+            .Where(action => action.Enabled)
+            .ToDictionary(settings.PlaylistTitle, action => action, StringComparer.OrdinalIgnoreCase);
+        // A notice playlist named like an action playlist would have every track Octo asked about
+        // acted on. Octo's own questions are never commands, whatever they are called.
+        foreach (var kind in Enum.GetValues<NoticeKind>()) wanted.Remove(settings.NoticeTitle(kind));
+        return wanted;
     }
+
+    public sealed record PlaylistRow(string Id, string Name, string Owner);
+    public sealed record PlaylistTrackRow(string Position, string MediaFileId);
 
     internal static IReadOnlyList<PlaylistRow> ParsePlaylists(JsonElement root)
     {
@@ -231,29 +202,6 @@ public sealed class LibraryActionPlaylistWorker : BackgroundService
             rows.Add(new PlaylistRow(id, name, Str(item, "ownerName") ?? ""));
         }
         return rows;
-    }
-
-    private async Task<IReadOnlyList<PlaylistTrackRow>> ListTracksAsync(string playlistId, string jwt,
-        CancellationToken ct)
-    {
-        try
-        {
-            var baseUrl = _subsonic.CurrentValue.Url!.TrimEnd('/');
-            using var request = new HttpRequestMessage(HttpMethod.Get,
-                $"{baseUrl}/api/playlist/{Uri.EscapeDataString(playlistId)}/tracks?_start=0&_end=500");
-            request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
-
-            using var response = await _http.CreateClient().SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return [];
-
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
-            return ParseTracks(doc.RootElement);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning("Could not list tracks in playlist {Id}: {M}", playlistId, ex.Message);
-            return [];
-        }
     }
 
     internal static IReadOnlyList<PlaylistTrackRow> ParseTracks(JsonElement root)

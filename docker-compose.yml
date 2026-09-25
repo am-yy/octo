@@ -71,6 +71,10 @@ services:
       Soulseek__FingerprintSeconds: ${SLSKD_FINGERPRINT_SECONDS:-120}
       Soulseek__FingerprintTimeoutSeconds: ${SLSKD_FINGERPRINT_TIMEOUT_SECONDS:-30}
       Soulseek__AcoustIdTimeoutSeconds: ${SLSKD_ACOUSTID_TIMEOUT_SECONDS:-10}
+      # Send AcoustID the fingerprints you confirmed with Keep, so the next person gets a
+      # confident match. Needs your personal AcoustID key (acoustid.org, after signing in).
+      Soulseek__SubmitConfirmedFingerprints: ${ACOUSTID_SUBMIT:-false}
+      Soulseek__AcoustIdUserApiKey: ${ACOUSTID_USER_KEY:-}
 
       # ----- existing Lidarr (optional heart-download source) -----
       Lidarr__BaseUrl: ${LIDARR_URL:-}
@@ -123,6 +127,14 @@ services:
       LibraryActions__PollIntervalSeconds: ${LIBRARY_ACTIONS_POLL_SECONDS:-60}
       LibraryActions__MaxActionsPerCycle: ${LIBRARY_ACTIONS_MAX_PER_CYCLE:-20}
       LibraryActions__KeepReplacedOriginals: ${LIBRARY_ACTIONS_KEEP_REPLACED:-true}
+      LibraryActions__PlaylistPrefix: ${LIBRARY_ACTIONS_PREFIX:-🛠 }
+      # Octo's own questions: a Review playlist it fills with downloads AcoustID could not
+      # settle. Answer with Keep (5 stars) or an action; removing a track answers too.
+      LibraryActions__NoticePrefix: ${LIBRARY_ACTIONS_NOTICE_PREFIX:-▸ }
+      LibraryActions__ReviewEnabled: ${LIBRARY_ACTIONS_REVIEW:-false}
+      LibraryActions__NoticeMaxTracks: ${LIBRARY_ACTIONS_NOTICE_MAX:-100}
+      # Auto: stars only act on tracks in Octo's playlists while Review is on, anywhere otherwise.
+      LibraryActions__RatingsScope: ${LIBRARY_ACTIONS_RATINGS_SCOPE:-Auto}
 
       # ----- Metadata language (genre tags etc. from Deezer / Last.fm) -----
       Metadata__Language: ${METADATA_LANGUAGE:-en}

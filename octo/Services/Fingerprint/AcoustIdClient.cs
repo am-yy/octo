@@ -2,6 +2,18 @@ using System.Text.Json;
 
 namespace Octo.Services.Fingerprint;
 
+/// <summary>One credited artist and the text MusicBrainz joins it to the next one with.</summary>
+public sealed record AcoustIdCredit(string Name, string? ArtistId, string JoinPhrase);
+
+/// <summary>
+/// The release a recording was matched on. It supplies what names the album, numbers the
+/// track and finds the cover, and it is chosen per recording by PickRelease.
+/// </summary>
+public sealed record AcoustIdRelease(
+    string? ReleaseId, string? ReleaseGroupId, string? Title, int? Year,
+    int? TrackNumber, int? TrackCount, int? DiscNumber,
+    string? AlbumArtist, bool IsCompilation);
+
 /// <summary>
 /// One recording AcoustID matched, with the MusicBrainz fields that come back in the same
 /// lookup. There is no separate MusicBrainz client on purpose: AcoustID's metadata IS
@@ -11,7 +23,41 @@ namespace Octo.Services.Fingerprint;
 public sealed record AcoustIdRecording(
     string RecordingId, string Title, IReadOnlyList<string> Artists, string? AlbumTitle, int? Year)
 {
-    public string ArtistCredit => string.Join(", ", Artists);
+    public IReadOnlyList<AcoustIdCredit> Credits { get; init; } = [];
+    public AcoustIdRelease? Release { get; init; }
+    public int? DurationSeconds { get; init; }
+
+    /// <summary>
+    /// The credit as MusicBrainz prints it, join phrases and all. Never a bare comma join:
+    /// Navidrome does not split artists on commas, so "Bizarrap, Rauw Alejandro" became one
+    /// artist and one folder that neither of them owns (#49).
+    /// </summary>
+    public string ArtistCredit => Credits.Count > 0 ? JoinCredits(Credits) : JoinNames(Artists);
+
+    /// <summary>The first credited artist: the one a folder is named after.</summary>
+    public string? PrimaryArtist => Credits.Count > 0 ? Credits[0].Name : Artists.FirstOrDefault();
+
+    internal static string JoinCredits(IReadOnlyList<AcoustIdCredit> credits)
+    {
+        var builder = new System.Text.StringBuilder();
+        for (var i = 0; i < credits.Count; i++)
+        {
+            builder.Append(credits[i].Name);
+            if (i == credits.Count - 1) break;
+            // compress drops a join phrase the parent level already carries, so a missing one
+            // is read the way MusicBrainz most often prints it.
+            var join = credits[i].JoinPhrase;
+            builder.Append(string.IsNullOrEmpty(join) ? (i == credits.Count - 2 ? " & " : ", ") : join);
+        }
+        return builder.ToString();
+    }
+
+    internal static string JoinNames(IReadOnlyList<string> names) => names.Count switch
+    {
+        0 => "",
+        1 => names[0],
+        _ => string.Join(", ", names.Take(names.Count - 1)) + " & " + names[^1],
+    };
 }
 
 public sealed record AcoustIdResult(double Score, IReadOnlyList<AcoustIdRecording> Recordings);
@@ -36,8 +82,11 @@ public sealed class AcoustIdClient
     /// then has zero recordings, and the verdict is permanently Inconclusive: the feature
     /// accepts every file forever while looking like it is working. Verified against the live
     /// API on 2026-09-18, one track, both spellings.
+    ///
+    /// tracks adds each release's mediums and the track's position on them, which is what numbers
+    /// a file named from its match (#48). It only takes effect beside releases.
     /// </summary>
-    internal const string MetaFields = "recordings releasegroups releases compress";
+    internal const string MetaFields = "recordings releasegroups releases tracks compress";
 
     private const int MaxResults = 10;
     private const int MaxRecordings = 25;
@@ -137,13 +186,25 @@ public sealed class AcoustIdClient
             var title = rec.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
 
             var artists = new List<string>();
+            var credits = new List<AcoustIdCredit>();
             if (rec.TryGetProperty("artists", out var arts) && arts.ValueKind == JsonValueKind.Array)
                 foreach (var artist in arts.EnumerateArray())
                     if (artist.TryGetProperty("name", out var n) && n.GetString() is { Length: > 0 } name)
+                    {
                         artists.Add(name);
+                        credits.Add(new AcoustIdCredit(name, Str(artist, "id"), Str(artist, "joinphrase") ?? ""));
+                    }
 
-            var (album, year) = PickRelease(rec);
-            recordings.Add(new AcoustIdRecording(id, title, artists, album, year));
+            int? duration = rec.TryGetProperty("duration", out var d) && d.ValueKind == JsonValueKind.Number
+                ? (int)Math.Round(d.GetDouble()) : null;
+
+            var release = PickRelease(rec);
+            recordings.Add(new AcoustIdRecording(id, title, artists, release.Album, release.Year)
+            {
+                Credits = credits,
+                Release = release.Detail,
+                DurationSeconds = duration,
+            });
         }
         return recordings;
     }
@@ -152,12 +213,13 @@ public sealed class AcoustIdClient
     /// Prefer a plain studio album: a release group with no secondarytypes. Otherwise a
     /// compilation or a live album supplies the album name and year for a studio track.
     /// The year is the EARLIEST release in the chosen group, because a 2011 reissue is not
-    /// the track's year.
+    /// the track's year. Within that group the earliest dated release is the one whose ids and
+    /// track position are kept, so the tracks of one album converge on one release.
     /// </summary>
-    private static (string? Album, int? Year) PickRelease(JsonElement recording)
+    private static (string? Album, int? Year, AcoustIdRelease? Detail) PickRelease(JsonElement recording)
     {
         if (!recording.TryGetProperty("releasegroups", out var groups)
-            || groups.ValueKind != JsonValueKind.Array) return (null, null);
+            || groups.ValueKind != JsonValueKind.Array) return (null, null, null);
 
         JsonElement? chosen = null;
         foreach (var group in groups.EnumerateArray().Take(MaxReleaseGroups))
@@ -169,22 +231,71 @@ public sealed class AcoustIdClient
                 && sec.ValueKind == JsonValueKind.Array && sec.GetArrayLength() > 0;
             if (isAlbum && !hasSecondary) { chosen = group; break; }
         }
-        if (chosen is not { } pick) return (null, null);
+        if (chosen is not { } pick) return (null, null, null);
 
-        var album = pick.TryGetProperty("title", out var title) ? title.GetString() : null;
+        var album = Str(pick, "title");
+        var isCompilation = pick.TryGetProperty("secondarytypes", out var types)
+            && types.ValueKind == JsonValueKind.Array
+            && types.EnumerateArray().Any(type =>
+                string.Equals(type.GetString(), "Compilation", StringComparison.OrdinalIgnoreCase));
+
+        string? albumArtist = null;
+        if (pick.TryGetProperty("artists", out var groupArtists) && groupArtists.ValueKind == JsonValueKind.Array)
+        {
+            var credits = groupArtists.EnumerateArray()
+                .Where(artist => Str(artist, "name") is { Length: > 0 })
+                .Select(artist => new AcoustIdCredit(Str(artist, "name")!, Str(artist, "id"), Str(artist, "joinphrase") ?? ""))
+                .ToList();
+            if (credits.Count > 0) albumArtist = AcoustIdRecording.JoinCredits(credits);
+        }
+        if (string.Equals(albumArtist, "Various Artists", StringComparison.OrdinalIgnoreCase)) isCompilation = true;
 
         int? year = null;
+        JsonElement? earliest = null;
+        var earliestDate = (Year: int.MaxValue, Month: 0, Day: 0);
         if (pick.TryGetProperty("releases", out var releases) && releases.ValueKind == JsonValueKind.Array)
         {
             foreach (var release in releases.EnumerateArray())
             {
+                earliest ??= release;
                 if (!release.TryGetProperty("date", out var date) || date.ValueKind != JsonValueKind.Object) continue;
                 if (!date.TryGetProperty("year", out var y) || y.ValueKind != JsonValueKind.Number) continue;
                 var candidate = y.GetInt32();
-                if (candidate > 0 && (year is null || candidate < year)) year = candidate;
+                if (candidate <= 0) continue;
+                if (year is null || candidate < year) year = candidate;
+                var when = (Year: candidate, Month: Int(date, "month") ?? 0, Day: Int(date, "day") ?? 0);
+                if (when.CompareTo(earliestDate) < 0) { earliestDate = when; earliest = release; }
             }
         }
 
-        return (string.IsNullOrWhiteSpace(album) ? null : album, year);
+        int? trackNumber = null, trackCount = null, disc = null;
+        string? releaseId = null, releaseTitle = null;
+        if (earliest is { } rel)
+        {
+            releaseId = Str(rel, "id");
+            // compress drops a release title equal to its group's.
+            releaseTitle = Str(rel, "title");
+            if (rel.TryGetProperty("mediums", out var mediums) && mediums.ValueKind == JsonValueKind.Array)
+                foreach (var medium in mediums.EnumerateArray())
+                {
+                    if (!medium.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array
+                        || tracks.GetArrayLength() == 0) continue;
+                    trackNumber = Int(tracks[0], "position");
+                    trackCount = Int(medium, "track_count");
+                    disc = Int(medium, "position");
+                    break;
+                }
+        }
+
+        var clean = string.IsNullOrWhiteSpace(album) ? null : album;
+        return (clean, year, new AcoustIdRelease(releaseId, Str(pick, "id"), releaseTitle ?? clean, year,
+            trackNumber, trackCount, disc, albumArtist, isCompilation));
     }
+
+    private static string? Str(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static int? Int(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt32(out var number) ? number : null;
 }

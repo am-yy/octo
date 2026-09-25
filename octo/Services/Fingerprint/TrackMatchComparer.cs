@@ -109,6 +109,13 @@ internal static class TrackMatchComparer
         // A collaboration credits several artists; matching any one of them is enough.
         if (credits?.Any(credit => Normalize(credit) == a) == true) return true;
 
+        // A request naming every credited artist is the same credit whatever joins them. Last.fm
+        // and Deezer write "Bizarrap, Rauw Alejandro" where MusicBrainz writes "Bizarrap & Rauw
+        // Alejandro"; without this a confident, correct match read as a different recording, and
+        // a mismatch deletes the file and blacklists the peer.
+        var named = credits?.Select(Normalize).Where(credit => credit.Length > 0).ToList();
+        if (named is { Count: > 1 } && named.All(credit => a.Contains(credit, StringComparison.Ordinal))) return true;
+
         return StripLeadingThe(a) == StripLeadingThe(b);
     }
 

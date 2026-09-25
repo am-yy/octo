@@ -81,4 +81,22 @@ public class TrackMatchComparerTests
     [Fact]
     public void ArtistMatches_DifferentArtist_IsAMismatch()
         => Assert.False(TrackMatchComparer.ArtistMatches("Drake", "Kendrick Lamar", null));
+
+    /// <summary>
+    /// The credit used to be joined with ", ", which happened to equal Last.fm's and Deezer's
+    /// spelling of a collaboration. MusicBrainz's own join phrase does not, and a confident match
+    /// that fails this reads as a DIFFERENT recording: the file is deleted and the peer
+    /// blacklisted. Found by the Phase 1 tests before it shipped.
+    /// </summary>
+    [Theory]
+    [InlineData("Bizarrap, Rauw Alejandro", "Bizarrap & Rauw Alejandro")]
+    [InlineData("Queen, David Bowie", "Queen & David Bowie")]
+    [InlineData("Bizarrap x Rauw Alejandro", "Bizarrap & Rauw Alejandro")]
+    public void ArtistMatches_RequestNamingEveryCredit_MatchesWhateverTheJoin(string requested, string credited)
+        => Assert.True(TrackMatchComparer.ArtistMatches(requested, credited, credited.Split(" & ")));
+
+    [Fact]
+    public void ArtistMatches_RequestNamingOnlySomeOfSeveralCredits_IsNotEveryCredit()
+        => Assert.False(TrackMatchComparer.ArtistMatches(
+            "Bizarrap, Duki", "Bizarrap & Rauw Alejandro", ["Bizarrap", "Rauw Alejandro"]));
 }

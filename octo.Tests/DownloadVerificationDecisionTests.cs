@@ -152,5 +152,115 @@ public class DownloadVerificationDecisionTests
             .ApplyTagsTo(song);
 
         Assert.Equal("peer title", song.Title);
+        Assert.Null(song.MusicBrainzRecordingId);
     }
+
+    /// <summary>
+    /// Below the threshold nothing is decided, but the one recording that agrees on title, artist
+    /// and length is remembered: it is the MusicBrainz id a person's Keep may send back (#47).
+    /// </summary>
+    [Fact]
+    public void Decide_BelowThreshold_SaysWhyAndNamesTheOneAgreeingCandidate()
+    {
+        var teardrop = Recording("Teardrop", "Massive Attack") with { DurationSeconds = 331 };
+        var verdict = DownloadVerificationService.Decide(
+            Ok(Result(0.60, teardrop, Recording("Something Else", "Someone Else"))),
+            "Massive Attack", "Teardrop", Threshold, tagsAuthoritative: false, durationSeconds: 330);
+
+        Assert.Equal(VerificationVerdict.Inconclusive, verdict.Verdict);
+        Assert.Equal(InconclusiveReason.BelowThreshold, verdict.Reason);
+        Assert.Equal("mbid-Teardrop", verdict.CandidateRecordingId);
+        Assert.True(verdict.NeedsReview);
+    }
+
+    /// <summary>MusicBrainz holds near-duplicate recordings; two agreeing ids is a guess, not an answer.</summary>
+    [Fact]
+    public void Decide_TwoAgreeingCandidates_NamesNone()
+    {
+        var first = new AcoustIdRecording("id-1", "Teardrop", ["Massive Attack"], null, null) { DurationSeconds = 315 };
+        var second = new AcoustIdRecording("id-2", "Teardrop", ["Massive Attack"], null, null) { DurationSeconds = 315 };
+        var verdict = DownloadVerificationService.Decide(Ok(Result(0.60, first, second)),
+            "Massive Attack", "Teardrop", Threshold, tagsAuthoritative: false, durationSeconds: 315);
+
+        Assert.Null(verdict.CandidateRecordingId);
+    }
+
+    [Fact]
+    public void Decide_CandidateOfTheWrongLength_IsNotNamed()
+    {
+        var live = Recording("Teardrop", "Massive Attack") with { DurationSeconds = 400 };
+        var verdict = DownloadVerificationService.Decide(Ok(Result(0.60, live)),
+            "Massive Attack", "Teardrop", Threshold, tagsAuthoritative: false, durationSeconds: 330);
+
+        Assert.Null(verdict.CandidateRecordingId);
+    }
+
+    /// <summary>A fingerprint AcoustID knows but MusicBrainz does not is exactly what a person can settle.</summary>
+    [Fact]
+    public void Decide_HighScoreWithNoRecordings_IsNoEntry()
+    {
+        var verdict = DownloadVerificationService.Decide(
+            Ok(Result(0.99)), "Massive Attack", "Teardrop", Threshold, tagsAuthoritative: false);
+
+        Assert.Equal(InconclusiveReason.NoEntry, verdict.Reason);
+    }
+
+    /// <summary>
+    /// An id says what the file IS and changes nothing a person reads, so a confirmed match records
+    /// it even with tagging from MusicBrainz off (#48).
+    /// </summary>
+    [Fact]
+    public void ApplyTagsTo_ConfirmedWithTaggingOff_StillRecordsTheRecordingId()
+    {
+        var song = new Song { Title = "peer title", Artist = "Bizarrap, Rauw Alejandro" };
+        var match = new AcoustIdRecording("rec-1", "Rauw Alejandro: Bzrp Music Sessions, Vol. 56",
+            ["Bizarrap", "Rauw Alejandro"], "Rauw Alejandro: Bzrp Music Sessions, Vol. 56", 2023)
+        {
+            Credits = [new("Bizarrap", "a1", " & "), new("Rauw Alejandro", "a2", "")],
+            Release = new AcoustIdRelease("rel-1", "rg-1", "Rauw Alejandro: Bzrp Music Sessions, Vol. 56",
+                2023, 1, 1, 1, "Bizarrap & Rauw Alejandro", false),
+        };
+        DownloadVerificationService
+            .Decide(Ok(Result(0.99, match)), "Bizarrap, Rauw Alejandro",
+                "Rauw Alejandro: Bzrp Music Sessions, Vol. 56", Threshold, tagsAuthoritative: false)
+            .ApplyTagsTo(song);
+
+        Assert.Equal("peer title", song.Title);
+        Assert.Equal("rec-1", song.MusicBrainzRecordingId);
+        Assert.Equal("Bizarrap", song.PrimaryArtist);
+        Assert.Equal(["Bizarrap", "Rauw Alejandro"], song.Artists);
+        Assert.Equal("rel-1", song.MusicBrainzReleaseId);
+        Assert.Equal("rg-1", song.MusicBrainzReleaseGroupId);
+        // Only with tags authoritative does the track number and album artist come across.
+        Assert.Null(song.Track);
+        Assert.Null(song.AlbumArtist);
+    }
+
+    [Fact]
+    public void ApplyTagsTo_ConfirmedAndTaggingOn_TakesTheReleasesTrackAndAlbumArtist()
+    {
+        var song = new Song { Title = "t", Artist = "a" };
+        var match = new AcoustIdRecording("rec-1", "Teardrop", ["Massive Attack"], "Mezzanine", 1998)
+        {
+            Release = new AcoustIdRelease("rel-1", "rg-1", "Mezzanine", 1998, 3, 11, 1, "Massive Attack", false),
+        };
+        DownloadVerificationService
+            .Decide(Ok(Result(0.99, match)), "Massive Attack", "Teardrop", Threshold, tagsAuthoritative: true)
+            .ApplyTagsTo(song);
+
+        Assert.Equal(3, song.Track);
+        Assert.Equal(11, song.TotalTracks);
+        Assert.Equal(1, song.DiscNumber);
+        Assert.Equal("Massive Attack", song.AlbumArtist);
+    }
+
+    [Theory]
+    [InlineData(InconclusiveReason.Disabled, false)]
+    [InlineData(InconclusiveReason.NotFingerprinted, false)]
+    [InlineData(InconclusiveReason.LookupFailed, false)]
+    [InlineData(InconclusiveReason.NoEntry, true)]
+    [InlineData(InconclusiveReason.BelowThreshold, true)]
+    [InlineData(InconclusiveReason.SourceDisagreed, true)]
+    public void NeedsReview_OnlyForQuestionsAPersonCanSettle(InconclusiveReason reason, bool expected) =>
+        Assert.Equal(expected, new VerificationResult { Reason = reason }.NeedsReview);
 }

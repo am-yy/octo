@@ -27,7 +27,22 @@ public enum VerificationVerdict
     Mismatch,
 }
 
-public sealed class VerificationResult
+/// <summary>
+/// Why a verdict was Inconclusive. Only the last three are questions a person can settle by
+/// listening, so only those reach the Review playlist (#47). The others are Octo not asking.
+/// </summary>
+public enum InconclusiveReason
+{
+    None,
+    Disabled,
+    NotFingerprinted,
+    LookupFailed,
+    NoEntry,
+    BelowThreshold,
+    SourceDisagreed,
+}
+
+public sealed record VerificationResult
 {
     public VerificationVerdict Verdict { get; init; } = VerificationVerdict.Inconclusive;
     public double Score { get; init; }
@@ -39,30 +54,76 @@ public sealed class VerificationResult
     public string DenyReason { get; init; } = "";
     public bool TagsAuthoritative { get; init; }
 
-    public static readonly VerificationResult Inconclusive = new();
+    public InconclusiveReason Reason { get; init; }
+
+    /// <summary>The recording that agreed with the request. Set only when Confirmed.</summary>
+    public AcoustIdRecording? Match { get; init; }
+
+    /// <summary>Kept so a person's confirmation can be sent back to AcoustID (#47).</summary>
+    public string? Fingerprint { get; init; }
+    public int DurationSeconds { get; init; }
+
+    /// <summary>
+    /// The one recording AcoustID proposed below the threshold that agrees with the request on
+    /// title, artist and length. The first MusicBrainz id a person's Keep may submit, and null
+    /// when there were none or more than one.
+    /// </summary>
+    public string? CandidateRecordingId { get; init; }
+
+    public bool NeedsReview => Verdict == VerificationVerdict.Inconclusive
+        && Reason is InconclusiveReason.NoEntry or InconclusiveReason.BelowThreshold
+            or InconclusiveReason.SourceDisagreed;
+
+    public static readonly VerificationResult Inconclusive = new() { Reason = InconclusiveReason.Disabled };
 
     public string Describe() => string.IsNullOrEmpty(MatchedArtist) && string.IsNullOrEmpty(MatchedTitle)
         ? "a different recording"
         : $"'{MatchedArtist} - {MatchedTitle}'";
 
     /// <summary>
-    /// Overwrite the song's identity from the matched MusicBrainz recording.
+    /// Record what a confirmed match proved, and overwrite the song's name from it when
+    /// tagging from MusicBrainz is on.
     ///
-    /// Unconditional where EnrichAndTagAsync is conditional. That one fills only what is
-    /// missing, because a peer's own tags beat nothing; a confirmed fingerprint match beats
-    /// the peer, which is the entire point of the setting. Running before the tagger means
-    /// Deezer enrichment later sees these fields as present and leaves them alone.
+    /// The ids are written whenever the match is confirmed. An id says what the file IS and
+    /// changes nothing a person reads, and it is what lets every later pass skip identifying
+    /// the same file again (#48). The release id stays in memory for the cover lookup and is
+    /// never written: Navidrome groups albums by MUSICBRAINZ_ALBUMID before the album name, so
+    /// one track carrying it beside another without it would split an album in two.
     ///
-    /// Deliberately does not touch the routing, so the file is still named and laid out from
-    /// the catalog title and this setting changes nothing on disk.
+    /// The name overwrite is unconditional where the Deezer fill is conditional. That one fills
+    /// only what is missing, because a peer's own tags beat nothing. A confirmed fingerprint
+    /// match beats the peer, which is the entire point of the setting.
     /// </summary>
     public void ApplyTagsTo(Song song)
     {
-        if (Verdict != VerificationVerdict.Confirmed || !TagsAuthoritative) return;
+        if (Verdict != VerificationVerdict.Confirmed) return;
+
+        if (!string.IsNullOrEmpty(RecordingId)) song.MusicBrainzRecordingId = RecordingId;
+        if (Match is { } match)
+        {
+            if (match.Credits.Count > 1) song.Artists = match.Credits.Select(credit => credit.Name).ToList();
+            if (match.Credits.Count == 1 && match.Credits[0].ArtistId is { Length: > 0 } artistId)
+                song.MusicBrainzArtistIds = [artistId];
+            if (match.PrimaryArtist is { Length: > 0 } primary) song.PrimaryArtist = primary;
+            song.MusicBrainzReleaseId = match.Release?.ReleaseId;
+            song.MusicBrainzReleaseGroupId = match.Release?.ReleaseGroupId;
+            song.MusicBrainzAlbumTitle = match.AlbumTitle;
+        }
+
+        if (!TagsAuthoritative) return;
         if (!string.IsNullOrEmpty(MatchedTitle)) song.Title = MatchedTitle;
         if (!string.IsNullOrEmpty(MatchedArtist)) song.Artist = MatchedArtist;
         if (!string.IsNullOrEmpty(MatchedAlbum)) song.Album = MatchedAlbum;
         if (MatchedYear is > 0) song.Year = MatchedYear;
+
+        if (Match?.Release is { } release && !string.IsNullOrEmpty(MatchedAlbum))
+        {
+            if (release.TrackNumber is > 0) song.Track = release.TrackNumber;
+            if (release.TrackCount is > 0) song.TotalTracks = release.TrackCount;
+            if (release.DiscNumber is > 0) song.DiscNumber = release.DiscNumber;
+            if (!string.IsNullOrEmpty(release.AlbumArtist)) song.AlbumArtist = release.AlbumArtist;
+            song.IsCompilation = release.IsCompilation;
+        }
     }
 }
 
@@ -127,22 +188,22 @@ public sealed class DownloadVerificationService
             };
 
         if (fingerprint.Outcome != FingerprintOutcome.Ok || string.IsNullOrEmpty(fingerprint.Fingerprint))
-            return VerificationResult.Inconclusive;
+            return new VerificationResult { Reason = InconclusiveReason.NotFingerprinted };
 
         // TagLib's duration, not fpcalc's. -length pins how much audio is fingerprinted, and
         // staking a rejection on whether that also truncates the reported duration would
         // reject every track over two minutes if it does.
         var seconds = ReadDurationSeconds(path);
         if (seconds <= 0) seconds = fingerprint.DecodedSeconds;
-        if (seconds <= 0) return VerificationResult.Inconclusive;
+        if (seconds <= 0) return new VerificationResult { Reason = InconclusiveReason.NotFingerprinted };
 
         var lookup = await _client.LookupAsync(settings.AcoustIdApiKey, fingerprint.Fingerprint,
             seconds, settings.EffectiveAcoustIdTimeoutSeconds);
-        if (lookup is null) return VerificationResult.Inconclusive;
+        if (lookup is null) return new VerificationResult { Reason = InconclusiveReason.LookupFailed };
         if (!lookup.IsOk)
         {
             _logger.LogWarning("acoustid refused the lookup for {Path}: {Error}", path, lookup.Error);
-            return VerificationResult.Inconclusive;
+            return new VerificationResult { Reason = InconclusiveReason.LookupFailed };
         }
         if (lookup.Results.Count == 0)
         {
@@ -150,11 +211,22 @@ public sealed class DownloadVerificationService
                 "acoustid has no entry for '{Artist} - {Title}'; keeping the file. Obscure music is "
                 + "exactly what Soulseek is for, so an absent match is never treated as a mismatch.",
                 requestedArtist, requestedTitle);
-            return VerificationResult.Inconclusive;
+            // Kept with the fingerprint: this is the one case a person listening can settle, and
+            // the one where their answer is worth sending back to AcoustID.
+            return new VerificationResult
+            {
+                Reason = InconclusiveReason.NoEntry,
+                Fingerprint = fingerprint.Fingerprint,
+                DurationSeconds = seconds,
+            };
         }
 
         var verdict = Decide(lookup, requestedArtist, requestedTitle,
-            settings.EffectiveMinScoreFraction, settings.TagFromMusicBrainz);
+            settings.EffectiveMinScoreFraction, settings.TagFromMusicBrainz, seconds) with
+        {
+            Fingerprint = fingerprint.Fingerprint,
+            DurationSeconds = seconds,
+        };
 
         // A confirmation is logged too, not just a refusal. The dominant risk in this feature is
         // that a broken key, a missing binary or a mangled request makes it accept everything
@@ -181,7 +253,7 @@ public sealed class DownloadVerificationService
     /// above make the orchestration awkward to mock for no benefit.
     /// </summary>
     internal static VerificationResult Decide(AcoustIdLookup lookup, string? requestedArtist,
-        string? requestedTitle, double threshold, bool tagsAuthoritative)
+        string? requestedTitle, double threshold, bool tagsAuthoritative, int durationSeconds = 0)
     {
         var qualifying = lookup.Results
             .Where(result => result.Score >= threshold && result.Recordings.Count > 0)
@@ -190,7 +262,17 @@ public sealed class DownloadVerificationService
 
         // Below the threshold an answer is ignored, never acted on. That is why raising
         // MinMatchScore makes Octo MORE permissive rather than less.
-        if (qualifying.Count == 0) return VerificationResult.Inconclusive;
+        if (qualifying.Count == 0)
+        {
+            // A result above the threshold with no recordings is a fingerprint AcoustID knows and
+            // MusicBrainz does not: exactly the gap a person's confirmation can fill.
+            var known = lookup.Results.Any(result => result.Score >= threshold);
+            return new VerificationResult
+            {
+                Reason = known ? InconclusiveReason.NoEntry : InconclusiveReason.BelowThreshold,
+                CandidateRecordingId = AgreeingCandidate(lookup, requestedArtist, requestedTitle, durationSeconds),
+            };
+        }
 
         var best = qualifying[0];
 
@@ -212,6 +294,7 @@ public sealed class DownloadVerificationService
                 MatchedYear = agreed.Year,
                 RecordingId = agreed.RecordingId,
                 TagsAuthoritative = tagsAuthoritative,
+                Match = agreed,
             };
 
         var actual = best.Recordings[0];
@@ -226,6 +309,26 @@ public sealed class DownloadVerificationService
             RecordingId = actual.RecordingId,
             DenyReason = $"is '{actual.ArtistCredit} - {actual.Title}'",
         };
+    }
+
+    /// <summary>
+    /// The single recording, at any score, that agrees on title, artist and length (7 seconds
+    /// either way). Two or more is ambiguity, and ambiguity submits nothing.
+    /// </summary>
+    internal static string? AgreeingCandidate(AcoustIdLookup lookup, string? requestedArtist,
+        string? requestedTitle, int durationSeconds)
+    {
+        var ids = lookup.Results
+            .SelectMany(result => result.Recordings)
+            .Where(recording => !string.IsNullOrEmpty(recording.RecordingId)
+                && TrackMatchComparer.TitleMatches(requestedTitle, recording.Title)
+                && TrackMatchComparer.ArtistMatches(requestedArtist, recording.ArtistCredit, recording.Artists)
+                && (durationSeconds <= 0 || recording.DurationSeconds is null
+                    || Math.Abs(recording.DurationSeconds.Value - durationSeconds) <= 7))
+            .Select(recording => recording.RecordingId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return ids.Count == 1 ? ids[0] : null;
     }
 
     private int ReadDurationSeconds(string path)

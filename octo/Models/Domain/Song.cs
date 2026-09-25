@@ -102,5 +102,43 @@ public class Song
     /// 0 = Naturally clean, 1 = Explicit, 2 = Not applicable, 3 = Clean/edited version, 6/7 = Unknown
     /// </summary>
     public int? ExplicitContentLyrics { get; set; }
+
+    /// <summary>
+    /// MusicBrainz recording id of a fingerprint-confirmed download. Written as
+    /// MUSICBRAINZ_TRACKID (UFID on ID3), which is where Picard and Navidrome both keep the
+    /// RECORDING id, despite the name.
+    /// </summary>
+    public string? MusicBrainzRecordingId { get; set; }
+
+    /// <summary>
+    /// The release and release group the match came from, and that group's title. Used to find
+    /// the right cover; the release id is never written, because Navidrome groups albums by
+    /// MUSICBRAINZ_ALBUMID before the album name.
+    /// </summary>
+    public string? MusicBrainzReleaseId { get; set; }
+    public string? MusicBrainzReleaseGroupId { get; set; }
+    public string? MusicBrainzAlbumTitle { get; set; }
+    public List<string> MusicBrainzArtistIds { get; set; } = new();
+
+    /// <summary>
+    /// Every credited artist, one per entry, for the multi-value ARTISTS tag. Empty when the
+    /// credit is a single name. Navidrome reads it, so a collaboration is filed under each artist
+    /// instead of under a new artist named after all of them (#49).
+    /// </summary>
+    public List<string> Artists { get; set; } = new();
+
+    /// <summary>The first credited artist, when a structured source said which one that is.
+    /// Names the artist folder; see BaseDownloadService.PrimaryCredit.</summary>
+    public string? PrimaryArtist { get; set; }
+
+    public bool IsCompilation { get; set; }
+
+    /// <summary>
+    /// What AcoustID said about the downloaded file. Carried on the Song because
+    /// DownloadSongInternalAsync threads ONE instance through download, tagging and placement.
+    /// Never serialised.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Octo.Services.Fingerprint.VerificationResult? Verification { get; set; }
 }
 

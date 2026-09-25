@@ -95,6 +95,7 @@ public class LocalLibraryService : ILocalLibraryService
                 DownloadedAt = DateTime.UtcNow,
                 SourcePeer = song.SourcePeer,
                 SourceFile = song.SourceFile,
+                MusicBrainzRecordingId = song.MusicBrainzRecordingId,
             };
             
             await SaveMappingsAsync(mappings);
@@ -362,4 +363,9 @@ public class LocalSongMapping
     /// written before this existed still load.</summary>
     public string? SourcePeer { get; set; }
     public string? SourceFile { get; set; }
+
+    /// <summary>The MusicBrainz recording a fingerprint confirmed this file is. Optional, like
+    /// SourcePeer; it is what lets a later download of the same recording replace this file
+    /// rather than sit beside it.</summary>
+    public string? MusicBrainzRecordingId { get; set; }
 }

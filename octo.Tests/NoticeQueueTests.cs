@@ -203,6 +203,25 @@ public class NoticeQueueTests : IDisposable
         Assert.Empty(queue.DueForLookup(now.AddDays(1), 10));
     }
 
+    /// <summary>The file is bounded, but an open question is never the thing forgotten.</summary>
+    [Fact]
+    public void Trim_DropsTheOldestSettledEntries_NeverAnOpenOne()
+    {
+        var queue = new NoticeQueue();
+        for (var i = 0; i < NoticeQueue.MaxEntries; i++)
+        {
+            queue.AddReview("alice", $"/music/{i}.flac", Song(), Verdict());
+            if (i >= 10) queue.Resolve(NoticeQueue.ReviewKey("alice", $"/music/{i}.flac"), NoticeState.Dismissed);
+        }
+
+        queue.AddReview("alice", "/music/new.flac", Song(), Verdict());
+
+        var entries = queue.ForUser("alice", NoticeKind.Review);
+        Assert.Equal(NoticeQueue.MaxEntries, entries.Count);
+        Assert.Equal(11, entries.Count(entry => entry.IsOpen));
+        Assert.DoesNotContain(entries, entry => entry.LocalPath == "/music/10.flac");
+    }
+
     [Fact]
     public void Entries_SurviveARestart()
     {

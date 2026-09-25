@@ -752,7 +752,7 @@ public class AdminController : ControllerBase
     /// unrestricted configuration. An empty allowlist means nobody, so enabling the feature
     /// without naming anyone is a mistake rather than a permissive choice.
     /// </summary>
-    private static string? ValidateLibraryActions(JsonObject actions, LibraryActionSettings current)
+    internal static string? ValidateLibraryActions(JsonObject actions, LibraryActionSettings current)
     {
         var enabled = actions["Enabled"]?.GetValue<bool>() ?? current.Enabled;
         var allowed = actions["AllowedUsers"] as JsonArray;

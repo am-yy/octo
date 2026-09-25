@@ -230,6 +230,23 @@ public class AdminContractTests
         Assert.Equal("stored", (string?)merged["Subsonic"]!["AdminPassword"]);
     }
 
+    /// <summary>Keep made five actions. A sixth is still a config that does not mean anything.</summary>
+    [Fact]
+    public void ValidateLibraryActions_AcceptsFive_RefusesSix()
+    {
+        static System.Text.Json.Nodes.JsonObject WithActions(int count)
+        {
+            var actions = new System.Text.Json.Nodes.JsonArray();
+            for (var i = 0; i < count; i++)
+                actions.Add(new System.Text.Json.Nodes.JsonObject { ["Name"] = $"a{i}", ["Rating"] = 0 });
+            return new System.Text.Json.Nodes.JsonObject { ["Actions"] = actions };
+        }
+
+        Assert.Null(AdminController.ValidateLibraryActions(WithActions(5), new LibraryActionSettings()));
+        Assert.Equal("There are only five library actions",
+            AdminController.ValidateLibraryActions(WithActions(6), new LibraryActionSettings()));
+    }
+
     private static System.Text.Json.Nodes.JsonObject JsonNodeObject(string json) =>
         System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
 }

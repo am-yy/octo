@@ -17,7 +17,10 @@
         <!-- Mirror Assets/ into wwwroot/Assets/ at build so the admin UI and
              cover-art watermarking can both reach the logo via the same
              bytes. wwwroot/Assets is what MapStaticAssets serves to the
-             browser (cover art reads from /app/Assets via filesystem). -->
+             browser (cover art reads from /app/Assets via filesystem).
+             The Web SDK already takes every *.json as Content, so the cover kit's
+             palette.json is removed first or it would be included twice. -->
+        <Content Remove="Assets\**\*.json" />
         <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest"
                  Link="wwwroot/Assets/%(RecursiveDir)%(Filename)%(Extension)" />
     </ItemGroup>

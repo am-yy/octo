@@ -47,7 +47,18 @@ public class CoverArtService
     {
         _logger = logger;
         _coversDirectory = string.IsNullOrWhiteSpace(coversDirectory) ? null : coversDirectory;
-        _kitDirectory = kitDirectory ?? System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "cover-kit");
+        _kitDirectory = kitDirectory ?? KitDirectoryIn(AppContext.BaseDirectory);
+    }
+
+    /// <summary>
+    /// Where the build put the cover kit. A publish ships Assets only under wwwroot (the Content
+    /// link wins over the None copy), a plain build ships both, so look in both, as the logo does.
+    /// </summary>
+    internal static string KitDirectoryIn(string baseDirectory)
+    {
+        var beside = System.IO.Path.Combine(baseDirectory, "Assets", "cover-kit");
+        var served = System.IO.Path.Combine(baseDirectory, "wwwroot", "Assets", "cover-kit");
+        return Directory.Exists(beside) || !Directory.Exists(served) ? beside : served;
     }
 
     private CoverKit Kit => LazyInitializer.EnsureInitialized(ref _kit, () => new CoverKit(_kitDirectory, _logger));

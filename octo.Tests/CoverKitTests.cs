@@ -314,3 +314,99 @@ public class NamedCoverTests : IDisposable
         Assert.Equal(service.GetNamedCover("Rock Radio"), service.GetRadioStationCover("Rock Radio"));
     }
 }
+
+/// <summary>
+/// ncfer's kit as vendored (#54): every list in the palette has its template, every template
+/// draws, and the names Octo actually uses find their designs.
+/// </summary>
+public class VendoredCoverKitTests
+{
+    private static string KitDirectory => Path.Combine(AppContext.BaseDirectory, "Assets", "cover-kit");
+
+    private static List<string> ListNames()
+    {
+        using var palette = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(KitDirectory, "palette.json")));
+        return palette.RootElement.GetProperty("lists").EnumerateObject().Select(list => list.Name).ToList();
+    }
+
+    [Fact]
+    public void EveryListHasATemplate_AndEveryTemplateDrawsItsIcon()
+    {
+        var kit = new CoverKit(KitDirectory);
+        var names = ListNames();
+        var fonts = CoverFonts.Family() is not null;
+
+        Assert.True(kit.IsLoaded);
+        Assert.Equal(39, names.Count);
+        Assert.Equal(39, Directory.GetFiles(Path.Combine(KitDirectory, "templates"), "*.svg").Length);
+        foreach (var name in names)
+        {
+            Assert.True(kit.TryResolve(name, out var entry), $"{name} has no template");
+            var svg = File.ReadAllText(entry.TemplatePath)
+                .Replace("__BG_FROM__", entry.From).Replace("__BG_TO__", entry.To)
+                .Replace("__STROKE__", kit.Stroke)
+                .Replace("__STROKE_WIDTH__", kit.StrokeWidth.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            var jpeg = SvgTemplateRenderer.Render(svg);
+            Assert.True(jpeg is not null, $"{name} did not draw");
+
+            // The backgrounds are muted, so white can only be the icon or the lettering.
+            if (!fonts && svg.Contains("<text", StringComparison.Ordinal)) continue;
+            using var image = Image.Load<Rgb24>(jpeg!);
+            var white = 0;
+            for (var y = 0; y < 600; y += 2)
+            for (var x = 0; x < 600; x += 2)
+                if (image[x, y] is { R: > 215, G: > 215, B: > 215 }) white++;
+            Assert.True(white > 400, $"{name} drew too little: {white} white samples");
+        }
+    }
+
+    [Theory]
+    [InlineData("Rock Mix", "Rock")]
+    [InlineData("Hip-Hop Mix", "Hip-Hop")]
+    [InlineData("Soul Mix", "R&B & Soul")]
+    [InlineData("Country Mix", "Folk & Country")]
+    [InlineData("1990s Mix", "1990s")]
+    [InlineData("2020s Mix", "2020s")]
+    [InlineData("Your Mix", "Your Mix")]
+    [InlineData("Discovery Mix", "Discovery")]
+    [InlineData("Electronic Radio", "Electronic")]
+    public void TheNamesOctoUses_FindTheirDesigns(string name, string expected)
+    {
+        Assert.True(new CoverKit(KitDirectory).TryResolve(name, out var entry));
+        Assert.Equal(expected, entry.Name);
+    }
+
+    /// <summary>The kit covers 1990s to 2020s; an earlier decade gets the generic design.</summary>
+    [Fact]
+    public void AnEarlierDecade_GetsTheGenericDesign()
+    {
+        var kit = new CoverKit(KitDirectory);
+
+        Assert.False(kit.TryResolve("1970s Mix", out _));
+        Assert.Equal("Other", kit.GenericEntry("1970s")?.Name);
+    }
+}
+
+/// <summary>A publish ships Assets only under wwwroot; the kit has to be found there too.</summary>
+public class CoverKitLocationTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "octo-kit-where-" + Guid.NewGuid());
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_root, true); } catch { }
+        GC.SuppressFinalize(this);
+    }
+
+    [Fact]
+    public void KitDirectory_BesideTheApp_ElseUnderWwwroot()
+    {
+        var served = Path.Combine(_root, "wwwroot", "Assets", "cover-kit");
+        Directory.CreateDirectory(served);
+        Assert.Equal(served, CoverArtService.KitDirectoryIn(_root));
+
+        var beside = Path.Combine(_root, "Assets", "cover-kit");
+        Directory.CreateDirectory(beside);
+        Assert.Equal(beside, CoverArtService.KitDirectoryIn(_root));
+    }
+}

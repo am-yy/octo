@@ -445,11 +445,13 @@ of each mix, and of the Discovery Mix station, for tracks new to the listener: n
 or added in the last `MIX_NEW_DAYS`. It is 0 by default, which changes nothing.
 `MIX_NAME_FORMAT` names them, `{0}` being the genre or decade ("{0} Mix" when empty).
 
-Mixes and radio stations get generated covers, each in a colour of its name's own. A station
-cover also carries the small Octo badge, because a station is mostly music from outside the
-library; a mix is the listener's own and does not. A picture in `/app/config/covers` named
-after a mix or station (`Rock Mix.jpg`, `Rock.png`) replaces its cover, and replacing the
-picture shows without a restart.
+Mix and station covers come from [ncfer's cover kit](https://github.com/ncfer/octo-cover-kit),
+shipped in `Assets/cover-kit` with its licences in `NOTICE.md`: a design per genre, per
+decade from the 1990s, and for Your Mix and Discovery, and otherwise the kit's generic design
+in a colour of the name's own. A station cover also carries the small Octo badge, because a
+station is mostly music from outside the library; a mix is the listener's own and does not.
+A picture in `/app/config/covers` named after a mix or station (`Rock Mix.jpg`, `Rock.png`)
+replaces its cover, and replacing the picture shows without a restart.
 
 ### Download path on Windows and manual installs
 

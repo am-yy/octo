@@ -64,6 +64,8 @@ public class SubsonicController : ControllerBase
     private readonly LastFmRadioStreamSessionStore _radioStreamSessions;
     private readonly LastFmRadioStreamService _radioStreams;
     private readonly SyncCatalogService? _syncCatalog;
+    private readonly Octo.Services.Lyrics.LyricsService? _lyricsService;
+    private readonly IOptionsMonitor<MetadataSettings>? _metadataSettings;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -95,10 +97,14 @@ public class SubsonicController : ControllerBase
         LastFmRadioStateStore? radioStateStore = null,
         LastFmRadioRefreshQueue? radioRefreshQueue = null,
         Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
-        SyncCatalogService? syncCatalog = null)
+        SyncCatalogService? syncCatalog = null,
+        Octo.Services.Lyrics.LyricsService? lyricsService = null,
+        IOptionsMonitor<MetadataSettings>? metadataSettings = null)
     {
         _listenBrainz = listenBrainz;
         _syncCatalog = syncCatalog;
+        _lyricsService = lyricsService;
+        _metadataSettings = metadataSettings;
         subsonicSettingsOptions = subsonicSettings;
         _metadataService = metadataService;
         _localLibraryService = localLibraryService;
@@ -2625,10 +2631,14 @@ public class SubsonicController : ControllerBase
         return _responseBuilder.CreateError(format, 0, "Jukebox is not supported");
     }
 
-    // OpenSubsonic getLyricsBySongId — Feishin fetches this every time a song
-    // plays. External tracks have no lyrics in Navidrome, so it returned code 70
-    // "data not found" per play; return an empty-but-ok lyrics list instead.
-    // (Real synced lyrics from an open source like lrclib are a future add.)
+    /// <summary>A lyrics lookup made while a client waits: a slow or overloaded source costs
+    /// at most this, and the song simply shows no lyrics this time.</summary>
+    private static readonly TimeSpan InteractiveLyricsBudget = TimeSpan.FromSeconds(4);
+
+    // OpenSubsonic getLyricsBySongId. Feishin fetches this every time a song plays. An external
+    // track has no lyrics in Navidrome, so relaying one returned code 70 "data not found" per
+    // play; it now gets real lyrics when LYRICS_FETCH is on (#52), and an empty-but-ok list
+    // otherwise. A library song Navidrome has no lyrics for gets the same live lookup.
     [HttpGet, HttpPost]
     [Route("rest/getLyricsBySongId")]
     [Route("rest/getLyricsBySongId.view")]
@@ -2638,23 +2648,92 @@ public class SubsonicController : ControllerBase
         var id = parameters.GetValueOrDefault("id", "");
         var format = parameters.GetValueOrDefault("f", "xml");
         var (isExternal, _, _) = _localLibraryService.ParseSongId(id);
+        var fetching = _lyricsService is not null && _metadataSettings?.CurrentValue.FetchLyrics == true;
 
         if (isExternal)
         {
-            if (format == "json")
-                return _responseBuilder.CreateJsonResponse(new Dictionary<string, object>
-                {
-                    ["status"] = "ok",
-                    ["version"] = "1.16.1",
-                    ["lyricsList"] = new { structuredLyrics = Array.Empty<object>() },
-                });
-            return _responseBuilder.CreateResponse(format, "lyricsList", new { });
+            Octo.Services.Lyrics.LyricsResult? found = null;
+            string artist = "", title = "";
+            if (fetching && (_idRegistry.Lookup(id) ?? SoulseekMetadataService.TryDecodeExternalId(id)) is { HasArtistTitle: true } routing)
+            {
+                artist = routing.Artist!;
+                title = routing.Title!;
+                found = await LiveLyricsAsync(artist, title, routing.Album, routing.Duration);
+            }
+            return _responseBuilder.CreateLyricsListResponse(format, found, artist, title);
         }
 
         var relay = await _proxyService.RelaySafeAsync("rest/getLyricsBySongId", parameters);
         if (relay.Success && relay.Body != null)
+        {
+            // Navidrome answered, but with nothing: look the song up live, read-only. Nothing is
+            // written beside a file Octo did not download.
+            if (fetching && format.Equals("json", StringComparison.OrdinalIgnoreCase)
+                && HasNoStructuredLyrics(relay.Body)
+                && await LibrarySongAsync(parameters, id) is { } song)
+            {
+                var found = await LiveLyricsAsync(song.Artist, song.Title, song.Album, song.Duration);
+                if (found is not null) return _responseBuilder.CreateLyricsListResponse(format, found, song.Artist, song.Title);
+            }
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
+        }
         return _responseBuilder.CreateResponse(format, "lyricsList", new { });
+    }
+
+    private async Task<Octo.Services.Lyrics.LyricsResult?> LiveLyricsAsync(string artist, string title, string? album, int? duration)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+        budget.CancelAfter(InteractiveLyricsBudget);
+        try
+        {
+            var lookup = await _lyricsService!.FindAsync(new Octo.Services.Lyrics.LyricsQuery(
+                artist, Octo.Services.Lyrics.LyricsText.QueryTitle(title, artist), album, duration), budget.Token);
+            return lookup.Result;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static bool HasNoStructuredLyrics(byte[] body)
+    {
+        try
+        {
+            var lyrics = JsonNode.Parse(body)?["subsonic-response"]?["lyricsList"]?["structuredLyrics"];
+            return lyrics is null || (lyrics is JsonArray array && array.Count == 0);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Artist, title, album and length of a library song, asked as the calling user.</summary>
+    private async Task<Song?> LibrarySongAsync(IReadOnlyDictionary<string, string> parameters, string id)
+    {
+        var request = parameters.ToDictionary(pair => pair.Key, pair => pair.Value);
+        request["id"] = id;
+        request["f"] = "json";
+        var relay = await _proxyService.RelaySafeAsync("rest/getSong", request);
+        if (!relay.Success || relay.Body is null) return null;
+        try
+        {
+            var song = JsonNode.Parse(relay.Body)?["subsonic-response"]?["song"];
+            var artist = song?["artist"]?.GetValue<string>();
+            var title = song?["title"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
+            return new Song
+            {
+                Artist = artist, Title = title,
+                Album = song?["album"]?.GetValue<string>() ?? "",
+                Duration = song?["duration"]?.GetValue<int>(),
+            };
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // Album/artist "info" panels. For external tracks these used to fall through

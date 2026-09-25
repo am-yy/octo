@@ -283,6 +283,20 @@ builder.Services.AddHttpClient(Octo.Services.CoverArt.CoverArtArchiveLookup.Clie
 builder.Services.AddSingleton<Octo.Services.CoverArt.CoverArtArchiveLookup>();
 builder.Services.AddSingleton<Octo.Services.CoverArt.DownloadCoverResolver>();
 
+// Lyrics (#52). Sources in the order LYRICS_SOURCES names them; the writer is singleton AND hosted,
+// the same instance both ways, so downloads enqueue into the worker the host is running.
+builder.Services.AddHttpClient(Octo.Services.Lyrics.LrclibLyricsSource.ClientName, c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(8);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd(Octo.Services.Common.OctoUserAgent.Value);
+});
+builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.LrclibLyricsSource>();
+builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.NeteaseLyricsSource>();
+builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.LyricsOvhLyricsSource>();
+builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsService>();
+builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsSidecarWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Lyrics.LyricsSidecarWriter>());
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>

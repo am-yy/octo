@@ -853,6 +853,29 @@
 
         <div class="set-section">
           <div class="set-head">
+            <h3 class="set-title">Lyrics</h3>
+            <p class="set-desc">A lyrics file beside each download, which Navidrome serves without a rescan, and lyrics for any song as it plays when your library has none. Synced lyrics go in a <code>.lrc</code>, plain ones in a <code>.txt</code>. A file that already has lyrics is never touched.</p>
+          </div>
+          <form data-section="lyrics" class="set-card">
+            <div class="set-row">
+              <div class="set-info">
+                <div class="set-info-t">Fetch lyrics</div>
+                <div class="set-info-d">Looked up in the background after a download finishes, so a slow lyrics service never holds up the next one.</div>
+              </div>
+              <label class="switch"><input type="checkbox" name="Metadata.FetchLyrics" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Sources <span class="set-opt">in order</span></div>
+                <div class="set-info-d"><code>lrclib</code> is open and synced; <code>lyricsovh</code> is plain text only. <code>netease</code> goes much deeper on non-Western and older music but is an unofficial API, so it only runs if you add it. Synced beats plain, so a later source is only asked while nothing earlier had timing.</div>
+              </div>
+              <input class="set-input" name="Metadata.LyricsSources" placeholder="lrclib,lyricsovh" maxlength="64" />
+            </div>
+          </form>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head">
             <h3 class="set-title">Genre normalization</h3>
             <p class="set-desc">Downloads arrive with whatever genre the source had: YouTube categories like &ldquo;Music&rdquo; or &ldquo;People &amp; Blogs&rdquo;, hyper-specific tags, or seven genres at once. This collapses them into a list you can browse. Rules are tried <strong>top to bottom and the first match wins</strong>, so put the specific ones above the general ones. Applies to new downloads; files already in the library keep their tags.</p>
           </div>

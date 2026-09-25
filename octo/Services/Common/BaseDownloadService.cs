@@ -1129,6 +1129,15 @@ public abstract class BaseDownloadService : IDownloadService
         {
             Logger.LogWarning("Could not write cover.jpg beside {Path}: {M}", placement.Path, ex.Message);
         }
+
+        // Lyrics are fetched in the background: this runs under the download lock, and a lyrics
+        // service that is slow or shedding load must not hold up the next download (#52).
+        if (MetadataSettingsValue.FetchLyrics
+            && _serviceProvider.GetService<Octo.Services.Lyrics.LyricsSidecarWriter>() is { } lyrics)
+            lyrics.TryEnqueue(new Octo.Services.Lyrics.LyricsJob(placement.Path,
+                song.PrimaryArtist ?? song.Artist,
+                Octo.Services.Lyrics.LyricsText.QueryTitle(song.Title, song.Artist),
+                song.Album, song.Duration));
         return Task.CompletedTask;
     }
 

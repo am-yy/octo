@@ -135,6 +135,10 @@ services:
       Metadata__UseCoverArtArchive: ${COVER_ART_ARCHIVE:-true}
       Metadata__ReplaceVideoCovers: ${REPLACE_VIDEO_COVERS:-true}
       Metadata__WriteCoverFile: ${COVER_FILE:-true}
+      # Lyrics: a .lrc (synced) or .txt (plain) beside each download, and live lyrics
+      # for songs as they play. netease is an unofficial API, so it only runs if listed.
+      Metadata__FetchLyrics: ${LYRICS_FETCH:-false}
+      Metadata__LyricsSources: ${LYRICS_SOURCES:-lrclib,lyricsovh}
 
       # ----- Notifications (ntfy / Discord webhook) — both optional -----
       Notifications__NtfyUrl: ${NTFY_URL:-}

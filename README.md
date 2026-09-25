@@ -425,6 +425,8 @@ Every download is tagged from its source, Deezer and, with verification on, Musi
 
 Cover art comes from a chain: the Cover Art Archive when a fingerprint named the release (`COVER_ART_ARCHIVE`), then the catalog's own cover, then Deezer, iTunes and Last.fm by name, and last the file's own art. A cover that is not square is a video thumbnail and counts as missing (`REPLACE_VIDEO_COVERS`); when nothing better turns up its centre square is used, which for a YouTube "Topic" upload is the real cover inside the letterbox. `COVER_FILE` also writes `cover.jpg` beside the file, only in the `Organized` layout and only in a folder the download created, because Navidrome ranks `cover.*` above embedded art and a new file in an existing album folder would change that album's cover.
 
+`LYRICS_FETCH` (off by default) writes lyrics beside each download, looked up in the background so a slow service never holds up the next download, and answers `getLyricsBySongId` live for any song as it plays when the library has none, external songs included. Synced lyrics go in a `.lrc` and plain ones in a `.txt` with the audio file's name, both of which Navidrome reads at request time without a rescan; an instrumental gets nothing, and a file that already has lyrics is never touched. `LYRICS_SOURCES` sets the order: `lrclib` (open, synced), `lyricsovh` (plain text), and `netease`, which goes much deeper on non-Western and older music but is an unofficial API, so it only runs when you list it. NetEase's contributor credits are stripped from the top of each lyric.
+
 ### Subsonic API surface
 
 Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:

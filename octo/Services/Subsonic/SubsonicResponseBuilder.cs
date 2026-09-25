@@ -137,6 +137,63 @@ public class SubsonicResponseBuilder
         return new ContentResult { Content = doc.ToString(), ContentType = "application/xml" };
     }
 
+    /// <summary>
+    /// OpenSubsonic getLyricsBySongId (#52). Synced lyrics become timed lines in milliseconds,
+    /// plain lyrics untimed lines; nothing, or an instrumental, is an empty but ok list, which
+    /// is what stops a client logging "data not found" on every play.
+    /// </summary>
+    public IActionResult CreateLyricsListResponse(string format, Octo.Services.Lyrics.LyricsResult? found,
+        string artist, string title)
+    {
+        var lines = found switch
+        {
+            { HasSynced: true } timed => Octo.Services.Lyrics.LyricsText.ParseLrc(timed.Synced!)
+                .Select(line => (Start: (long?)line.StartMs, Text: line.Text)).ToList(),
+            { HasPlain: true } plain => plain.Plain!.Replace("\r\n", "\n").Split('\n')
+                .Select(line => (Start: (long?)null, Text: line.Trim())).ToList(),
+            _ => [],
+        };
+        var synced = found?.HasSynced == true;
+
+        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var structured = lines.Count == 0 ? new List<object>() : new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["lang"] = "xxx",
+                    ["synced"] = synced,
+                    ["displayArtist"] = artist,
+                    ["displayTitle"] = title,
+                    ["offset"] = 0,
+                    ["line"] = lines.Select(line => line.Start is { } start
+                        ? new Dictionary<string, object> { ["start"] = start, ["value"] = line.Text }
+                        : new Dictionary<string, object> { ["value"] = line.Text }).ToList(),
+                },
+            };
+            return CreateJsonResponse(new Dictionary<string, object>
+            {
+                ["status"] = "ok",
+                ["version"] = SubsonicVersion,
+                ["lyricsList"] = new Dictionary<string, object> { ["structuredLyrics"] = structured },
+            });
+        }
+
+        var ns = XNamespace.Get(SubsonicNamespace);
+        var list = new XElement(ns + "lyricsList");
+        if (lines.Count > 0)
+            list.Add(new XElement(ns + "structuredLyrics",
+                new XAttribute("lang", "xxx"), new XAttribute("synced", synced ? "true" : "false"),
+                new XAttribute("displayArtist", artist), new XAttribute("displayTitle", title),
+                new XAttribute("offset", 0),
+                lines.Select(line => line.Start is { } start
+                    ? new XElement(ns + "line", new XAttribute("start", start), line.Text)
+                    : new XElement(ns + "line", line.Text))));
+        var document = new XDocument(new XElement(ns + "subsonic-response",
+            new XAttribute("status", "ok"), new XAttribute("version", SubsonicVersion), list));
+        return new ContentResult { Content = document.ToString(), ContentType = "application/xml" };
+    }
+
     public Dictionary<string, object> RadioPlaylistFields(LastFmRadioStation station)
     {
         var fields = new Dictionary<string, object>

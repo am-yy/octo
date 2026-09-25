@@ -45,4 +45,29 @@ public class MetadataSettings
     /// Environment variable: COVER_FILE
     /// </summary>
     public bool WriteCoverFile { get; set; } = true;
+
+    /// <summary>
+    /// Fetch lyrics: a sidecar beside each download, and live for any song as it plays when the
+    /// library has none (#52). Off by default like the rest; there is no destructive path, since
+    /// an unmatched track simply has no lyrics file and a wrong one is a text file to delete.
+    /// Environment variable: LYRICS_FETCH
+    /// </summary>
+    public bool FetchLyrics { get; set; } = false;
+
+    /// <summary>
+    /// Lyrics sources, in order: lrclib (open, synced), netease (synced and deep on non-Western
+    /// and older music, but an unofficial API, so it only runs when listed), lyricsovh (plain
+    /// text). Synced beats plain, so a later source is only asked while nothing earlier had timing.
+    /// Environment variable: LYRICS_SOURCES
+    /// </summary>
+    public string LyricsSources { get; set; } = "lrclib,lyricsovh";
+
+    public static readonly string[] KnownLyricsSources = ["lrclib", "netease", "lyricsovh"];
+
+    public IReadOnlyList<string> EffectiveLyricsSources =>
+        (LyricsSources ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(source => source.ToLowerInvariant())
+            .Where(source => KnownLyricsSources.Contains(source))
+            .Distinct()
+            .ToList();
 }

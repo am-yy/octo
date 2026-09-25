@@ -578,6 +578,8 @@ public class AdminController : ControllerBase
                 ["UseCoverArtArchive"] = _metadataOpts.CurrentValue.UseCoverArtArchive,
                 ["ReplaceVideoCovers"] = _metadataOpts.CurrentValue.ReplaceVideoCovers,
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
+                ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
+                ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
             },
             ["Genre"] = new Dictionary<string, object>
             {
@@ -1207,6 +1209,8 @@ public class AdminController : ControllerBase
                 ["UseCoverArtArchive"] = _metadataOpts.CurrentValue.UseCoverArtArchive,
                 ["ReplaceVideoCovers"] = _metadataOpts.CurrentValue.ReplaceVideoCovers,
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
+                ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
+                ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
             },
             ["Genre"] = new JsonObject
             {
@@ -1359,6 +1363,7 @@ public class AdminController : ControllerBase
             "LastFm:MinimumPlays", "LastFm:DiscoveryStations",
             "Metadata:Language", "Metadata:AlbumFromTitle", "Metadata:UseCoverArtArchive",
             "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile",
+            "Metadata:FetchLyrics", "Metadata:LyricsSources",
             "Notifications:NtfyUrl", "Notifications:NtfyToken",
             "Notifications:DiscordWebhookUrl",
             "Notifications:NotifyDownloadStarted", "Notifications:NotifyDownloadCompleted",

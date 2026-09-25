@@ -1312,7 +1312,7 @@ document.getElementById('f-action-users')?.addEventListener('input', syncLibrary
 
 // The action history and Octo's questions both sit behind the admin browse session and read the
 // same way: fetch, sign in once on a 401, then one row per entry.
-async function showSessionTable(holder, path, head, row) {
+async function showSessionTable(holder, path, head, row, summary = () => '') {
   if (!holder) return;
   try {
     let response = await api(path, { credentials: 'same-origin' });
@@ -1321,9 +1321,11 @@ async function showSessionTable(holder, path, head, row) {
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
+    const note = summary(body);
+    const lead = note ? `<p class="set-info-d">${note}</p>` : '';
 
-    if (!body.entries?.length) { holder.innerHTML = '<p class="set-info-d">Nothing yet.</p>'; return; }
-    holder.innerHTML = `
+    if (!body.entries?.length) { holder.innerHTML = `${lead}<p class="set-info-d">Nothing yet.</p>`; return; }
+    holder.innerHTML = `${lead}
       <div class="config-table">
         <div class="config-row config-row-head genre-change-row">
           ${head.map(label => `<span>${esc(label)}</span>`).join('')}
@@ -1354,13 +1356,37 @@ const noticeStates = {
   Expired: 'Expired',
 };
 
+const noticeKinds = { Review: 'Review', Duplicates: 'Duplicate' };
+
 document.getElementById('notices-refresh')?.addEventListener('click', () =>
   showSessionTable(document.getElementById('notices-list'), '/api/admin/notices',
     ['Track', 'Why', 'Who', 'Answer'], entry => `
             <span class="key">${esc(entry.artist)} - ${esc(entry.title)}</span>
-            <span class="value">${esc(entry.reason)}</span>
+            <span class="value">${esc(noticeKinds[entry.kind] || entry.kind)}: ${esc(entry.reason)}</span>
             <span class="value">${esc(entry.username)}</span>
-            <span class="value">${esc(noticeStates[entry.state] || entry.state)}${entry.submitted ? ', sent to AcoustID' : ''}</span>`));
+            <span class="value">${esc(noticeStates[entry.state] || entry.state)}${entry.submitted ? ', sent to AcoustID' : ''}</span>`,
+    body => {
+      const scan = body.duplicateScan;
+      if (!scan) return '';
+      const when = new Date(scan.atUtc).toLocaleString();
+      return `Last duplicate scan ${esc(when)}: ${scan.tracks} tracks with a recording id, ${scan.groups} group${scan.groups === 1 ? '' : 's'}`
+        + (scan.complete ? '.' : ', but the walk did not finish, so nothing was settled.');
+    }));
+
+document.getElementById('duplicates-scan')?.addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const response = await api('/api/admin/duplicates/scan', { method: 'POST' });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    toast('Scanning the library for duplicates. What it finds shows under Questions.', 'ok');
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
 
 document.getElementById('lidarr-test-connection')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;

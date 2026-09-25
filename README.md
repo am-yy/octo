@@ -362,9 +362,21 @@ about again. `LIBRARY_ACTIONS_NOTICE_PREFIX` (`▸ ` by default) sets Octo's pla
 from the action playlists, since in one Octo asks you something and in the other you tell Octo
 something, and `LIBRARY_ACTIONS_NOTICE_MAX` (default 100) is how many questions one playlist
 holds at once; the rest wait their turn. `LIBRARY_ACTIONS_RATINGS_SCOPE` says where a star
-counts as a command: `NoticeOnly` only on a track in Review, where the only reason to rate it
-is to answer, and `Global` on any track. `Auto`, the default, is `NoticeOnly` while Review is
-on and `Global` otherwise, which is how ratings behaved before Review existed.
+counts as a command: `NoticeOnly` only on a track in Review or Duplicates, where the only
+reason to rate it is to answer, and `Global` on any track. `Auto`, the default, is
+`NoticeOnly` while either playlist is on and `Global` otherwise, which is how ratings behaved
+before they existed.
+
+`LIBRARY_ACTIONS_DUPLICATES` adds a Duplicates playlist per allowed user: recordings the
+library holds more than once, side by side, the copy worth keeping first (lossless before
+lossy, then the higher bitrate). Two files are copies only when they carry the same
+MusicBrainz recording id and are the same version, so a live take, a remix, a radio edit or a
+second part never is, and a file without a recording id is never grouped; Octo writes that id
+on every download it confirms, and Picard does too. Octo only points copies out. Remove the
+one you do not want with an action playlist; Keep, or taking a copy out of the playlist, says
+the copies are on purpose and stops Octo asking about them. The library is walked every
+`LIBRARY_ACTIONS_DUPLICATES_SCAN_HOURS` (default 24) with Octo's Navidrome admin credential,
+and the dashboard can start a walk at once.
 
 `SLSKD_VERIFY_DOWNLOADS` fingerprints each finished Soulseek download with Chromaprint and
 identifies it through AcoustID before it joins the library, using the free key in

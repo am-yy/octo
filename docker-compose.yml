@@ -132,8 +132,12 @@ services:
       # settle. Answer with Keep (5 stars) or an action; removing a track answers too.
       LibraryActions__NoticePrefix: ${LIBRARY_ACTIONS_NOTICE_PREFIX:-▸ }
       LibraryActions__ReviewEnabled: ${LIBRARY_ACTIONS_REVIEW:-false}
+      # Recordings the library holds more than once, side by side, the copy worth keeping first.
+      # Octo only points them out; nothing is removed unless you remove it.
+      LibraryActions__DuplicatesEnabled: ${LIBRARY_ACTIONS_DUPLICATES:-false}
+      LibraryActions__DuplicatesScanHours: ${LIBRARY_ACTIONS_DUPLICATES_SCAN_HOURS:-24}
       LibraryActions__NoticeMaxTracks: ${LIBRARY_ACTIONS_NOTICE_MAX:-100}
-      # Auto: stars only act on tracks in Octo's playlists while Review is on, anywhere otherwise.
+      # Auto: stars only act on tracks in Octo's playlists while Review or Duplicates is on.
       LibraryActions__RatingsScope: ${LIBRARY_ACTIONS_RATINGS_SCOPE:-Auto}
 
       # ----- Metadata language (genre tags etc. from Deezer / Last.fm) -----

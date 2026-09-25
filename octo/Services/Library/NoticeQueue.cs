@@ -180,62 +180,155 @@ public sealed class NoticeQueue : IDisposable
     }
 
     /// <summary>
-    /// A person kept this track. For Review the question was about the file, so every open Review
-    /// entry for it is answered, whoever else was asked. Returns the entry Octo had open for this
-    /// person, or null when Octo never asked them about this track.
+    /// A person kept this track, which answers every question Octo had open for them about it. For
+    /// Review the question was about the file, so it is answered for everyone asked. For
+    /// Duplicates, keeping one copy says the copies are on purpose, so that person's whole group
+    /// is settled. A rating or the Keep playlist cannot say which playlist it came from, so a
+    /// track in both is answered in both. Returns the entry Octo had open for this person, Review
+    /// first, or null when Octo never asked them about this track.
     /// </summary>
     public NoticeEntry? MarkKept(string username, string navidromeId)
     {
-        NoticeEntry? mine;
+        List<NoticeEntry> mine;
         lock (_lock)
         {
-            mine = _entries.Values.FirstOrDefault(entry => entry.IsOpen && entry.NavidromeId == navidromeId
-                && entry.Username.Equals(username.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (mine is null) return null;
+            mine = _entries.Values.Where(entry => entry.IsOpen && entry.NavidromeId == navidromeId
+                    && entry.Username.Equals(username.Trim(), StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry => entry.Kind)
+                .ToList();
+            if (mine.Count == 0) return null;
 
             var now = DateTime.UtcNow;
-            foreach (var entry in _entries.Values.Where(entry => entry.IsOpen && entry.Kind == mine.Kind).ToList())
+            foreach (var asked in mine)
+            foreach (var entry in _entries.Values.Where(entry => entry.IsOpen && entry.Kind == asked.Kind).ToList())
             {
-                var answered = mine.Kind == NoticeKind.Review
-                    ? entry.NavidromeId == navidromeId || entry.LocalPath == mine.LocalPath
-                    // Keeping one copy of a duplicate says these copies are on purpose: the whole
-                    // group is settled for this person.
-                    : entry.GroupKey == mine.GroupKey
-                      && entry.Username.Equals(mine.Username, StringComparison.OrdinalIgnoreCase);
+                var answered = asked.Kind == NoticeKind.Review
+                    ? entry.NavidromeId == navidromeId || entry.LocalPath == asked.LocalPath
+                    : entry.GroupKey == asked.GroupKey
+                      && entry.Username.Equals(asked.Username, StringComparison.OrdinalIgnoreCase);
                 if (!answered) continue;
                 _entries[entry.Key] = entry with
                 {
-                    State = mine.Kind == NoticeKind.Review ? NoticeState.Kept : NoticeState.Dismissed,
+                    State = asked.Kind == NoticeKind.Review ? NoticeState.Kept : NoticeState.Dismissed,
                     ResolvedUtc = now,
                     // One answer is one submission. A download nobody requested is asked of every
                     // allowed user, and each of their entries carries the same fingerprint.
-                    Fingerprint = entry.Key == mine.Key ? entry.Fingerprint : null,
+                    Fingerprint = entry.Key == asked.Key ? entry.Fingerprint : null,
                 };
             }
         }
         MarkDirty();
-        return mine;
+        return mine[0];
     }
 
     /// <summary>
     /// An action ran on this track, so every open question about it is answered, for everyone:
-    /// the file it was about has gone or changed.
+    /// the file it was about has gone or changed. The rest of a duplicate group it belonged to
+    /// is no longer the group Octo asked about, so those questions expire, and the next scan asks
+    /// again if copies remain.
     /// </summary>
     public void MarkActed(string navidromeId)
     {
         var now = DateTime.UtcNow;
         lock (_lock)
         {
+            var groups = new HashSet<string>(StringComparer.Ordinal);
             foreach (var entry in _entries.Values.Where(entry => entry.NavidromeId == navidromeId).ToList())
             {
                 var recentlyDismissed = entry.State == NoticeState.Dismissed
                     && entry.ResolvedUtc is { } at && now - at < ActedAfterDismissWindow;
                 if (!entry.IsOpen && !recentlyDismissed) continue;
                 _entries[entry.Key] = entry with { State = NoticeState.Acted, ResolvedUtc = now, Fingerprint = null };
+                if (entry.GroupKey is { } group) groups.Add(group);
             }
+            foreach (var entry in _entries.Values
+                         .Where(entry => entry.IsOpen && entry.GroupKey is { } group && groups.Contains(group)).ToList())
+                _entries[entry.Key] = entry with { State = NoticeState.Expired, ResolvedUtc = now };
         }
         MarkDirty();
     }
+
+    public static string DuplicateKey(string username, string groupKey, string trackId) =>
+        $"dup|{username.Trim().ToLowerInvariant()}|{groupKey}|{trackId}";
+
+    /// <summary>
+    /// Bring the Duplicates questions in line with a library walk (#53): one entry per allowed
+    /// user per copy, the copy worth keeping first. Only a scan settles a duplicate by itself: a
+    /// group no longer found means a copy went, so its open questions expire. A group someone
+    /// settled stays settled for them, and a group that expired and is found again is asked again.
+    /// A walk that did not finish adds what it found and expires nothing. Returns how many
+    /// questions it opened.
+    /// </summary>
+    public int SyncDuplicates(IReadOnlyList<DuplicateGroup> groups, IEnumerable<string> users, bool complete)
+    {
+        var now = DateTime.UtcNow;
+        var owners = users.Select(user => user.Trim()).Where(user => user.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var live = groups.Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        var opened = 0;
+        lock (_lock)
+        {
+            if (complete)
+                foreach (var entry in _entries.Values.Where(entry => entry.Kind == NoticeKind.Duplicates && entry.IsOpen
+                             && !live.Contains(entry.GroupKey ?? "")).ToList())
+                    _entries[entry.Key] = entry with { State = NoticeState.Expired, ResolvedUtc = now };
+
+            var settled = _entries.Values
+                .Where(entry => entry.Kind == NoticeKind.Duplicates && entry.GroupKey is not null
+                    && entry.State is NoticeState.Dismissed or NoticeState.Kept or NoticeState.Acted)
+                .Select(entry => $"{entry.Username.ToLowerInvariant()}|{entry.GroupKey}")
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var group in groups)
+            foreach (var user in owners)
+            {
+                if (settled.Contains($"{user.ToLowerInvariant()}|{group.Key}")) continue;
+
+                for (var i = 0; i < group.Tracks.Count; i++)
+                {
+                    var track = group.Tracks[i];
+                    var key = DuplicateKey(user, group.Key, track.Id);
+                    var reason = i == 0
+                        ? $"The best of {group.Tracks.Count} copies: {Describe(track)}"
+                        : $"{Describe(track)}, also in the library as {Describe(group.Tracks[0])}";
+                    if (_entries.TryGetValue(key, out var existing))
+                    {
+                        if (existing.State != NoticeState.Expired) continue;
+                        _entries[key] = existing with
+                        {
+                            State = NoticeState.Waiting, Order = i, Reason = reason,
+                            CreatedUtc = now, QueuedUtc = null, ResolvedUtc = null,
+                        };
+                        opened++;
+                        continue;
+                    }
+                    _entries[key] = new NoticeEntry
+                    {
+                        Key = key,
+                        Kind = NoticeKind.Duplicates,
+                        Username = user,
+                        Artist = track.Artist,
+                        Title = track.Title,
+                        Album = track.Album,
+                        NavidromeId = track.Id,
+                        GroupKey = group.Key,
+                        Order = i,
+                        State = NoticeState.Waiting,
+                        Reason = reason,
+                        CreatedUtc = now,
+                        NextLookupUtc = now,
+                    };
+                    opened++;
+                }
+            }
+            Trim();
+        }
+        MarkDirty();
+        return opened;
+    }
+
+    private static string Describe(LibraryTrack track) =>
+        track.BitRate > 0 ? $"{track.Suffix.ToUpperInvariant()}, {track.BitRate} kbps" : track.Suffix.ToUpperInvariant();
 
     /// <summary>Kept entries with a fingerprint that has not been sent or refused yet.</summary>
     public IReadOnlyList<NoticeEntry> AwaitingSubmission()

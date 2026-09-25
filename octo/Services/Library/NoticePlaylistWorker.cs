@@ -20,33 +20,48 @@ public static class NoticeReconcile
 {
     public static NoticePlan Plan(IReadOnlyList<NoticeEntry> entries, IReadOnlySet<string> present, int max)
     {
-        // Queued and gone from the playlist: the person removed it by hand, which is an answer.
+        bool Listed(NoticeEntry entry) => entry.NavidromeId is { } id && present.Contains(id);
+
+        // Queued and gone from the playlist: the person removed it by hand, which is an answer. A
+        // duplicate group is one question, so taking any copy out answers it for the whole group.
+        var removedByHand = entries
+            .Where(entry => entry.State == NoticeState.Queued && entry.NavidromeId is not null && !Listed(entry))
+            .ToList();
+        var answeredGroups = removedByHand.Where(entry => entry.GroupKey is not null)
+            .Select(entry => entry.GroupKey!).ToHashSet(StringComparer.Ordinal);
+        var removedKeys = removedByHand.Select(entry => entry.Key).ToHashSet(StringComparer.Ordinal);
         var dismiss = entries
-            .Where(entry => entry.State == NoticeState.Queued && entry.NavidromeId is { } id && !present.Contains(id))
+            .Where(entry => removedKeys.Contains(entry.Key)
+                || (entry.IsOpen && entry.GroupKey is { } group && answeredGroups.Contains(group)))
             .Select(entry => entry.Key).ToList();
+        var dismissing = dismiss.ToHashSet(StringComparer.Ordinal);
+        bool StillAsking(NoticeEntry entry) => entry.IsOpen && !dismissing.Contains(entry.Key);
 
         // Waiting but already in the playlist (a restart between adding and recording, or the
         // person added it themselves): count it as asked rather than adding it twice.
         var adopt = entries
-            .Where(entry => entry.State == NoticeState.Waiting && entry.NavidromeId is { } id && present.Contains(id))
+            .Where(entry => entry.State == NoticeState.Waiting && Listed(entry) && StillAsking(entry))
             .Select(entry => entry.Key).ToList();
 
-        // Settled some other way but still listed: take it off. A dismissal is usually the removal
-        // itself, but keeping one copy of a duplicate dismisses the copies still sitting there.
+        // Settled but still listed: take it off. A track an open question still needs stays,
+        // whatever an older, settled entry about it says; a duplicate group found again after one
+        // expired would otherwise lose its own tracks.
+        var needed = entries.Where(entry => StillAsking(entry) && entry.NavidromeId is not null)
+            .Select(entry => entry.NavidromeId!).ToHashSet(StringComparer.Ordinal);
         var remove = entries
-            .Where(entry => entry.State is NoticeState.Kept or NoticeState.Acted or NoticeState.Expired
-                    or NoticeState.Dismissed
-                && entry.NavidromeId is { } id && present.Contains(id))
+            .Where(entry => Listed(entry) && !needed.Contains(entry.NavidromeId!)
+                && (!entry.IsOpen || dismissing.Contains(entry.Key)))
             .Select(entry => entry.NavidromeId!)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        var asked = entries.Count(entry => entry.State == NoticeState.Queued && entry.NavidromeId is { } id && present.Contains(id))
+        var asked = entries.Count(entry => entry.State == NoticeState.Queued && Listed(entry) && StillAsking(entry))
             + adopt.Count;
         var room = Math.Max(0, max - asked);
 
         var waiting = entries
-            .Where(entry => entry.State == NoticeState.Waiting && entry.NavidromeId is { } id && !present.Contains(id))
+            .Where(entry => entry.State == NoticeState.Waiting && entry.NavidromeId is not null && !Listed(entry)
+                && StillAsking(entry))
             .ToList();
 
         // A duplicate pair only makes sense together, so a group goes in whole or waits.

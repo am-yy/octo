@@ -202,6 +202,11 @@ builder.Services.AddSingleton(sp => new Octo.Services.Library.NoticeQueue(
     sp.GetRequiredService<ILogger<Octo.Services.Library.NoticeQueue>>()));
 builder.Services.AddSingleton<Octo.Services.Library.NavidromePlaylistApi>();
 builder.Services.AddHostedService<Octo.Services.Library.NoticePlaylistWorker>();
+// Singleton AND hosted, like the rating worker, so the dashboard's "Scan now" reaches the
+// instance the host is running.
+builder.Services.AddSingleton<Octo.Services.Library.DuplicateScanWorker>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<Octo.Services.Library.DuplicateScanWorker>());
 builder.Services.AddHttpClient(Octo.Services.Fingerprint.MusicBrainzClient.ClientName, c =>
 {
     c.BaseAddress = new Uri("https://musicbrainz.org/ws/2/");

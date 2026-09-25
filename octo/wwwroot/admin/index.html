@@ -1181,7 +1181,7 @@
               <label class="switch"><input type="checkbox" name="LibraryActions.RatingsEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Where a star counts</div><div class="set-info-d"><strong>Only in Octo's playlists</strong> makes a star a command only on a track sitting in Review, where the only reason to rate it is to answer; everywhere else a star is just a rating. Automatic does that while Review is on, and counts a star on any track otherwise, which is how ratings worked before Review existed.</div></div>
+              <div class="set-info"><div class="set-info-t">Where a star counts</div><div class="set-info-d"><strong>Only in Octo's playlists</strong> makes a star a command only on a track sitting in Review or Duplicates, where the only reason to rate it is to answer; everywhere else a star is just a rating. Automatic does that while either playlist is on, and counts a star on any track otherwise, which is how ratings worked before they existed.</div></div>
               <select class="set-input" name="LibraryActions.RatingsScope">
                 <option value="Auto">Automatic</option>
                 <option value="NoticeOnly">Only in Octo's playlists</option>
@@ -1212,6 +1212,31 @@
             <div class="set-row stack">
               <div class="set-info"><div class="set-info-t">At most <span class="set-opt">tracks</span></div><div class="set-info-d">How many questions one playlist holds at once. The rest wait their turn, so a busy week arrives as a queue rather than a wall.</div></div>
               <input class="set-input" name="LibraryActions.NoticeMaxTracks" type="number" min="1" max="500" data-number="true" />
+            </div>
+          </form>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head">
+            <h3 class="set-title">Duplicates</h3>
+            <p class="set-desc">Recordings your library holds more than once, side by side in a playlist, the copy worth keeping first: lossless before lossy, then the higher bitrate. Octo only points them out. Needs library actions on.</p>
+          </div>
+          <form data-section="library-actions-duplicates" class="set-card">
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Duplicates playlist</div><div class="set-info-d">Two files count as copies only when they carry the same MusicBrainz recording and are the same version, so a live take, a remix or a radio edit is never one. Remove a copy you do not want with an action playlist; Keep, or taking a copy out of the playlist, means the copies are on purpose and stops Octo asking about them.</div></div>
+              <label class="switch"><input type="checkbox" name="LibraryActions.DuplicatesEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Playlist name</div></div>
+              <input class="set-input" name="LibraryActions.DuplicatesPlaylistName" maxlength="80" placeholder="Duplicates" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Look every <span class="set-opt">hours</span></div><div class="set-info-d">How often Octo walks the library for copies. The walk only reads.</div></div>
+              <input class="set-input" name="LibraryActions.DuplicatesScanHours" type="number" min="1" max="168" data-number="true" />
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Look now</div><div class="set-info-d">Walk the library straight away rather than at the next interval. What it found shows under Questions.</div></div>
+              <button class="btn btn-ghost" type="button" id="duplicates-scan">Scan now</button>
             </div>
           </form>
         </div>

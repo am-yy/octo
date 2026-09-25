@@ -64,6 +64,7 @@ public class AdminController : ControllerBase
     private readonly LastFmRadioStateStore? _radioState;
     private readonly LastFmRadioRefreshQueue? _radioRefresh;
     private readonly Octo.Services.Library.NoticeQueue? _notices;
+    private readonly Octo.Services.Library.DuplicateScanWorker? _duplicates;
 
     public AdminController(
         SettingsFileWriter settings,
@@ -101,9 +102,11 @@ public class AdminController : ControllerBase
         LastFmRadioRefreshQueue? radioRefresh = null,
         IOptionsMonitor<ListenBrainzSettings>? listenBrainzOpts = null,
         Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
-        Octo.Services.Library.NoticeQueue? notices = null)
+        Octo.Services.Library.NoticeQueue? notices = null,
+        Octo.Services.Library.DuplicateScanWorker? duplicates = null)
     {
         _notices = notices;
+        _duplicates = duplicates;
         _listenBrainzOpts = listenBrainzOpts;
         _listenBrainz = listenBrainz;
         _deezer = deezer;
@@ -565,6 +568,9 @@ public class AdminController : ControllerBase
                 ["NoticePrefix"] = actions.NoticePrefix ?? "",
                 ["ReviewEnabled"] = actions.ReviewEnabled,
                 ["ReviewPlaylistName"] = actions.ReviewPlaylistName ?? "",
+                ["DuplicatesEnabled"] = actions.DuplicatesEnabled,
+                ["DuplicatesPlaylistName"] = actions.DuplicatesPlaylistName ?? "",
+                ["DuplicatesScanHours"] = actions.DuplicatesScanHours,
                 ["NoticeMaxTracks"] = actions.NoticeMaxTracks,
                 ["RatingsScope"] = actions.RatingsScope.ToString(),
                 ["AllowedUsers"] = actions.AllowedUsers ?? [],
@@ -871,7 +877,24 @@ public class AdminController : ControllerBase
                 entry.CreatedUtc,
                 entry.ResolvedUtc,
             }),
+            duplicateScan = _duplicates?.LastResult,
         });
+    }
+
+    /// <summary>
+    /// The Duplicates card's "Scan now". Read-only, like a radio refresh, so the admin request
+    /// guard is enough; the walk runs in the background and the result shows with the questions.
+    /// </summary>
+    [HttpPost("duplicates/scan")]
+    public IActionResult ScanDuplicates()
+    {
+        var settings = _libraryActionOpts.CurrentValue;
+        if (_duplicates is null || !settings.Enabled || !settings.DuplicatesEnabled)
+            return BadRequest(new { error = "Turn on library actions and the Duplicates playlist first." });
+        if (!_navIdentity.HasAdminIdentity)
+            return BadRequest(new { error = "Octo needs a Navidrome admin credential to read the whole library." });
+        _duplicates.RequestScan();
+        return Accepted(new { ok = true, queued = true });
     }
 
     /// <summary>
@@ -1231,6 +1254,9 @@ public class AdminController : ControllerBase
                 ["NoticePrefix"] = actions.NoticePrefix ?? "",
                 ["ReviewEnabled"] = actions.ReviewEnabled,
                 ["ReviewPlaylistName"] = actions.ReviewPlaylistName ?? "",
+                ["DuplicatesEnabled"] = actions.DuplicatesEnabled,
+                ["DuplicatesPlaylistName"] = actions.DuplicatesPlaylistName ?? "",
+                ["DuplicatesScanHours"] = actions.DuplicatesScanHours,
                 ["NoticeMaxTracks"] = actions.NoticeMaxTracks,
                 ["RatingsScope"] = actions.RatingsScope.ToString(),
                 ["AllowedUsers"] = JsonSerializer.SerializeToNode(actions.AllowedUsers ?? [])!,
@@ -1391,7 +1417,8 @@ public class AdminController : ControllerBase
             "LibraryActions:Actions", "LibraryActions:AllowedUsers",
             "LibraryActions:NoticePrefix", "LibraryActions:ReviewEnabled",
             "LibraryActions:ReviewPlaylistName", "LibraryActions:NoticeMaxTracks",
-            "LibraryActions:RatingsScope",
+            "LibraryActions:RatingsScope", "LibraryActions:DuplicatesEnabled",
+            "LibraryActions:DuplicatesPlaylistName", "LibraryActions:DuplicatesScanHours",
             "Soulseek:SubmitConfirmedFingerprints", "Soulseek:AcoustIdUserApiKey",
             "Genre:Enabled", "Genre:MaxGenres", "Genre:OnEmpty", "Genre:Fallback",
             "Genre:UnknownLabel", "Genre:Mappings", "Genre:Blocklist",

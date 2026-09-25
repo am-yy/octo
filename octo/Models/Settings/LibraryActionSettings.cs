@@ -156,6 +156,23 @@ public class LibraryActionSettings
     public string ReviewPlaylistName { get; set; } = "Review";
 
     /// <summary>
+    /// A "Duplicates" playlist per allowed user: recordings the library holds more than once,
+    /// side by side, the copy worth keeping first. Octo only points them out; nothing is removed
+    /// unless you remove it (#53).
+    /// Environment variable: LIBRARY_ACTIONS_DUPLICATES
+    /// </summary>
+    public bool DuplicatesEnabled { get; set; } = false;
+
+    /// <summary>The Duplicates playlist's name, after the notice prefix.</summary>
+    public string DuplicatesPlaylistName { get; set; } = "Duplicates";
+
+    /// <summary>
+    /// How often the library is walked for duplicates.
+    /// Environment variable: LIBRARY_ACTIONS_DUPLICATES_SCAN_HOURS
+    /// </summary>
+    public int DuplicatesScanHours { get; set; } = 24;
+
+    /// <summary>
     /// Most tracks a notice playlist holds at once. A newly enabled install with a large library
     /// would otherwise get a wall, not a queue.
     /// Environment variable: LIBRARY_ACTIONS_NOTICE_MAX
@@ -172,7 +189,9 @@ public class LibraryActionSettings
 
     public int EffectiveNoticeMaxTracks => Math.Clamp(NoticeMaxTracks, 1, 500);
 
-    public bool NoticesEnabled => ReviewEnabled;
+    public TimeSpan EffectiveDuplicatesScanInterval => TimeSpan.FromHours(Math.Clamp(DuplicatesScanHours, 1, 168));
+
+    public bool NoticesEnabled => ReviewEnabled || DuplicatesEnabled;
 
     public LibraryRatingScope EffectiveRatingsScope => RatingsScope != LibraryRatingScope.Auto
         ? RatingsScope
@@ -181,11 +200,13 @@ public class LibraryActionSettings
     public IEnumerable<NoticeKind> EnabledNoticeKinds()
     {
         if (ReviewEnabled) yield return NoticeKind.Review;
+        if (DuplicatesEnabled) yield return NoticeKind.Duplicates;
     }
 
     public string NoticeTitle(NoticeKind kind) => (NoticePrefix ?? "") + kind switch
     {
         NoticeKind.Review => string.IsNullOrWhiteSpace(ReviewPlaylistName) ? "Review" : ReviewPlaylistName.Trim(),
+        NoticeKind.Duplicates => string.IsNullOrWhiteSpace(DuplicatesPlaylistName) ? "Duplicates" : DuplicatesPlaylistName.Trim(),
         _ => kind.ToString(),
     };
 

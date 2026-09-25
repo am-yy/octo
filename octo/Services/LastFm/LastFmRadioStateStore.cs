@@ -343,7 +343,7 @@ public sealed class LastFmRadioStateStore
         JsonSerializer.Serialize(value))!;
 
     private const string Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    private static string ToBase62(ReadOnlySpan<byte> bytes, int length)
+    internal static string ToBase62(ReadOnlySpan<byte> bytes, int length)
     {
         var value = new System.Numerics.BigInteger(bytes[..16], isUnsigned: true, isBigEndian: true);
         var builder = new StringBuilder(length);

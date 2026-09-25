@@ -100,6 +100,8 @@ public sealed class LastFmRadioTrackResolver
                     Year = Integer(song, "year"),
                     Track = Integer(song, "track"),
                     Genre = NullableString(song, "genre"),
+                    Suffix = NullableString(song, "suffix"),
+                    BitRate = Integer(song, "bitRate"),
                     IsLocal = true,
                 };
             }

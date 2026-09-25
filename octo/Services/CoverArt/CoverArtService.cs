@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using SixLabors.Fonts;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Drawing.Processing;
@@ -26,11 +27,30 @@ public class CoverArtService
     private volatile bool _logoLoadAttempted;
     private readonly ConcurrentDictionary<string, byte[]> _radioStationCovers =
         new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, NamedCover> _namedCovers = new(StringComparer.Ordinal);
+    private readonly string? _coversDirectory;
+    private readonly string _kitDirectory;
+    private CoverKit? _kit;
 
-    public CoverArtService(ILogger<CoverArtService> logger)
+    private const int CoverSize = 600;
+
+    /// <summary>Where a named cover came from. Only a drawn one may carry the Octo badge: an
+    /// override is someone's own picture, and the last-resort render already is the logo.</summary>
+    private enum CoverSource { Override, Drawn, Legacy }
+
+    private sealed record NamedCover(byte[] Bytes, CoverSource Source);
+
+    /// <param name="coversDirectory">Pictures that replace a generated cover, named after the
+    /// playlist (/app/config/covers).</param>
+    /// <param name="kitDirectory">The cover kit; Assets/cover-kit beside the app by default.</param>
+    public CoverArtService(ILogger<CoverArtService> logger, string? coversDirectory = null, string? kitDirectory = null)
     {
         _logger = logger;
+        _coversDirectory = string.IsNullOrWhiteSpace(coversDirectory) ? null : coversDirectory;
+        _kitDirectory = kitDirectory ?? System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "cover-kit");
     }
+
+    private CoverKit Kit => LazyInitializer.EnsureInitialized(ref _kit, () => new CoverKit(_kitDirectory, _logger));
 
     private Image? GetOctoLogo()
     {
@@ -186,19 +206,158 @@ public class CoverArtService
     }
 
     /// <summary>
-    /// Uses the established Octo placeholder artwork for an Internet Radio
-    /// station, adding only the station's current display name. The bounded
-    /// cache keeps ordinary Subsonic cover refreshes from repeatedly rendering
-    /// the same image while allowing renamed stations to receive new artwork.
+    /// A radio station's cover: its named cover with the small Octo badge in the corner, the same
+    /// mark an external track carries, because a station is mostly music from outside the library.
+    /// A picture someone put in the covers folder is used as it is.
     /// </summary>
     public byte[] GetRadioStationCover(string stationName)
     {
         var name = string.IsNullOrWhiteSpace(stationName) ? "Octo Radio" : stationName.Trim();
+        var (cover, key) = Named(name, null, station: true);
+        if (cover.Source != CoverSource.Drawn) return cover.Bytes;
         if (_radioStationCovers.Count >= 128) _radioStationCovers.Clear();
-        return _radioStationCovers.GetOrAdd(name, RenderRadioStationCover);
+        return _radioStationCovers.GetOrAdd(key, _ => AddOctoBadge(cover.Bytes));
     }
 
-    private byte[] RenderRadioStationCover(string stationName)
+    /// <summary>
+    /// A cover for something Octo names, such as a mix (#54), with no Octo mark: the logo says
+    /// where a result came from, and a mix is the listener's own library.
+    ///
+    /// In order: a picture in the covers folder named after it; the cover kit's design for
+    /// <paramref name="kitName"/> (the genre or decade, or the name itself); the kit's generic
+    /// design in a colour of this name's own; a plain gradient with the name; and last a plain
+    /// placeholder, never the logo. Replacing a picture in the covers folder shows without a restart.
+    /// </summary>
+    public byte[] GetNamedCover(string name, string? kitName = null) => Named(name, kitName, station: false).Cover.Bytes;
+
+    private (NamedCover Cover, string Key) Named(string name, string? kitName, bool station)
+    {
+        var display = string.IsNullOrWhiteSpace(name) ? "Octo" : name.Trim();
+        var lookup = string.IsNullOrWhiteSpace(kitName) ? display : kitName.Trim();
+        var custom = FindOverride(display, lookup);
+        var key = $"{display}\n{lookup}\n{(custom is null ? 0 : File.GetLastWriteTimeUtc(custom).Ticks)}";
+        if (_namedCovers.Count >= 256) _namedCovers.Clear();
+        var cover = _namedCovers.GetOrAdd(key, _ => RenderNamed(display, lookup, custom));
+        // Nothing could be drawn. A station falls back to the old logo render, which is Octo's to
+        // mark; anything else to a plain placeholder, since the logo would claim the listener's music.
+        if (cover.Source == CoverSource.Legacy && !station) cover = new NamedCover(GetPlaceholderCover(branded: false), CoverSource.Legacy);
+        return (cover, key);
+    }
+
+    private NamedCover RenderNamed(string display, string lookup, string? custom)
+    {
+        try
+        {
+            if (custom is not null && LoadOverride(custom) is { } picture) return new(picture, CoverSource.Override);
+            var kit = Kit;
+            if (kit.TryResolve(lookup, out var entry) && RenderTemplate(kit, entry) is { } designed)
+                return new(designed, CoverSource.Drawn);
+            if (kit.GenericEntry(lookup) is { } generic && RenderTemplate(kit, generic) is { } genericCover)
+                return new(genericCover, CoverSource.Drawn);
+            if (RenderGradientName(display, CoverKit.Generic(lookup)) is { } plain)
+                return new(plain, CoverSource.Drawn);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not draw a cover for {Name}", display);
+        }
+        return new(RenderLegacyStationCover(display), CoverSource.Legacy);
+    }
+
+    private byte[]? RenderTemplate(CoverKit kit, CoverKit.Entry entry)
+    {
+        var svg = File.ReadAllText(entry.TemplatePath)
+            .Replace("__BG_FROM__", entry.From)
+            .Replace("__BG_TO__", entry.To)
+            .Replace("__STROKE__", kit.Stroke)
+            .Replace("__STROKE_WIDTH__", kit.StrokeWidth.ToString("0.00", CultureInfo.InvariantCulture));
+        return SvgTemplateRenderer.Render(svg, CoverSize, _logger);
+    }
+
+    /// <summary>
+    /// A picture in the covers folder named after the playlist, the genre or decade, or the kit's
+    /// file name for it. Only ever inside that folder, whatever the name contains.
+    /// </summary>
+    private string? FindOverride(string display, string lookup)
+    {
+        if (_coversDirectory is null || !Directory.Exists(_coversDirectory)) return null;
+        var root = System.IO.Path.GetFullPath(_coversDirectory).TrimEnd(System.IO.Path.DirectorySeparatorChar)
+            + System.IO.Path.DirectorySeparatorChar;
+        foreach (var stem in new[] { SafeName(display), SafeName(lookup), SafeName(CoverKit.Slug(lookup)) }.Distinct())
+        foreach (var extension in new[] { ".jpg", ".jpeg", ".png", ".webp" })
+        {
+            var path = System.IO.Path.GetFullPath(System.IO.Path.Combine(_coversDirectory, stem + extension));
+            if (path.StartsWith(root, StringComparison.Ordinal) && File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    private static string SafeName(string name)
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars().Concat(['/', '\\']).ToHashSet();
+        return new string(name.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray()).Trim();
+    }
+
+    /// <summary>Someone's own picture, cropped to its centre square and sized like every cover.</summary>
+    private byte[]? LoadOverride(string path)
+    {
+        try
+        {
+            using var image = Image.Load<Rgba32>(path);
+            var side = Math.Min(image.Width, image.Height);
+            image.Mutate(ctx => ctx
+                .Crop(new Rectangle((image.Width - side) / 2, (image.Height - side) / 2, side, side))
+                .Resize(CoverSize, CoverSize));
+            using var ms = new MemoryStream();
+            image.Save(ms, new JpegEncoder { Quality = 90 });
+            return ms.ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("The cover {Path} could not be read: {M}", path, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>The kit's colours and the name in white, for when no template can be drawn.</summary>
+    private byte[]? RenderGradientName(string name, (string From, string To) colours)
+    {
+        if (!Color.TryParse(colours.From, out var from) || !Color.TryParse(colours.To, out var to)) return null;
+        using var image = new Image<Rgba32>(CoverSize, CoverSize);
+        image.Mutate(ctx => ctx.Fill(new LinearGradientBrush(new PointF(0, 0), new PointF(CoverSize, CoverSize),
+            GradientRepetitionMode.None, new ColorStop(0, from), new ColorStop(1, to))));
+
+        if (CoverFonts.Family() is { } family)
+        {
+            RichTextOptions options;
+            var size = 72f;
+            FontRectangle measured;
+            do
+            {
+                options = new RichTextOptions(family.CreateFont(size, FontStyle.Bold))
+                {
+                    Origin = new PointF(CoverSize / 2f, CoverSize / 2f),
+                    WrappingLength = 520,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextAlignment = TextAlignment.Center,
+                };
+                measured = TextMeasurer.MeasureSize(name, options);
+                size -= 4f;
+            } while ((measured.Width > 520f || measured.Height > 400f) && size >= 28f);
+            image.Mutate(ctx => ctx.DrawText(options, name, Color.White));
+        }
+
+        using var ms = new MemoryStream();
+        image.Save(ms, new JpegEncoder { Quality = 90 });
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// The cover every station had before the kit: the Octo logo over the station's name. Now only
+    /// the last resort, when nothing else can be drawn.
+    /// </summary>
+    private byte[] RenderLegacyStationCover(string stationName)
     {
         const int size = 600;
 

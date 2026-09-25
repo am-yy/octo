@@ -61,6 +61,8 @@ builder.Services.Configure<GenreSettings>(
     builder.Configuration.GetSection("Genre"));
 builder.Services.Configure<LibraryActionSettings>(
     builder.Configuration.GetSection("LibraryActions"));
+builder.Services.Configure<GeneratedPlaylistSettings>(
+    builder.Configuration.GetSection("GeneratedPlaylists"));
 builder.Services.Configure<SubsonicSettings>(
     builder.Configuration.GetSection("Subsonic"));
 builder.Services.Configure<SoulseekSettings>(
@@ -205,6 +207,13 @@ builder.Services.AddHostedService<Octo.Services.Library.NoticePlaylistWorker>();
 // Singleton AND hosted, like the rating worker, so the dashboard's "Scan now" reaches the
 // instance the host is running.
 builder.Services.AddSingleton<Octo.Services.Library.DuplicateScanWorker>();
+// Genre and decade mixes (#54): served by Octo like radio stations, never written to Navidrome.
+builder.Services.AddSingleton(sp => new Octo.Services.Library.GeneratedPlaylistService(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "generated-playlists.json"),
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<GeneratedPlaylistSettings>>(),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<GenreSettings>>(),
+    sp.GetRequiredService<ILogger<Octo.Services.Library.GeneratedPlaylistService>>()));
 builder.Services.AddHostedService(sp =>
     sp.GetRequiredService<Octo.Services.Library.DuplicateScanWorker>());
 builder.Services.AddHttpClient(Octo.Services.Fingerprint.MusicBrainzClient.ClientName, c =>
@@ -283,7 +292,10 @@ builder.Services.AddHostedService<StartupValidationOrchestrator>();
 
 builder.Services.AddHostedService<CacheCleanupService>();
 
-builder.Services.AddSingleton<Octo.Services.CoverArt.CoverArtService>();
+// Pictures in /app/config/covers replace the generated cover of the playlist they are named after.
+builder.Services.AddSingleton(sp => new Octo.Services.CoverArt.CoverArtService(
+    sp.GetRequiredService<ILogger<Octo.Services.CoverArt.CoverArtService>>(),
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "covers")));
 // Cover-art sources, registered in fallback order. The aggregator pulls them
 // all out via IEnumerable<ICoverArtSource> and queries them sequentially —
 // adding/removing a source is a one-line registration change here.

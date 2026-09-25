@@ -104,6 +104,23 @@ services:
       LastFm__RefreshIntervalHours: ${LASTFM_REFRESH_INTERVAL_HOURS:-12}
       LastFm__MinimumPlays: ${LASTFM_MINIMUM_PLAYS:-10}
 
+      # ----- Mixes: genre and decade playlists drawn from your own library -----
+      # Served by Octo per listener, like the radio stations; nothing is written to Navidrome.
+      GeneratedPlaylists__Enabled: ${MIXES_ENABLED:-false}
+      GeneratedPlaylists__Genres: ${MIXES_GENRES:-true}
+      GeneratedPlaylists__Decades: ${MIXES_DECADES:-true}
+      GeneratedPlaylists__TrackCount: ${MIX_TRACK_COUNT:-100}
+      GeneratedPlaylists__MaxPerArtist: ${MIX_MAX_PER_ARTIST:-3}
+      GeneratedPlaylists__CreateAt: ${MIX_CREATE_AT:-20}
+      GeneratedPlaylists__RemoveBelow: ${MIX_REMOVE_BELOW:-10}
+      GeneratedPlaylists__MaxPlaylists: ${MIX_MAX_PLAYLISTS:-20}
+      GeneratedPlaylists__RefreshHours: ${MIX_REFRESH_HOURS:-24}
+      GeneratedPlaylists__NewShare: ${MIX_NEW_SHARE:-0}
+      GeneratedPlaylists__NewDays: ${MIX_NEW_DAYS:-30}
+      # Empty means "{0} Mix". A default with braces cannot be written here, because the
+      # first closing brace would end the variable.
+      GeneratedPlaylists__NameFormat: ${MIX_NAME_FORMAT:-}
+
       # ----- Genre normalization -----
       # Collapses the genres downloads arrive with into a browsable list. Off by
       # default. The mapping table itself lives in the dashboard / settings.json,

@@ -30,6 +30,7 @@ public class AdminContractTests
         ("Metadata", typeof(MetadataSettings)),
         ("Server", typeof(ServerSettings)),
         ("ListenBrainz", typeof(ListenBrainzSettings)),
+        ("GeneratedPlaylists", typeof(GeneratedPlaylistSettings)),
     ];
 
     /// <summary>Settings deliberately absent from the admin API, each with its reason.</summary>

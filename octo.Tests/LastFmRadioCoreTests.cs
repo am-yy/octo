@@ -20,27 +20,8 @@ namespace Octo.Tests;
 
 public class LastFmRadioCoreTests
 {
-    [Fact]
-    public void RadioStationCovers_KeepLogoAcrossConcurrentFirstRequests()
-    {
-        var service = new CoverArtService(new Mock<ILogger<CoverArtService>>().Object);
-        var covers = Enumerable.Range(0, 16).AsParallel().WithDegreeOfParallelism(8)
-            .Select(index => service.GetRadioStationCover($"Station {index}"))
-            .ToList();
-
-        Assert.All(covers, bytes =>
-        {
-            using var image = Image.Load<Rgb24>(bytes);
-            var logoPixels = 0;
-            for (var y = 78; y < 378; y++)
-            for (var x = 150; x < 450; x++)
-            {
-                var pixel = image[x, y];
-                if (pixel.R > 40 || pixel.B > 40) logoPixels++;
-            }
-            Assert.True(logoPixels > 1_000, $"Expected Octo logo; found {logoPixels} colored pixels");
-        });
-    }
+    // RadioStationCovers_CarryTheOctoBadgeAcrossConcurrentFirstRequests (CoverKitTests.cs) replaces
+    // the old centred-logo check: a station's cover is now its kit design with the corner badge.
 
     [Theory]
     [InlineData("Beyoncé feat. Jay-Z", "Beyoncé")]

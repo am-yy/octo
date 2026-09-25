@@ -65,6 +65,7 @@ public class AdminController : ControllerBase
     private readonly LastFmRadioRefreshQueue? _radioRefresh;
     private readonly Octo.Services.Library.NoticeQueue? _notices;
     private readonly Octo.Services.Library.DuplicateScanWorker? _duplicates;
+    private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedOpts;
 
     public AdminController(
         SettingsFileWriter settings,
@@ -103,8 +104,10 @@ public class AdminController : ControllerBase
         IOptionsMonitor<ListenBrainzSettings>? listenBrainzOpts = null,
         Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
         Octo.Services.Library.NoticeQueue? notices = null,
-        Octo.Services.Library.DuplicateScanWorker? duplicates = null)
+        Octo.Services.Library.DuplicateScanWorker? duplicates = null,
+        IOptionsMonitor<GeneratedPlaylistSettings>? generatedOpts = null)
     {
+        _generatedOpts = generatedOpts;
         _notices = notices;
         _duplicates = duplicates;
         _listenBrainzOpts = listenBrainzOpts;
@@ -437,6 +440,7 @@ public class AdminController : ControllerBase
         var lastfm = _lastFmOpts.CurrentValue;
         var genre = _genreOpts.CurrentValue;
         var actions = _libraryActionOpts.CurrentValue;
+        var mixes = _generatedOpts?.CurrentValue ?? new GeneratedPlaylistSettings();
         var notif = _notificationOpts.CurrentValue;
 
         // Use Dictionary<string, object> so System.Text.Json doesn't camelCase
@@ -596,6 +600,21 @@ public class AdminController : ControllerBase
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
                 ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
+            },
+            ["GeneratedPlaylists"] = new Dictionary<string, object>
+            {
+                ["Enabled"] = mixes.Enabled,
+                ["Genres"] = mixes.Genres,
+                ["Decades"] = mixes.Decades,
+                ["TrackCount"] = mixes.TrackCount,
+                ["MaxPerArtist"] = mixes.MaxPerArtist,
+                ["CreateAt"] = mixes.CreateAt,
+                ["RemoveBelow"] = mixes.RemoveBelow,
+                ["MaxPlaylists"] = mixes.MaxPlaylists,
+                ["RefreshHours"] = mixes.RefreshHours,
+                ["NewShare"] = mixes.NewShare,
+                ["NewDays"] = mixes.NewDays,
+                ["NameFormat"] = mixes.NameFormat ?? "",
             },
             ["Genre"] = new Dictionary<string, object>
             {
@@ -1127,6 +1146,7 @@ public class AdminController : ControllerBase
         var lastfm = _lastFmOpts.CurrentValue;
         var genre = _genreOpts.CurrentValue;
         var actions = _libraryActionOpts.CurrentValue;
+        var mixes = _generatedOpts?.CurrentValue ?? new GeneratedPlaylistSettings();
         var notif = _notificationOpts.CurrentValue;
         var server = _serverOpts.CurrentValue;
 
@@ -1282,6 +1302,21 @@ public class AdminController : ControllerBase
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
                 ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
+            },
+            ["GeneratedPlaylists"] = new JsonObject
+            {
+                ["Enabled"] = mixes.Enabled,
+                ["Genres"] = mixes.Genres,
+                ["Decades"] = mixes.Decades,
+                ["TrackCount"] = mixes.TrackCount,
+                ["MaxPerArtist"] = mixes.MaxPerArtist,
+                ["CreateAt"] = mixes.CreateAt,
+                ["RemoveBelow"] = mixes.RemoveBelow,
+                ["MaxPlaylists"] = mixes.MaxPlaylists,
+                ["RefreshHours"] = mixes.RefreshHours,
+                ["NewShare"] = mixes.NewShare,
+                ["NewDays"] = mixes.NewDays,
+                ["NameFormat"] = mixes.NameFormat ?? "",
             },
             ["Genre"] = new JsonObject
             {
@@ -1440,6 +1475,10 @@ public class AdminController : ControllerBase
             "Metadata:Language", "Metadata:AlbumFromTitle", "Metadata:UseCoverArtArchive",
             "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile",
             "Metadata:FetchLyrics", "Metadata:LyricsSources",
+            "GeneratedPlaylists:Enabled", "GeneratedPlaylists:Genres", "GeneratedPlaylists:Decades",
+            "GeneratedPlaylists:TrackCount", "GeneratedPlaylists:MaxPerArtist", "GeneratedPlaylists:CreateAt",
+            "GeneratedPlaylists:RemoveBelow", "GeneratedPlaylists:MaxPlaylists", "GeneratedPlaylists:RefreshHours",
+            "GeneratedPlaylists:NewShare", "GeneratedPlaylists:NewDays", "GeneratedPlaylists:NameFormat",
             "Notifications:NtfyUrl", "Notifications:NtfyToken",
             "Notifications:DiscordWebhookUrl",
             "Notifications:NotifyDownloadStarted", "Notifications:NotifyDownloadCompleted",

@@ -427,6 +427,30 @@ last good version. State is bounded and versioned in
 `/app/config/lastfm-radio-state.json`; do not share that file across Octo instances
 because cross-process locking is not supported.
 
+### Mixes
+
+`MIXES_ENABLED` adds genre and decade mixes drawn from each listener's own library, listed
+beside the radio stations and served by Octo in the same way: per listener, read-only, and
+never written to Navidrome, so a rescan cannot empty one and nobody edits one by accident.
+`MIXES_GENRES` and `MIXES_DECADES` choose the kinds. A genre or decade gets a mix once it has
+`MIX_CREATE_AT` tracks (default 20) and loses it only below `MIX_REMOVE_BELOW` (default 10),
+so one at the edge does not come and go, and `MIX_MAX_PLAYLISTS` (default 20) shows the
+largest first. Years and anything on the genre blocklist never get a mix of their own.
+
+Each mix holds `MIX_TRACK_COUNT` tracks (default 100) with at most `MIX_MAX_PER_ARTIST` (3)
+by one artist; the cap is never relaxed, so a mix that cannot be filled without breaking it
+is shorter. A mix is a seeded draw that holds still for `MIX_REFRESH_HOURS` (24), so every
+client shows the same tracks, and is then drawn again. `MIX_NEW_SHARE` keeps that percentage
+of each mix, and of the Discovery Mix station, for tracks new to the listener: never played,
+or added in the last `MIX_NEW_DAYS`. It is 0 by default, which changes nothing.
+`MIX_NAME_FORMAT` names them, `{0}` being the genre or decade ("{0} Mix" when empty).
+
+Mixes and radio stations get generated covers, each in a colour of its name's own. A station
+cover also carries the small Octo badge, because a station is mostly music from outside the
+library; a mix is the listener's own and does not. A picture in `/app/config/covers` named
+after a mix or station (`Rock Mix.jpg`, `Rock.png`) replaces its cover, and replacing the
+picture shows without a restart.
+
 ### Download path on Windows and manual installs
 
 `DOWNLOAD_PATH` in `.env` is a HOST path: it is bind-mounted as `/music` into the octo, yt-dlp-shim, and slskd containers, and it is the only path you change to move the library. Container-side settings (Octo's `Library__DownloadPath`, slskd's downloads dir) stay `/music`.

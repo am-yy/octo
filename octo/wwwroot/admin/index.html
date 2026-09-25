@@ -101,6 +101,12 @@
             </svg>
             <span>ListenBrainz</span>
           </button>
+          <button class="sidebar-nav-item" data-tab="mixes">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2.5 4h7M2.5 8h7M2.5 12h4.5"/><circle cx="12" cy="11.5" r="1.8"/><path d="M13.8 11.5V4.5l-2 .8"/>
+            </svg>
+            <span>Mixes</span>
+          </button>
         </div>
 
         <div class="sidebar-nav-section">
@@ -1004,6 +1010,73 @@
               </div>
               <textarea class="set-input secret-text" id="f-lb-user-tokens" name="ListenBrainz.UserTokens" data-json="true" data-json-empty="{}" data-error-for="lb-user-tokens-error" rows="3" spellcheck="false" autocomplete="off"></textarea>
               <div id="lb-user-tokens-error" class="field-error" role="alert" data-json-error hidden></div>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ─── MIXES ──────────────────────────────────────────── -->
+      <section data-pane="mixes">
+        <header class="page-header">
+          <div>
+            <h1>Mixes</h1>
+            <p>Genre and decade playlists drawn from each listener's own library, shown beside the radio stations and drawn again on a schedule. Octo serves them itself: nothing is written to Navidrome, and a listener cannot edit one by accident.</p>
+          </div>
+        </header>
+
+        <div class="set-section">
+          <div class="set-head"><h3 class="set-title">Which mixes</h3></div>
+          <form data-section="generated-playlists" class="set-card">
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Mixes</div><div class="set-info-d">Off by default. A listener sees theirs the next time their client lists playlists; the first list waits a moment while Octo counts the library.</div></div>
+              <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Enabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">A mix per genre</div><div class="set-info-d">From the genres your files carry. Years and anything on the genre blocklist never get one.</div></div>
+              <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Genres" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">A mix per decade</div><div class="set-info-d">1950s onward, from the year your files carry.</div></div>
+              <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Decades" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Name <span class="set-opt">{0} is the genre or decade</span></div><div class="set-info-d">A picture named after a mix in the <code>covers</code> folder beside <code>settings.json</code> replaces its generated cover.</div></div>
+              <input class="set-input" name="GeneratedPlaylists.NameFormat" maxlength="60" placeholder="{0} Mix" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Appears at <span class="set-opt">tracks</span> / goes below <span class="set-opt">tracks</span></div><div class="set-info-d">A genre or decade gets a mix once it has the first number of tracks, and loses it only below the second, so one sitting at the edge does not come and go.</div></div>
+              <div class="set-grid2">
+                <input class="set-input" name="GeneratedPlaylists.CreateAt" type="number" min="1" max="10000" data-number="true" aria-label="A mix appears at this many tracks" />
+                <input class="set-input" name="GeneratedPlaylists.RemoveBelow" type="number" min="0" max="10000" data-number="true" aria-label="A mix goes below this many tracks" />
+              </div>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">At most <span class="set-opt">mixes</span></div><div class="set-info-d">The largest first.</div></div>
+              <input class="set-input" name="GeneratedPlaylists.MaxPlaylists" type="number" min="1" max="100" data-number="true" />
+            </div>
+          </form>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head"><h3 class="set-title">What goes in</h3></div>
+          <form data-section="generated-playlists-draw" class="set-card">
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Tracks per mix / at most <span class="set-opt">per artist</span></div><div class="set-info-d">The artist cap keeps a lopsided genre from turning into half an album. It is never relaxed: a mix that cannot be filled without breaking it is shorter.</div></div>
+              <div class="set-grid2">
+                <input class="set-input" name="GeneratedPlaylists.TrackCount" type="number" min="10" max="500" data-number="true" aria-label="Tracks per mix" />
+                <input class="set-input" name="GeneratedPlaylists.MaxPerArtist" type="number" min="1" max="50" data-number="true" aria-label="At most this many tracks per artist" />
+              </div>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Draw again every <span class="set-opt">hours</span></div><div class="set-info-d">A mix holds still between draws, so every client shows the same tracks.</div></div>
+              <input class="set-input" name="GeneratedPlaylists.RefreshHours" type="number" min="1" max="336" data-number="true" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">Kept for new tracks <span class="set-opt">percent</span> / new for <span class="set-opt">days</span></div><div class="set-info-d">The share of each mix, and of Discovery Mix, saved for tracks new to the listener: never played, or added within the days given. <strong>0 changes nothing</strong>, which is the default.</div></div>
+              <div class="set-grid2">
+                <input class="set-input" name="GeneratedPlaylists.NewShare" type="number" min="0" max="100" data-number="true" aria-label="Percent kept for new tracks" />
+                <input class="set-input" name="GeneratedPlaylists.NewDays" type="number" min="1" max="3650" data-number="true" aria-label="A track counts as new for this many days" />
+              </div>
             </div>
           </form>
         </div>

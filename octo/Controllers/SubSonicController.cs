@@ -67,6 +67,8 @@ public class SubsonicController : ControllerBase
     private readonly Octo.Services.Lyrics.LyricsService? _lyricsService;
     private readonly IOptionsMonitor<MetadataSettings>? _metadataSettings;
     private readonly Octo.Services.Library.NoticeQueue? _noticeQueue;
+    private readonly Octo.Services.Library.GeneratedPlaylistService? _generatedPlaylists;
+    private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedSettings;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -101,8 +103,12 @@ public class SubsonicController : ControllerBase
         SyncCatalogService? syncCatalog = null,
         Octo.Services.Lyrics.LyricsService? lyricsService = null,
         IOptionsMonitor<MetadataSettings>? metadataSettings = null,
-        Octo.Services.Library.NoticeQueue? noticeQueue = null)
+        Octo.Services.Library.NoticeQueue? noticeQueue = null,
+        Octo.Services.Library.GeneratedPlaylistService? generatedPlaylists = null,
+        IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null)
     {
+        _generatedPlaylists = generatedPlaylists;
+        _generatedSettings = generatedSettings;
         _listenBrainz = listenBrainz;
         _syncCatalog = syncCatalog;
         _lyricsService = lyricsService;
@@ -323,7 +329,12 @@ public class SubsonicController : ControllerBase
         await BootstrapRadioProfileAsync(username, parameters);
         var stations = PlaylistStations(username);
         QueueRefreshIfStale(username);
-        if (stations.Count == 0) return File(relay.Body, relay.ContentType ?? $"application/{format}");
+        var mixSettings = _generatedSettings?.CurrentValue;
+        var generated = _generatedPlaylists is not null && mixSettings is { Enabled: true }
+            ? await _generatedPlaylists.ListAsync(username, parameters)
+            : [];
+        if (stations.Count == 0 && generated.Count == 0)
+            return File(relay.Body, relay.ContentType ?? $"application/{format}");
         try
         {
             if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
@@ -336,6 +347,8 @@ public class SubsonicController : ControllerBase
                 playlists["playlist"] = rows;
                 foreach (var station in stations)
                     rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.RadioPlaylistFields(station)));
+                foreach (var mix in generated)
+                    rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.GeneratedPlaylistFields(mix, mixSettings!)));
                 return File(Encoding.UTF8.GetBytes(root.ToJsonString()), "application/json");
             }
             var document = XDocument.Parse(Encoding.UTF8.GetString(relay.Body));
@@ -347,11 +360,15 @@ public class SubsonicController : ControllerBase
                 playlistsElement.Add(new XElement(ns + "playlist",
                     _responseBuilder.RadioPlaylistFields(station).Select(pair =>
                         new XAttribute(pair.Key, XmlValue(pair.Value)))));
+            foreach (var mix in generated)
+                playlistsElement.Add(new XElement(ns + "playlist",
+                    _responseBuilder.GeneratedPlaylistFields(mix, mixSettings!).Select(pair =>
+                        new XAttribute(pair.Key, XmlValue(pair.Value)))));
             return File(Encoding.UTF8.GetBytes(document.ToString()), "application/xml");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not merge Radio stations into getPlaylists");
+            _logger.LogWarning(ex, "Could not merge Radio stations and mixes into getPlaylists");
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
         }
     }
@@ -365,6 +382,20 @@ public class SubsonicController : ControllerBase
         var format = parameters.GetValueOrDefault("f", "xml");
         var id = parameters.GetValueOrDefault("id", "");
         var username = parameters.GetValueOrDefault("u", "");
+
+        // A mix is the listener's own library, served as a playlist Navidrome has never heard of.
+        // The ping is the auth check, as for a station: nothing about a user is revealed first.
+        if (_generatedPlaylists?.Find(username, id) is { } mix && _generatedSettings is not null)
+        {
+            var authOnly = parameters.ToDictionary(pair => pair.Key, pair => pair.Value);
+            authOnly.Remove("id");
+            var check = await _proxyService.RelaySafeAsync("rest/ping", authOnly);
+            if (!check.Success || check.Body is null || !IsSuccessfulSubsonicResponse(check.Body, format))
+                return _responseBuilder.CreateError(format, 40, "Wrong username or password");
+            var entries = await _generatedPlaylists.MaterializeAsync(username, mix, parameters, HttpContext.RequestAborted);
+            return _responseBuilder.CreateGeneratedPlaylistResponse(format, mix, _generatedSettings.CurrentValue, entries);
+        }
+
         var station = PlaylistStations(username).FirstOrDefault(item => item.Id == id);
         if (station is null)
         {
@@ -380,6 +411,9 @@ public class SubsonicController : ControllerBase
             return _responseBuilder.CreateError(format, 40, "Wrong username or password");
 
         var songs = await MaterializeStationAsync(station, parameters);
+        if (_generatedPlaylists is not null)
+            songs = (await _generatedPlaylists.BlendIntoDiscoveryAsync(username, station, songs, parameters,
+                HttpContext.RequestAborted)).ToList();
 
         // A song this user's sync catalog also holds goes out as the catalog describes it:
         // same album, and filed under the library's own artist where there is one. A syncing
@@ -605,8 +639,8 @@ public class SubsonicController : ControllerBase
         var parameters = await ExtractAllParameters();
         var format = parameters.GetValueOrDefault("f", "xml");
         var id = parameters.GetValueOrDefault("id", "");
-        if (id.StartsWith("or", StringComparison.Ordinal) && id.Length == 22)
-            return _responseBuilder.CreateError(format, 70, "Octo Radio stations are read-only");
+        if (IsOctoPlaylistId(id))
+            return _responseBuilder.CreateError(format, 70, "Octo's generated playlists are read-only");
         var endpoint = Request.Path.Value?.Split('/').LastOrDefault()?.Replace(".view", "")
             ?? "updateInternetRadioStation";
         var relay = await _proxyService.RelaySafeAsync("rest/" + endpoint, parameters);
@@ -627,8 +661,8 @@ public class SubsonicController : ControllerBase
         var parameters = await ExtractAllParameters();
         var format = parameters.GetValueOrDefault("f", "xml");
         var id = parameters.GetValueOrDefault("playlistId", parameters.GetValueOrDefault("id", ""));
-        if (id.StartsWith("or", StringComparison.Ordinal) && id.Length == 22)
-            return _responseBuilder.CreateError(format, 70, "Octo Radio stations are read-only");
+        if (IsOctoPlaylistId(id))
+            return _responseBuilder.CreateError(format, 70, "Octo's generated playlists are read-only");
         var endpoint = Request.Path.Value?.Split('/').LastOrDefault()?.Replace(".view", "") ?? "updatePlaylist";
         var relay = await _proxyService.RelaySafeAsync("rest/" + endpoint, parameters);
         return relay.Success && relay.Body is not null
@@ -1832,6 +1866,15 @@ public class SubsonicController : ControllerBase
             return ServePlaceholder();
         }
 
+        // A mix is the listener's own library, so its cover carries no Octo mark: the logo says
+        // where a result came from, and this came from them.
+        if (_generatedPlaylists?.Find(parameters.GetValueOrDefault("u", ""), id) is { } mixCover)
+        {
+            var bytes = _coverArtService?.GetNamedCover(mixCover.Name, mixCover.Label);
+            if (bytes is not null && bytes.Length > 0) return File(bytes, "image/jpeg");
+            return ServePlaceholder(branded: false);
+        }
+
         // Playlist covers haven't changed — keep the existing path.
         if (PlaylistIdHelper.IsExternalPlaylist(id))
         {
@@ -2535,6 +2578,13 @@ public class SubsonicController : ControllerBase
             _radioRefreshQueue.Enqueue(username);
     }
 
+    /// <summary>
+    /// Octo's own playlist ids: radio stations start "or", mixes "og". Navidrome's ids are 22
+    /// characters of base62 that start with 0 to 7, so neither can ever be one of them.
+    /// </summary>
+    private static bool IsOctoPlaylistId(string id) => id.Length == 22
+        && (id.StartsWith("or", StringComparison.Ordinal) || id.StartsWith("og", StringComparison.Ordinal));
+
     private static bool IsTrue(string value) => value.Equals("true", StringComparison.OrdinalIgnoreCase)
         || value == "1";
 
@@ -2924,10 +2974,10 @@ public class SubsonicController : ControllerBase
 
         var tail = endpoint.Length == prefix.Length ? "" : endpoint[(prefix.Length + 1)..].Trim('/');
         var id = tail.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-        var reserved = id.StartsWith("or", StringComparison.Ordinal) && id.Length == 22;
+        var reserved = IsOctoPlaylistId(id);
         if (reserved && !HttpMethods.IsGet(Request.Method))
             return StatusCode(StatusCodes.Status405MethodNotAllowed,
-                new { error = "Octo Radio stations are read-only" });
+                new { error = "Octo's generated playlists are read-only" });
         if (tail.Length > 0 && !reserved) return null;
 
         // A successful upstream list validates the native bearer token before Octo

@@ -24,6 +24,14 @@ public class Song
     public string? Genre { get; set; }
 
     /// <summary>
+    /// The file's real format and bitrate, for a library song Navidrome described. Without them a
+    /// library song was declared as FLAC at 1411 kbps whatever it was, and a strict client
+    /// prepared the wrong decoder for an MP3.
+    /// </summary>
+    public string? Suffix { get; set; }
+    public int? BitRate { get; set; }
+
+    /// <summary>
     /// The Soulseek peer and remote filename this came from, when it came from Soulseek.
     /// Carried so it can be written down at registration: "Wrong song" needs to know who
     /// delivered the file, and nothing else in Octo records that after the transfer ends.

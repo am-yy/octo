@@ -24,12 +24,15 @@ public class DeezerMetadataService : IDisposable
     /// <summary>
     /// Everything Deezer knows about a track, for writing rich file tags. Contributors is every
     /// Main and Featured artist, in order; the search hit only names the main one, so it comes
-    /// from the track's own record.
+    /// from the track's own record. AlbumArtistName and RecordType come from the album, and are
+    /// what tell a compilation apart: Deezer usually reports one as record_type "album", so the
+    /// album artist "Various Artists" is the signal that holds.
     /// </summary>
     public record FullTrackMeta(
         string? AlbumTitle, string? AlbumCoverUrl, int? Year, int? Duration, string? ArtistName,
         int? TrackNumber, int? DiscNumber, string? Isrc, int? TotalTracks, string? Genre,
-        string? Label, string? ReleaseDate, IReadOnlyList<string>? Contributors = null);
+        string? Label, string? ReleaseDate, IReadOnlyList<string>? Contributors = null,
+        string? AlbumArtistName = null, string? RecordType = null);
 
     /// <summary>One album from a catalog search. Year is not on the search payload;
     /// the detail call fills it.</summary>
@@ -260,7 +263,7 @@ public class DeezerMetadataService : IDisposable
                 if (t.TryGetProperty("artist", out var art)) artName = Str(art, "name");
 
                 int? year = null, totalTracks = null;
-                string? genre = null, label = null, releaseDate = null;
+                string? genre = null, label = null, releaseDate = null, albumArtist = null, recordType = null;
                 if (albId > 0)
                 {
                     using var ar = await GetJsonAsync($"{Base}/album/{albId}", ct);
@@ -268,6 +271,9 @@ public class DeezerMetadataService : IDisposable
                     if (ar.Doc != null)
                     {
                         var root = ar.Doc.RootElement;
+                        recordType = Str(root, "record_type");
+                        if (root.TryGetProperty("artist", out var albumArt) && albumArt.ValueKind == JsonValueKind.Object)
+                            albumArtist = Str(albumArt, "name");
                         releaseDate = Str(root, "release_date");
                         if (!string.IsNullOrEmpty(releaseDate) && releaseDate.Length >= 4 && int.TryParse(releaseDate[..4], out var yr))
                             year = yr;
@@ -305,7 +311,8 @@ public class DeezerMetadataService : IDisposable
                 }
 
                 meta = new FullTrackMeta(albTitle, cover, year, Int(t, "duration"), artName,
-                    trackNumber, discNumber, isrc, totalTracks, genre, label, releaseDate, contributors);
+                    trackNumber, discNumber, isrc, totalTracks, genre, label, releaseDate, contributors,
+                    albumArtist, recordType);
             }
         }
         catch (Exception ex)

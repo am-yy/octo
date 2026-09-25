@@ -574,6 +574,7 @@ public class AdminController : ControllerBase
             ["Metadata"] = new Dictionary<string, object>
             {
                 ["Language"] = _metadataOpts.CurrentValue.Language ?? "",
+                ["AlbumFromTitle"] = _metadataOpts.CurrentValue.AlbumFromTitle,
             },
             ["Genre"] = new Dictionary<string, object>
             {
@@ -1199,6 +1200,7 @@ public class AdminController : ControllerBase
             ["Metadata"] = new JsonObject
             {
                 ["Language"] = _metadataOpts.CurrentValue.Language ?? "",
+                ["AlbumFromTitle"] = _metadataOpts.CurrentValue.AlbumFromTitle,
             },
             ["Genre"] = new JsonObject
             {
@@ -1349,7 +1351,7 @@ public class AdminController : ControllerBase
             "LastFm:HistoryRetentionDays", "LastFm:DiscoveryPercent",
             "LastFm:RefreshIntervalHours",
             "LastFm:MinimumPlays", "LastFm:DiscoveryStations",
-            "Metadata:Language",
+            "Metadata:Language", "Metadata:AlbumFromTitle",
             "Notifications:NtfyUrl", "Notifications:NtfyToken",
             "Notifications:DiscordWebhookUrl",
             "Notifications:NotifyDownloadStarted", "Notifications:NotifyDownloadCompleted",

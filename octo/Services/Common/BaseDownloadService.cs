@@ -84,6 +84,8 @@ public abstract class BaseDownloadService : IDownloadService
     /// every subclass calls stays as it is.</summary>
     private SoulseekSettings SoulseekSettingsValue =>
         _serviceProvider.GetService<IOptionsMonitor<SoulseekSettings>>()?.CurrentValue ?? new SoulseekSettings();
+    private MetadataSettings MetadataSettingsValue =>
+        _serviceProvider.GetService<IOptionsMonitor<MetadataSettings>>()?.CurrentValue ?? new MetadataSettings();
 
     /// <summary>The name a download was asked for under, captured before anything corrects it.</summary>
     protected internal sealed record RequestedIdentity(string Artist, string Title, string Album, int? Track);
@@ -777,7 +779,13 @@ public abstract class BaseDownloadService : IDownloadService
                     if (string.IsNullOrEmpty(song.PrimaryArtist) && !string.IsNullOrEmpty(m.ArtistName)) song.PrimaryArtist = m.ArtistName;
                     if (song.Artists.Count == 0 && m.Contributors is { Count: > 1 } contributors) song.Artists = contributors.ToList();
                     if (string.IsNullOrEmpty(song.Album) && !string.IsNullOrEmpty(m.AlbumTitle)) song.Album = m.AlbumTitle;
-                    if (string.IsNullOrEmpty(song.AlbumArtist) && !string.IsNullOrEmpty(m.ArtistName)) song.AlbumArtist = m.ArtistName;
+                    // The album's own artist, not the track's: the two differ on every feature and
+                    // every compilation.
+                    if (string.IsNullOrEmpty(song.AlbumArtist) && (m.AlbumArtistName ?? m.ArtistName) is { Length: > 0 } albumArtist)
+                        song.AlbumArtist = albumArtist;
+                    if (IsVariousArtists(m.AlbumArtistName)
+                        || string.Equals(m.RecordType, "compile", StringComparison.OrdinalIgnoreCase))
+                        song.IsCompilation = true;
                     if (string.IsNullOrEmpty(song.CoverArtUrlLarge)) song.CoverArtUrlLarge = m.AlbumCoverUrl;
                     if (!song.Year.HasValue) song.Year = m.Year;
                     if (!song.Track.HasValue) song.Track = m.TrackNumber;
@@ -795,7 +803,41 @@ public abstract class BaseDownloadService : IDownloadService
         {
             Logger.LogWarning(ex, "Deezer enrichment for tagging failed for '{Artist} - {Title}'", song.Artist, song.Title);
         }
+
+        FillAlbumFromFile(song, filePath);
+        ApplySingleFallback(song, MetadataSettingsValue.AlbumFromTitle);
     }
+
+    /// <summary>A source's own album tag beats nothing, and beats filing the track under its title.</summary>
+    private static void FillAlbumFromFile(Song song, string filePath)
+    {
+        var (album, albumArtist, compilation) = TagWriterExtras.ReadAlbum(filePath);
+        if (compilation || IsVariousArtists(albumArtist)) song.IsCompilation = true;
+        if (!string.IsNullOrWhiteSpace(song.Album) || string.IsNullOrWhiteSpace(album)) return;
+        song.Album = album.Trim();
+        if (string.IsNullOrEmpty(song.AlbumArtist) && !string.IsNullOrWhiteSpace(albumArtist))
+            song.AlbumArtist = albumArtist.Trim();
+    }
+
+    /// <summary>
+    /// A track that still has no album is filed as a single under its own title (#50). That is
+    /// a real, correct release, and it gives Navidrome something to group; the alternative is
+    /// one "[Unknown Album]" collecting every unrelated album-less track. Skipped for a
+    /// compilation, where a hundred one-track albums would be worse than the one untidy bucket.
+    /// </summary>
+    internal static void ApplySingleFallback(Song song, bool enabled)
+    {
+        if (!enabled || !string.IsNullOrWhiteSpace(song.Album) || string.IsNullOrWhiteSpace(song.Title)) return;
+        if (song.IsCompilation || IsVariousArtists(song.AlbumArtist)) return;
+        song.Album = song.Title.Trim();
+        if (string.IsNullOrEmpty(song.AlbumArtist)) song.AlbumArtist = song.PrimaryArtist ?? song.Artist;
+    }
+
+    internal static bool IsVariousArtists(string? name) =>
+        name?.Trim() is { Length: > 0 } value
+        && (value.Equals("Various Artists", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("Various", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("VA", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Drop a redundant leading "Artist - " from a track title.</summary>
     private static string StripArtistPrefix(string? artist, string? title)

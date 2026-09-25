@@ -507,6 +507,27 @@ public class DeezerMetadataServiceTests
         Assert.Equal(1, meta.DiscNumber);
     }
 
+    /// <summary>
+    /// Deezer reports most compilations as record_type "album" (checked live on three), so the
+    /// album artist is the signal a compilation is recognised by, and it is the album artist
+    /// rather than the track's that belongs in the album-artist tag.
+    /// </summary>
+    [Fact]
+    public async Task EnrichTrackFullAsync_ReadsTheAlbumArtistAndRecordType()
+    {
+        var search = @"{""data"":[{""title"":""Song"",""duration"":200,
+            ""album"":{""id"":5,""title"":""Summer Hits""},""artist"":{""name"":""Artist""}}]}";
+        var album = @"{""id"":5,""record_type"":""album"",""artist"":{""id"":5080,""name"":""Various Artists""}}";
+        var svc = BuildService(new() { ["/album/5"] = album, ["/search"] = search });
+
+        var meta = await svc.EnrichTrackFullAsync("Artist", "Song");
+
+        Assert.NotNull(meta);
+        Assert.Equal("Various Artists", meta.AlbumArtistName);
+        Assert.Equal("album", meta.RecordType);
+        Assert.Equal("Artist", meta.ArtistName);
+    }
+
     [Fact]
     public async Task FindAlbumIdAsync_SendsPlainTerms_WithoutFieldQualifiers()
     {

@@ -381,6 +381,106 @@ public sealed class DownloadPlacementTests : IDisposable
         Assert.True(string.IsNullOrEmpty(read.Tag.MusicBrainzReleaseGroupId));
     }
 
+    // ---- A track that arrives without an album (#50) ------------------------------------
+
+    [Fact]
+    public void ApplySingleFallback_NoAlbum_FilesUnderTheTitle()
+    {
+        var song = new Song { Artist = "Bizarrap, Rauw Alejandro", PrimaryArtist = "Bizarrap", Title = "Session 56" };
+        BaseDownloadService.ApplySingleFallback(song, enabled: true);
+
+        Assert.Equal("Session 56", song.Album);
+        Assert.Equal("Bizarrap", song.AlbumArtist);
+    }
+
+    [Fact]
+    public void ApplySingleFallback_Compilation_LeavesItEmpty()
+    {
+        var song = new Song { Artist = "A", Title = "T", IsCompilation = true };
+        BaseDownloadService.ApplySingleFallback(song, enabled: true);
+        Assert.Equal("", song.Album);
+    }
+
+    [Theory]
+    [InlineData("Various Artists")]
+    [InlineData("various")]
+    [InlineData("VA")]
+    public void ApplySingleFallback_VariousArtistsAlbumArtist_LeavesItEmpty(string albumArtist)
+    {
+        var song = new Song { Artist = "A", Title = "T", AlbumArtist = albumArtist };
+        BaseDownloadService.ApplySingleFallback(song, enabled: true);
+        Assert.Equal("", song.Album);
+    }
+
+    [Fact]
+    public void ApplySingleFallback_Off_ChangesNothing()
+    {
+        var song = new Song { Artist = "A", Title = "T" };
+        BaseDownloadService.ApplySingleFallback(song, enabled: false);
+        Assert.Equal("", song.Album);
+    }
+
+    [Fact]
+    public void ApplySingleFallback_AlbumAlreadyKnown_IsLeftAlone()
+    {
+        var song = new Song { Artist = "A", Title = "T", Album = "Real Album" };
+        BaseDownloadService.ApplySingleFallback(song, enabled: true);
+        Assert.Equal("Real Album", song.Album);
+    }
+
+    /// <summary>A source's own album tag beats filing the track under its title.</summary>
+    [Fact]
+    public async Task Enrich_FilesOwnAlbum_BeatsTheTitle()
+    {
+        var service = Service(FolderStructure.Flat);
+        var path = Path.Combine(_root, "t.flac");
+        File.WriteAllBytes(path, AudioFixtures.Flac());
+        using (var file = TagLib.File.Create(path))
+        {
+            file.Tag.Album = "Peer Album";
+            file.Tag.AlbumArtists = ["Peer Artist"];
+            file.Save();
+        }
+
+        var song = new Song { Artist = "A", Title = "T" };
+        await service.Enrich(path, song);
+
+        Assert.Equal("Peer Album", song.Album);
+        Assert.Equal("Peer Artist", song.AlbumArtist);
+    }
+
+    [Fact]
+    public async Task Enrich_CompilationFlagOnTheFile_KeepsTheTitleOutOfTheAlbum()
+    {
+        var service = Service(FolderStructure.Flat);
+        var path = Path.Combine(_root, "t.mp3");
+        File.WriteAllBytes(path, AudioFixtures.Mp3());
+        using (var file = TagLib.File.Create(path))
+        {
+            TagWriterExtras.SetCompilation(file, true);
+            file.Save();
+        }
+
+        var song = new Song { Artist = "A", Title = "T" };
+        await service.Enrich(path, song);
+
+        Assert.True(song.IsCompilation);
+        Assert.Equal("", song.Album);
+    }
+
+    [Fact]
+    public async Task Enrich_NothingKnown_FilesTheTrackAsASingle()
+    {
+        var service = Service(FolderStructure.Flat);
+        var path = Path.Combine(_root, "t.mp3");
+        File.WriteAllBytes(path, AudioFixtures.Mp3());
+
+        var song = new Song { Artist = "A", Title = "T" };
+        await service.Enrich(path, song);
+
+        Assert.Equal("T", song.Album);
+    }
+
     /// <summary>The download service with the transfer stubbed out, so placement and tagging can
     /// be driven against real files in a temp folder.</summary>
     private sealed class PlacementService(string root, FolderStructure layout, ILocalLibraryService library)
@@ -410,6 +510,8 @@ public sealed class DownloadPlacementTests : IDisposable
             PlaceInLibraryAsync(song, requested, path);
 
         public Task Write(string path, Song song) => WriteMetadataAsync(path, song, CancellationToken.None);
+
+        public Task Enrich(string path, Song song) => EnrichAsync(song, path, CancellationToken.None);
     }
 }
 

@@ -10,7 +10,7 @@ namespace Octo.Tests;
 /// the default source order (docs/lyrics-source-eval.md). It makes real requests, so it only
 /// runs when OCTO_LYRICS_EVAL names the sample, a JSON list of {title, artist, album,
 /// duration}; otherwise it passes without doing anything. OCTO_LYRICS_EVAL_OUT is where the
-/// per-song results go, and OCTO_LYRICS_EVAL_SOURCES can name fewer sources than all three.
+/// per-song results go, and OCTO_LYRICS_EVAL_SOURCES can name fewer sources than all four.
 ///
 /// Each service gets at most one request a second, the services run side by side, and every
 /// request is a read. Latency is the time spent on the network for one lookup, the pacing
@@ -24,6 +24,7 @@ public sealed class LyricsSourceEvaluation
         string Source, string Title, string Artist, int? Duration,
         string? NaiveTitle, string? NaiveArtist, double? NaiveDuration, bool? NaiveIsThisSong,
         string? Timing, bool Instrumental, bool Transient, int Attempts, string? CandidateId, string? Doubt,
+        string? MatchedTitle, string? MatchedArtist, double? MatchedDuration, int Requests,
         double LatencyMs, IReadOnlyList<string> FirstLines);
 
     [Fact]
@@ -39,6 +40,7 @@ public sealed class LyricsSourceEvaluation
         var kugou = new KugouLyricsSource(new PacedFactory(), NullLogger<KugouLyricsSource>.Instance);
         var lrclib = new LrclibLyricsSource(new PacedFactory(), NullLogger<LrclibLyricsSource>.Instance);
         var netease = new NeteaseLyricsSource(new PacedFactory(), NullLogger<NeteaseLyricsSource>.Instance);
+        var ovh = new LyricsOvhLyricsSource(new PacedFactory(), NullLogger<LyricsOvhLyricsSource>.Instance);
 
         var runs = await Task.WhenAll(
             RunAsync("kugou", songs, () => kugou.CoolDownUntilUtc, async query =>
@@ -55,7 +57,10 @@ public sealed class LyricsSourceEvaluation
             {
                 var search = await netease.SearchAsync(query, CancellationToken.None);
                 return (search, await netease.FindInAsync(query, search, CancellationToken.None));
-            }));
+            }),
+            // lyrics.ovh names nothing back, so its one answer is the song as asked.
+            RunAsync("lyricsovh", songs, () => DateTime.MinValue, async query =>
+                (LyricsSearch.Empty, await ovh.FindAsync(query, CancellationToken.None))));
 
         await File.WriteAllTextAsync(outPath, JsonSerializer.Serialize(runs.SelectMany(run => run),
             new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
@@ -92,12 +97,16 @@ public sealed class LyricsSourceEvaluation
             }
             var naive = search.Candidates.FirstOrDefault();
             var result = lookup.Result;
+            var matched = result?.CandidateId is { } chosen
+                ? search.Candidates.FirstOrDefault(candidate => candidate.CandidateId == chosen)
+                : null;
             outcomes.Add(new Outcome(source, song.title, song.artist, song.duration,
                 naive?.Title, naive?.Artist, naive?.DurationSeconds,
                 naive is null ? null : LyricsIdentity.SameSong(query.Title, query.Artist, naive.Title, naive.Artist,
                         naive.Artist.Split(['、', ',', '&'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     && LyricsIdentity.LengthFits(query.DurationSeconds, naive.DurationSeconds),
                 result?.Timing.ToString(), result?.Instrumental == true, lookup.Transient, attempts, result?.CandidateId, result?.Doubt,
+                matched?.Title, matched?.Artist, matched?.DurationSeconds, PacedFactory.Network.Value!.Requests,
                 PacedFactory.Network.Value!.Milliseconds,
                 result is null ? [] : LyricsText.Preview(result, 3)));
         }
@@ -107,6 +116,7 @@ public sealed class LyricsSourceEvaluation
     private sealed class StrongBox
     {
         public double Milliseconds;
+        public int Requests;
     }
 
     /// <summary>One request a second per service, with the time on the network added up for
@@ -145,7 +155,11 @@ public sealed class LyricsSourceEvaluation
                     }
                     finally
                     {
-                        if (Network.Value is { } box) box.Milliseconds += clock.Elapsed.TotalMilliseconds;
+                        if (Network.Value is { } box)
+                        {
+                            box.Milliseconds += clock.Elapsed.TotalMilliseconds;
+                            box.Requests++;
+                        }
                     }
                 }
                 finally

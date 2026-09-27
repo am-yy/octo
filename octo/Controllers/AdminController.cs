@@ -401,7 +401,7 @@ public class AdminController : ControllerBase
 
     /// <summary>Cookie carrying the browse session. Scoped to /api/admin so it is
     /// never sent with the Subsonic traffic Octo proxies.</summary>
-    private const string BrowseCookieName = "octo_browse";
+    internal const string BrowseCookieName = "octo_browse";
 
     /// <summary>The running log of songs Octo has fetched, newest first.</summary>
     [HttpGet("downloads")]
@@ -623,6 +623,8 @@ public class AdminController : ControllerBase
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
                 ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
+                ["PreferWordTimedLyrics"] = _metadataOpts.CurrentValue.PreferWordTimedLyrics,
+                ["WriteLyricsBesideAllSongs"] = _metadataOpts.CurrentValue.WriteLyricsBesideAllSongs,
             },
             ["GeneratedPlaylists"] = new Dictionary<string, object>
             {
@@ -1325,6 +1327,8 @@ public class AdminController : ControllerBase
                 ["WriteCoverFile"] = _metadataOpts.CurrentValue.WriteCoverFile,
                 ["FetchLyrics"] = _metadataOpts.CurrentValue.FetchLyrics,
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
+                ["PreferWordTimedLyrics"] = _metadataOpts.CurrentValue.PreferWordTimedLyrics,
+                ["WriteLyricsBesideAllSongs"] = _metadataOpts.CurrentValue.WriteLyricsBesideAllSongs,
             },
             ["GeneratedPlaylists"] = new JsonObject
             {
@@ -1497,7 +1501,8 @@ public class AdminController : ControllerBase
             "LastFm:MinimumPlays", "LastFm:DiscoveryStations",
             "Metadata:Language", "Metadata:AlbumFromTitle", "Metadata:UseCoverArtArchive",
             "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile",
-            "Metadata:FetchLyrics", "Metadata:LyricsSources",
+            "Metadata:FetchLyrics", "Metadata:LyricsSources", "Metadata:PreferWordTimedLyrics",
+            "Metadata:WriteLyricsBesideAllSongs",
             "GeneratedPlaylists:Enabled", "GeneratedPlaylists:Genres", "GeneratedPlaylists:Decades",
             "GeneratedPlaylists:TrackCount", "GeneratedPlaylists:MaxPerArtist", "GeneratedPlaylists:CreateAt",
             "GeneratedPlaylists:RemoveBelow", "GeneratedPlaylists:MaxPlaylists", "GeneratedPlaylists:RefreshHours",

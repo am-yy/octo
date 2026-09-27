@@ -262,7 +262,7 @@ public sealed class LyricsTests : IDisposable
             .WriteAsync(new LyricsJob(audio, "Artist", "Song", null, 200), CancellationToken.None);
 
         Assert.Equal(LyricsWriteOutcome.Written, outcome);
-        Assert.Equal("[00:01.00]line\n", File.ReadAllText(Path.ChangeExtension(audio, ".lrc")));
+        Assert.Equal(LyricsSidecarWriter.OctoMark + "\n[00:01.00]line\n", File.ReadAllText(Path.ChangeExtension(audio, ".lrc")));
         Assert.False(File.Exists(Path.ChangeExtension(audio, ".txt")));
     }
 

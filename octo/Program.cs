@@ -323,11 +323,21 @@ builder.Services.AddSingleton<Octo.Services.CoverArt.DownloadCoverResolver>();
 
 // Lyrics (#52). Sources in the order LYRICS_SOURCES names them; the writer is singleton AND hosted,
 // the same instance both ways, so downloads enqueue into the worker the host is running.
+// No cookies: NetEase answers a search that carries the cookie its first answer set with
+// unrelated popular songs, so with the default handler every search after the first missed.
 builder.Services.AddHttpClient(Octo.Services.Lyrics.LrclibLyricsSource.ClientName, c =>
 {
     c.Timeout = TimeSpan.FromSeconds(8);
     c.DefaultRequestHeaders.UserAgent.ParseAdd(Octo.Services.Common.OctoUserAgent.Value);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
+// KuGou's API is unofficial: a short timeout of its own, so a slow or dead KuGou costs a lookup
+// a few seconds at most.
+builder.Services.AddHttpClient(Octo.Services.Lyrics.KugouLyricsSource.ClientName, c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(6);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd(Octo.Services.Common.OctoUserAgent.Value);
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
+builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.KugouLyricsSource>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.LrclibLyricsSource>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.NeteaseLyricsSource>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.LyricsOvhLyricsSource>();

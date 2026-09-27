@@ -6,9 +6,11 @@ using Octo.Services.Fingerprint;
 namespace Octo.Services.Lyrics;
 
 /// <summary>
-/// Lyrics from the sources LYRICS_SOURCES names, in that order (#52). Synced beats plain, so a
-/// later source is only asked while nothing earlier had timing, and a plain answer is kept in
-/// case nothing better turns up.
+/// Lyrics from the sources LYRICS_SOURCES names, in that order (#52). Word timing beats line
+/// timing beats plain text. A synced answer ends the search, unless "prefer word-timed lyrics"
+/// is on and it has only line timing: then later sources are still asked for word timing, and
+/// the line-timed answer is kept in case none has it. A plain answer is always kept in case
+/// something timed turns up.
 /// </summary>
 public sealed class LyricsService : IDisposable
 {
@@ -28,36 +30,63 @@ public sealed class LyricsService : IDisposable
         _logger = logger;
     }
 
+    /// <summary>The sources in the order they are asked, only those that are on.</summary>
+    public IReadOnlyList<ILyricsSource> Enabled =>
+        _settings.CurrentValue.EffectiveLyricsSources
+            .Select(name => _sources.FirstOrDefault(source => source.Key == name))
+            .OfType<ILyricsSource>()
+            .ToList();
+
+    public ILyricsSource? Source(string key) => _sources.FirstOrDefault(source => source.Key == key);
+
+    /// <summary>
+    /// The best lyrics the sources have. When <paramref name="ct"/> runs out part way (a
+    /// client waiting has a budget), the best answer found so far is returned rather than
+    /// nothing, and remembered only briefly.
+    /// </summary>
     public async Task<LyricsLookup> FindAsync(LyricsQuery query, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query.Artist) || string.IsNullOrWhiteSpace(query.Title)) return LyricsLookup.Miss;
 
-        var key = $"{TrackMatchComparer.Normalize(query.Artist)}|{TrackMatchComparer.Normalize(query.Title)}|{query.DurationSeconds}";
+        var settings = _settings.CurrentValue;
+        var preferWords = settings.PreferWordTimedLyrics;
+        var key = $"{TrackMatchComparer.Normalize(query.Artist)}|{TrackMatchComparer.Normalize(query.Title)}|{query.DurationSeconds}"
+            + $"|{string.Join(',', settings.EffectiveLyricsSources)}|{preferWords}";
         if (_cache.TryGetValue(key, out LyricsLookup? cached) && cached is not null) return cached;
 
-        LyricsResult? plain = null;
+        LyricsResult? best = null;
         var transient = false;
-        foreach (var name in _settings.CurrentValue.EffectiveLyricsSources)
+        foreach (var source in Enabled)
         {
-            if (_sources.FirstOrDefault(source => source.Key == name) is not { } source) continue;
-
             LyricsLookup lookup;
             try { lookup = await source.FindAsync(query, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                transient = true;
+                break;
+            }
             catch (Exception ex)
             {
-                _logger.LogDebug("lyrics source {Source} threw: {M}", name, ex.Message);
+                _logger.LogDebug("lyrics source {Source} threw: {M}", source.Key, ex.Message);
                 lookup = LyricsLookup.Failed;
+            }
+            if (ct.IsCancellationRequested && lookup.Result is null)
+            {
+                transient = true;
+                break;
             }
 
             if (lookup.Transient) { transient = true; continue; }
             if (lookup.Result is not { } result) continue;
-            if (result.HasSynced || result.Instrumental) return Remember(key, new LyricsLookup(result, false), HitTtl);
-            if (result.HasPlain) plain ??= result;
+            if (result.Instrumental || result.Timing == LyricsTiming.Word
+                || (result.Timing == LyricsTiming.Line && !preferWords))
+                return Remember(key, new LyricsLookup(result, false), HitTtl);
+            if (best is null || result.Timing > best.Timing) best = result;
         }
 
-        // A plain answer found while a better source could not be asked is kept only briefly,
-        // so the synced one gets another chance soon.
-        if (plain is not null) return Remember(key, new LyricsLookup(plain, false), transient ? MissTtl : HitTtl);
+        // An answer found while a better source could not be asked is kept only briefly, so the
+        // better one gets another chance soon.
+        if (best is not null) return Remember(key, new LyricsLookup(best, false), transient ? MissTtl : HitTtl);
         if (transient) return LyricsLookup.Failed;
         return Remember(key, LyricsLookup.Miss, MissTtl);
     }
@@ -67,6 +96,9 @@ public sealed class LyricsService : IDisposable
         _cache.Set(key, lookup, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = ttl });
         return lookup;
     }
+
+    /// <summary>Forget what was found, after the source order or a pin changed.</summary>
+    public void Clear() => _cache.Clear();
 
     public void Dispose() => _cache.Dispose();
 }

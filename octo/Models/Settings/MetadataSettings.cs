@@ -55,14 +55,18 @@ public class MetadataSettings
     public bool FetchLyrics { get; set; } = false;
 
     /// <summary>
-    /// Lyrics sources, in order: lrclib (open, synced), netease (synced and deep on non-Western
-    /// and older music, but an unofficial API, so it only runs when listed), lyricsovh (plain
-    /// text). Synced beats plain, so a later source is only asked while nothing earlier had timing.
+    /// Lyrics sources, in order: kugou (word-timed, deep catalogue, an unofficial API), lrclib
+    /// (open, line-synced), netease (synced and deep on non-Western and older music, but an
+    /// unofficial API, so it only runs when listed), lyricsovh (plain text). Timed beats plain,
+    /// so a later source is only asked while nothing earlier had timing. Leaving a source out
+    /// switches it off.
     /// Environment variable: LYRICS_SOURCES
     /// </summary>
-    public string LyricsSources { get; set; } = "lrclib,lyricsovh";
+    public string LyricsSources { get; set; } = DefaultLyricsSources;
 
-    public static readonly string[] KnownLyricsSources = ["lrclib", "netease", "lyricsovh"];
+    public const string DefaultLyricsSources = "kugou,lrclib,lyricsovh";
+
+    public static readonly string[] KnownLyricsSources = ["kugou", "lrclib", "netease", "lyricsovh"];
 
     public IReadOnlyList<string> EffectiveLyricsSources =>
         (LyricsSources ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -70,4 +74,21 @@ public class MetadataSettings
             .Where(source => KnownLyricsSources.Contains(source))
             .Distinct()
             .ToList();
+
+    /// <summary>
+    /// Word-timed lyrics beat line-timed ones from an earlier source: with this on, a source that
+    /// only has line timing does not end the search, and a later one with word timing wins. Off,
+    /// the first timed answer is taken, which asks fewer services per song.
+    /// Environment variable: LYRICS_PREFER_WORD_TIMED
+    /// </summary>
+    public bool PreferWordTimedLyrics { get; set; } = true;
+
+    /// <summary>
+    /// Let "Find lyrics for the library" write lyrics files beside every library song, not only
+    /// the ones Octo downloaded. Off by default: a folder of rips or purchases is the owner's,
+    /// and Octo does not add files to it unless asked. Existing lyrics files and lyrics embedded
+    /// in a song are never replaced either way.
+    /// Environment variable: LYRICS_WRITE_BESIDE_ALL
+    /// </summary>
+    public bool WriteLyricsBesideAllSongs { get; set; } = false;
 }

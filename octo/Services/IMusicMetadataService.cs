@@ -39,6 +39,13 @@ public interface IMusicMetadataService
         => Task.CompletedTask;
 
     /// <summary>
+    /// Gives external songs outside a search (station playlists) the lengths already known
+    /// for them, and looks the rest up in the background so the next response has them.
+    /// Never waits on the network: whatever is not known yet keeps the fallback for now.
+    /// </summary>
+    void CompleteSongLengths(IReadOnlyList<Song> songs) { }
+
+    /// <summary>
     /// Resolves the real YouTube video (and its duration) for the top of a search
     /// result so the shown length matches the audio that plays. Bounded + cached;
     /// also stores the videoId so playback reuses the same video.

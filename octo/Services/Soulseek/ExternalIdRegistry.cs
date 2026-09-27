@@ -38,6 +38,19 @@ public class ExternalIdRegistry : IDisposable
             routing.ExternalAlbumId = existing.ExternalAlbumId;
         }
 
+        // Every search and every station playlist mints its songs again, and each mint is a
+        // fresh routing. Without this, the length a lookup found for a song lasted until the
+        // next search for it, which is why a row that had a length could lose it again.
+        if (_byId.TryGetValue(id, out var previous) && !ReferenceEquals(previous, routing))
+        {
+            var (seconds, source) = SongLength.Shown(previous);
+            if (source > routing.ShownDurationSource)
+            {
+                routing.ShownDuration = seconds;
+                routing.ShownDurationSource = source;
+            }
+        }
+
         _byId[id] = routing;
         Touch(id);
         Trim();
@@ -53,6 +66,22 @@ public class ExternalIdRegistry : IDisposable
             return r;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Store a length for a song under <paramref name="shortId"/>, by the rules in
+    /// <see cref="SongLength"/>. Looked up by id at write time rather than handed a routing,
+    /// because a background lookup can outlive the routing it started from: a search that
+    /// ran meanwhile replaced it, and a write to the old object would be lost.
+    /// </summary>
+    public bool RememberLength(string shortId, int? seconds, LengthSource source)
+    {
+        if (string.IsNullOrEmpty(shortId)
+            || !_byId.TryGetValue(shortId, out var routing)
+            || routing.Kind != RoutingKind.Song) return false;
+        if (!SongLength.Remember(routing, seconds, source)) return false;
+        Interlocked.Exchange(ref _dirty, 1);
+        return true;
     }
 
     private static string MakeShortId(SoulseekRouting r)

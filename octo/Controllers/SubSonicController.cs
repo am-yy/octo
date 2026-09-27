@@ -418,6 +418,10 @@ public class SubsonicController : ControllerBase
             songs = (await _generatedPlaylists.BlendIntoDiscoveryAsync(username, station, songs, parameters,
                 HttpContext.RequestAborted)).ToList();
 
+        // Before the catalog swap below: these rows are this response's own, while a catalog
+        // row is shared with every other response that serves it.
+        _metadataService.CompleteSongLengths(songs);
+
         // A song this user's sync catalog also holds goes out as the catalog describes it:
         // same album, and filed under the library's own artist where there is one. A syncing
         // client stores whichever description it read last, so the two must not disagree.
@@ -3098,6 +3102,7 @@ public class SubsonicController : ControllerBase
         if (tail.EndsWith("/tracks", StringComparison.OrdinalIgnoreCase))
         {
             var songs = await MaterializeStationAsync(stationMatch, parameters);
+            _metadataService.CompleteSongLengths(songs);
             _radioQueueStore.Register(songs.Select(song => song.Id));
             _ = _metadataService.PrewarmYouTubeIdsAsync(songs, 8);
             var start = Math.Max(0, parameters.TryGetValue("_start", out var startText)

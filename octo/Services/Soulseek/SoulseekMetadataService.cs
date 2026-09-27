@@ -1,9 +1,11 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Octo.Models.Domain;
 using Octo.Models.Search;
 using Octo.Models.Subsonic;
 using Octo.Services.CoverArt;
+using Octo.Services.LastFm;
 using Octo.Services.Metadata;
 using Octo.Services.YouTube;
 
@@ -28,6 +30,7 @@ public class SoulseekMetadataService : IMusicMetadataService
     private readonly ExternalIdRegistry _idRegistry;
     private readonly DeezerMetadataService _deezer;
     private readonly CoverArtAggregator _coverArt;
+    private readonly LastFmService? _lastFm;
     private readonly ILogger<SoulseekMetadataService> _logger;
 
     public SoulseekMetadataService(
@@ -35,13 +38,15 @@ public class SoulseekMetadataService : IMusicMetadataService
         ExternalIdRegistry idRegistry,
         DeezerMetadataService deezer,
         CoverArtAggregator coverArt,
-        ILogger<SoulseekMetadataService> logger)
+        ILogger<SoulseekMetadataService> logger,
+        LastFmService? lastFm = null)
     {
         _youtube = youtube;
         _idRegistry = idRegistry;
         _deezer = deezer;
         _coverArt = coverArt;
         _logger = logger;
+        _lastFm = lastFm;
     }
 
     public Task<List<Song>> SearchSongsAsync(string query, int limit = 20)
@@ -72,10 +77,19 @@ public class SoulseekMetadataService : IMusicMetadataService
         _logger.LogDebug("Placeholder song registered for '{Artist} - {Title}' (dur={Dur}) -> id {Id}",
             artist, title, durationSeconds, externalId);
 
+        // Every caller that hands in a length got it from Last.fm, or from a play's own
+        // record. Stored by rank, so a Deezer length an earlier lookup found for this id
+        // still wins, and that is the length this row goes out with.
+        _idRegistry.RememberLength(externalId, durationSeconds, LengthSource.LastFm);
+        var remembered = _idRegistry.Lookup(externalId) is { } routing
+            ? SongLength.Shown(routing).Seconds
+            : null;
+
         // 180 is the fallback when we don't know the real duration — most songs
         // are 3-5 min so it's a less-bad guess than 0 (which would prevent
-        // clients from rendering a scrub bar at all).
-        var effectiveDuration = durationSeconds ?? 180;
+        // clients from rendering a scrub bar at all). The Octo app knows this
+        // value and shows no length for it rather than a wrong one.
+        var effectiveDuration = remembered ?? durationSeconds ?? 180;
 
         return Task.FromResult(new List<Song>
         {
@@ -118,6 +132,9 @@ public class SoulseekMetadataService : IMusicMetadataService
     {
         var external = songs.Where(s => !s.IsLocal).ToList();
 
+        // First-page rows Deezer gave no length for. They join the background lookup below
+        // rather than going out as 3:00 for good.
+        var missed = new ConcurrentDictionary<string, byte>();
         var sem = new SemaphoreSlim(8);
         var tasks = external.Take(SearchEnrichLimit).Select(async song =>
         {
@@ -125,6 +142,7 @@ public class SoulseekMetadataService : IMusicMetadataService
             try
             {
                 var meta = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true, ct: ct);
+                if (meta?.Duration is not > 0) missed.TryAdd(song.Id, 0);
                 if (meta is null) return;
                 if (meta.Duration is int d && d > 0) song.Duration = d;
                 if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
@@ -137,13 +155,15 @@ public class SoulseekMetadataService : IMusicMetadataService
                     if (meta.Duration is int rd && rd > 0) routing.Duration = rd;
                     if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) routing.Album = meta.AlbumTitle;
                 }
+                _idRegistry.RememberLength(song.Id, meta.Duration, LengthSource.Deezer);
             }
             catch { /* best-effort; a miss just leaves the 180s fallback */ }
             finally { sem.Release(); }
         });
         await Task.WhenAll(tasks);
 
-        EnrichRemaining(external.Skip(SearchEnrichLimit).Take(BackgroundEnrichLimit - SearchEnrichLimit).ToList());
+        var cold = EnrichRemaining(external.Skip(SearchEnrichLimit).Take(BackgroundEnrichLimit - SearchEnrichLimit).ToList());
+        WarmLengths(external.Take(SearchEnrichLimit).Where(s => missed.ContainsKey(s.Id)).Concat(cold));
     }
 
     /// <summary>
@@ -158,12 +178,13 @@ public class SoulseekMetadataService : IMusicMetadataService
     ///
     /// The warm still writes nothing back to a Song. Those objects are being serialised as
     /// it runs, and Song.Duration is an int? whose non-atomic write can be read back as 0,
-    /// which is exactly the value that stops a client drawing a scrub bar.
+    /// which is exactly the value that stops a client drawing a scrub bar. What it finds
+    /// goes on the routing instead, where the next response for the song reads it.
+    ///
+    /// Returns the rows the cache could not answer, for the caller to hand to that warm.
     /// </summary>
-    private void EnrichRemaining(List<Song> songs)
+    private List<Song> EnrichRemaining(List<Song> songs)
     {
-        if (songs.Count == 0) return;
-
         var cold = new List<Song>();
         foreach (var song in songs)
         {
@@ -180,21 +201,122 @@ public class SoulseekMetadataService : IMusicMetadataService
                 if (meta.Duration is int rd && rd > 0) routing.Duration = rd;
                 if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) routing.Album = meta.AlbumTitle;
             }
+            _idRegistry.RememberLength(song.Id, meta.Duration, LengthSource.Deezer);
         }
+        return cold;
+    }
 
-        if (cold.Count == 0) return;
+    // ---- Lengths for rows that went out without one ---------------------------------
+    //
+    // About half of all outside songs reached clients with the 180s placeholder: search
+    // rows past the first page, and every station row Last.fm gave no length for. The
+    // station path never looked a length up at all, and what the search warm fetched only
+    // reached Deezer's in-memory cache, so a song got its length back on a repeat search at
+    // best and lost it again on a restart.
+    //
+    // Nothing here holds up a response. The rows a response can complete for free
+    // (registry, Deezer's cache) are completed inline; the rest are looked up in the
+    // background and stored on the registry, so the NEXT response for the song carries the
+    // length. Sources are tried in order of how far their length can be trusted, and the
+    // first one to answer ends the chain.
 
-        _ = Task.Run(async () =>
+    /// <summary>Most rows one station response queues for a lookup. The next response
+    /// queues the next ones, since those done by then are no longer cold.</summary>
+    private const int StationLengthWarmLimit = 20;
+
+    /// <summary>Ceiling on one song's lookup chain. Last.fm has no client timeout of its
+    /// own, and one hung call would otherwise stall every song queued behind it.</summary>
+    private static readonly TimeSpan LengthLookupTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>Ids with a lookup queued or running, so several clients loading one station
+    /// at once do not each look its songs up again.</summary>
+    private readonly ConcurrentDictionary<string, byte> _lengthLookups = new();
+
+    /// <summary>The most recent background lookup, so a test can wait for it.</summary>
+    internal Task LastLengthWarm { get; private set; } = Task.CompletedTask;
+
+    public void CompleteSongLengths(IReadOnlyList<Song> songs)
+    {
+        var cold = new List<Song>();
+        foreach (var song in songs)
         {
-            foreach (var song in cold)
+            if (song.IsLocal || string.IsNullOrEmpty(song.Id)) continue;
+            if (_idRegistry.Lookup(song.Id) is not { Kind: RoutingKind.Song } routing
+                || !routing.HasArtistTitle) continue;
+
+            // Minting the song already applied whatever the registry remembered.
+            if (SongLength.HasMetadataLength(routing)) continue;
+
+            // Free: a search for the same song may have asked Deezer already.
+            if (_deezer.CachedTrack(song.Artist, song.Title)?.Duration is int d && d > 0)
             {
-                // Sequential on purpose: this has no deadline, and fanning out here is
-                // what would eat the quota the awaited set needs. The year is skipped
-                // because it costs a second request per album and no search row shows it.
-                try { await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, background: true); }
-                catch { /* best-effort */ }
+                song.Duration = d;
+                _idRegistry.RememberLength(song.Id, d, LengthSource.Deezer);
+                continue;
+            }
+            cold.Add(song);
+        }
+        WarmLengths(cold.Take(StationLengthWarmLimit));
+    }
+
+    /// <summary>
+    /// Look lengths up off the request, one song at a time, and store what is found on the
+    /// registry. Order: Deezer, then Last.fm's track.getInfo, then a YouTube video's length
+    /// inside the sane range. Songs that already have a metadata length are skipped.
+    /// </summary>
+    private void WarmLengths(IEnumerable<Song> songs)
+    {
+        var queued = new List<(string Id, string Artist, string Title)>();
+        foreach (var song in songs)
+        {
+            if (string.IsNullOrEmpty(song.Id) || string.IsNullOrWhiteSpace(song.Title)) continue;
+            if (_idRegistry.Lookup(song.Id) is not { } routing || SongLength.HasMetadataLength(routing)) continue;
+            if (!_lengthLookups.TryAdd(song.Id, 0)) continue;
+            queued.Add((song.Id, song.Artist ?? "", song.Title));
+        }
+        if (queued.Count == 0) return;
+
+        LastLengthWarm = Task.Run(async () =>
+        {
+            // Sequential on purpose: this has no deadline, and fanning out here is what
+            // would eat the Deezer quota a live search needs. The year is skipped because
+            // it costs a second request per album and no row shows it.
+            foreach (var (id, artist, title) in queued)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(LengthLookupTimeout);
+                    await LookUpLengthAsync(id, artist, title, cts.Token);
+                }
+                catch { /* best-effort; the song keeps the placeholder until next time */ }
+                finally { _lengthLookups.TryRemove(id, out _); }
             }
         });
+    }
+
+    private async Task LookUpLengthAsync(string id, string artist, string title, CancellationToken ct)
+    {
+        var meta = await _deezer.EnrichTrackAsync(artist, title, includeYear: false, background: true, ct: ct);
+        if (_idRegistry.RememberLength(id, meta?.Duration, LengthSource.Deezer)) return;
+
+        if (_lastFm is { HasApiKey: true })
+        {
+            var info = await _lastFm.GetTrackInfoAsync(artist, title, ct);
+            if (_idRegistry.RememberLength(id, info?.Duration, LengthSource.LastFm)) return;
+        }
+
+        // Last, and only while the shim has room for background work: a video's length is
+        // the weakest guess there is, and not worth making a play wait for.
+        if (_idRegistry.Lookup(id) is { } routing && SongLength.Shown(routing).Source >= LengthSource.Video) return;
+        if (!await _prewarmGate.WaitAsync(PrewarmQueueWait, ct)) return;
+        try
+        {
+            // Length only. The video is not pinned for playback, so which video plays and
+            // what a download is checked against both stay as they were.
+            var hit = await _youtube.MetaAsync($"{artist} {title}", background: true, ct: ct);
+            _idRegistry.RememberLength(id, hit?.Duration, LengthSource.Video);
+        }
+        finally { _prewarmGate.Release(); }
     }
 
     // Resolve the ACTUAL YouTube video for the top of the list at search time and
@@ -236,13 +358,16 @@ public class SoulseekMetadataService : IMusicMetadataService
                 var hit = await _youtube.MetaAsync($"{song.Artist} {song.Title}", song.Duration, ct: ct);
                 if (hit is { VideoId.Length: > 0 } && hit.Duration is int d && d > 0)
                 {
-                    song.Duration = d;
+                    // Shown only inside the sane range. An hour-long upload is a mix or a
+                    // live set, and its length is no better than the one the row has.
+                    if (SongLength.SaneVideoLength(d) is int shown) song.Duration = shown;
                     var routing = _idRegistry.Lookup(song.Id);
                     if (routing != null)
                     {
                         routing.YouTubeId = hit.VideoId; // playback reuses this exact video
                         routing.Duration = d;
                     }
+                    _idRegistry.RememberLength(song.Id, d, LengthSource.Video);
                 }
             }
             catch { /* best-effort; keeps the existing duration on a miss */ }
@@ -304,6 +429,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 {
                     routing.YouTubeId = hit.VideoId;
                     if (hit.Duration is int d) routing.Duration = d;
+                    _idRegistry.RememberLength(t.id, hit.Duration, LengthSource.Video);
                 }
             }
             catch { /* best-effort warm; never throw out of fire-and-forget */ }
@@ -688,6 +814,15 @@ public class SoulseekRouting
     /// "x of y" denominator from a per-track Deezer search that can match a different
     /// release, producing nonsense like 5/10 on an 8-track album.</summary>
     public int? TotalTracks { get; set; }
+
+    /// <summary>The length shown for this song once a lookup found one, kept here so every
+    /// later response carries it, across restarts too. Display only: see
+    /// <see cref="SongLength"/> for why this is not <see cref="Duration"/>.</summary>
+    public int? ShownDuration { get; set; }
+
+    /// <summary>Where <see cref="ShownDuration"/> came from, so a weaker source never
+    /// replaces a stronger one.</summary>
+    public LengthSource ShownDurationSource { get; set; }
 
     public bool HasYouTube => !string.IsNullOrEmpty(YouTubeId);
     public bool HasArtistTitle => !string.IsNullOrEmpty(Artist) && !string.IsNullOrEmpty(Title);

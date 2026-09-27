@@ -25,4 +25,9 @@
     <ProjectReference Include="..\octo\octo.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The song identity cases the Octo app runs too. -->
+    <None Include="..\docs\song-identity-cases.json" Link="song-identity-cases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

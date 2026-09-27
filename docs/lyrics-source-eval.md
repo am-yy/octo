@@ -85,3 +85,41 @@ KuGou's API is unofficial: undocumented, unsigned, and free to change or disappe
 - **Circuit breaker:** after five failures in a row, KuGou is left alone for five minutes, and each lookup in that window is an instant "not now", not a wait.
 - **Fallback:** a KuGou failure is never an error to the client, and the next source in the order answers.
 - **Off switch:** leaving `kugou` out of `LYRICS_SOURCES` means it is never contacted.
+
+
+## After universal matching
+
+Every source now reads titles and artists through `SongIdentity` (`octo/Services/Common/SongIdentity.cs`, rules and shared cases in `docs/song-identity-cases.json`), and each one retries a miss with the same song written other ways: cleaned of brackets and guests, with stylized characters read as letters ("suicideboys SUICIDE" for "$uicideboy$ - $UICIDE"), and by the primary artist alone. At most three searches per song, and whatever a later search finds is still checked against the song as asked.
+
+- **Method:** the same harness, sample and pacing as above, with lyrics.ovh added. To keep service drift out of the comparison, the code from before this change was run again first, on the same day, and then the new code straight after it.
+- **What "found" means:** unchanged for KuGou, LRCLIB and NetEase (the same song, the same kind of recording, the same artist, lengths within three seconds). lyrics.ovh names nothing back, so its answers cannot be checked; it is only asked for the song as given and for variants that are the same song by construction.
+
+| Source | Found before | Found after | New | Lost | Requests before | Requests after |
+|---|---|---|---|---|---|---|
+| KuGou | 259 (86%) | 259 (86%) | 1 | 1 | 850 | 860 |
+| LRCLIB | 275 (92%) | 278 (93%) | 5 | 2 | 633 | 639 |
+| NetEase | 247 (82%) | 248 (83%) | 3 | 2 | 573 | 579 |
+| lyrics.ovh | 210 (70%) | 213 (71%) | 5 | 2 | 300 | 313 |
+
+Taken together, 286 of the 300 songs have lyrics from at least one source, up from 284, and KuGou and LRCLIB alone cover 285, up from 283.
+
+What the new matching found, each checked by title, artist, length and first line:
+
+- **KuGou:** Yelawolf, "Hard White (Up In The Club)", found by its title without the subtitle.
+- **LRCLIB:** Bring Me The Horizon, "¿", whose title has no letters at all and so never had a key before; Soulive, "Born Under A Bad Sign ft Warren Haynes, Nigel Hall & DJ Logic", found by its title without the guests. The other three were errors in the first run and answers in the second.
+- **NetEase:** "¿" again; Tech N9ne, "Hood Go Crazy feat 2 Chainz B.O.B", whose guest list has no separator in it; Yung Berg, "The Business", which NetEase calls "(featuring Casha) (Explicit Version)".
+- **lyrics.ovh:** three songs credited as "A • B • C" (After The Storm, Best Friend, Better To Lie), found by their primary artist; "Hood Go Crazy" without its guests; and A$AP Rocky, "Purity", found as "ASAP Rocky".
+- **Renamed artists:** KuGou's "Ye (侃爷)" entries now count as Kanye West, and for "Touch The Sky" and "Gorgeous" it chose them over the entries it used before.
+
+What was lost:
+
+- **One on purpose:** KuGou's only entry for Jack Harlow's "Movie Star" is the clean edit, "Movie Star (feat. Pharrell Williams)(Clean)", and a clean edit is now a different version from the song in the library.
+- **The rest were the services, not the matching:** two LRCLIB lookups failed with errors in the second run. NetEase and lyrics.ovh each answered two songs in the first run and not in the second: NetEase's entries from the first run still pass the new identity check when replayed, and lyrics.ovh returned nothing at all for the same request.
+
+Wrong matches: none that the title, artist, length and first lines show. Replaying the first run's top search hits through the new rules changed nine verdicts: eight that were refused before and are right (the Ye alias twice, "(A$$ Remix)" against "(A$$) Remix" twice, "- Single Mix" against "(Single Mix)", a live tail in brackets against one after a dash, a guest with an "(Original Mix)", and a guest with an "(Explicit Version)"), and the clean edit above.
+
+The cost is small. A song every source finds on its first search costs what it did; only a miss makes more requests, which added 6 to 13 requests per source over 300 songs.
+
+## Decision after universal matching
+
+The source order stays **KuGou, LRCLIB, lyrics.ovh**. Universal matching adds a few songs to every source and changes none of the reasons above: KuGou still has word timing for the most songs, and LRCLIB still covers what it misses.

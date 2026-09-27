@@ -47,6 +47,10 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     // recorded rather than captured when the job started.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _albumRequesters = new();
 
+    /// <summary>The live progress list. Lidarr reports no bytes, so it only ever hears
+    /// accepted, landed, done and failed from here.</summary>
+    private readonly AcquisitionTracker? _tracker;
+
     public LidarrHeartAcquisitionService(
         LidarrClient client,
         IMusicMetadataService metadata,
@@ -58,8 +62,10 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         ILocalLibraryService library,
         DownloadHistoryService history,
         NotificationService notifications,
-        ILogger<LidarrHeartAcquisitionService> logger)
+        ILogger<LidarrHeartAcquisitionService> logger,
+        AcquisitionTracker? tracker = null)
     {
+        _tracker = tracker;
         _client = client;
         _metadata = metadata;
         _deezer = deezer;
@@ -100,7 +106,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 Songs = new List<Song> { song },
             };
             await QueueResolvedAlbumAsync(album, requestedBy);
-        }, "track", externalId, notifyFailure);
+        }, "track", provider, externalId, notifyFailure);
 
     public Task<bool> TryAcquireAlbumAsync(
         string provider, string externalId, bool notifyFailure = true,
@@ -109,8 +115,12 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         {
             var album = await _metadata.GetAlbumAsync(provider, externalId)
                 ?? throw new InvalidOperationException("The starred external album is no longer available.");
+            // No walk runs on this path, so the track list is announced here instead.
+            _tracker?.Announce(provider, externalId, null, album.Songs
+                .Where(s => !string.IsNullOrEmpty(s.ExternalId))
+                .Select(s => (s.ExternalId!, (string?)s.Artist, (string?)s.Title, (string?)album.Title)));
             await QueueResolvedAlbumAsync(album, requestedBy);
-        }, "album", externalId, notifyFailure);
+        }, "album", provider, externalId, notifyFailure);
 
     private void AddRequester(string albumKey, string? username)
     {
@@ -147,6 +157,52 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         }
     }
 
+    private static IEnumerable<(string Provider, string Id)> TrackedKeys(Album album) =>
+        album.Songs
+            .Where(s => !string.IsNullOrWhiteSpace(s.ExternalProvider) && !string.IsNullOrWhiteSpace(s.ExternalId))
+            .Select(s => (s.ExternalProvider!, s.ExternalId!));
+
+    private void NoteLanded(Album album, LidarrImportedTrack track, string localPath, Dictionary<Song, string> landed)
+    {
+        if (_tracker is null) return;
+        try
+        {
+            if (MatchSong(album, track) is not { } song) return;
+            landed[song] = localPath;
+            if (song is { ExternalProvider: { Length: > 0 } provider, ExternalId: { Length: > 0 } id })
+                _tracker.Stage(provider, id, AcquisitionState.Importing);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Could not match a Lidarr import for progress: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Close the progress entry of every hearted track on this album: the ones Octo can see on
+    /// disk are imported, the rest failed with <paramref name="missing"/>. Rows already settled
+    /// keep what they said.
+    /// </summary>
+    private void SettleTracked(Album album, Dictionary<Song, string> landed, string missing)
+    {
+        if (_tracker is null) return;
+        try
+        {
+            foreach (var song in album.Songs)
+            {
+                if (string.IsNullOrWhiteSpace(song.ExternalProvider) || string.IsNullOrWhiteSpace(song.ExternalId)) continue;
+                if (landed.TryGetValue(song, out var path))
+                    _tracker.Imported(song.ExternalProvider, song.ExternalId, song.Artist, song.Title, path);
+                else
+                    _tracker.Fail(song.ExternalProvider, song.ExternalId, missing);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Could not settle Lidarr progress for '{Album}': {Message}", album.Title, ex.Message);
+        }
+    }
+
     private async Task SubmitAndStartReconciliationAsync(
         LidarrAlbumCandidate candidate, Album album)
     {
@@ -165,6 +221,11 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             Detail = "Album search accepted",
         });
 
+        // Accepted. Lidarr says nothing about bytes, so this is a download with no figure on
+        // it. Before the reconcile starts, so it can never undo what the reconcile reports.
+        foreach (var (provider, id) in TrackedKeys(album))
+            _tracker?.Transfer(provider, id, null, null, null, "Lidarr");
+
         _ = Task.Run(async () =>
         {
             try
@@ -175,6 +236,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             {
                 _logger.LogError(ex, "Lidarr import reconciliation failed for '{Artist} - {Album}'",
                     album.Artist, album.Title);
+                foreach (var (provider, id) in TrackedKeys(album)) _tracker?.Fail(provider, id, ex.Message);
                 if (snapshot.CompletionMode == LidarrCompletionMode.Imported)
                 {
                     _notifications.Notify(new NotificationEvent
@@ -205,6 +267,9 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         var imported = 0;
         var expected = 0;
         var visibleToOcto = 0;
+        // Which hearted song each visible file is, for the progress list. Matched on every poll,
+        // not only when recorded, so a song Lidarr had imported before still counts as here.
+        var landed = new Dictionary<Song, string>(ReferenceEqualityComparer.Instance);
 
         var octoRoot = _navIdentity.EffectiveDownloadPath(_configuration["Library:DownloadPath"] ?? "/music");
 
@@ -225,6 +290,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 if (!File.Exists(importedPath)) continue;
                 var localPath = NormalizeImportedLayout(importedPath, album, track, octoRoot);
                 visibleToOcto++;
+                NoteLanded(album, track, localPath, landed);
                 if (!_recordedPaths.TryAdd(localPath, 0)) continue;
                 try
                 {
@@ -241,6 +307,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             if (state.IsComplete && visible.Count > 0 && visibleToOcto == visible.Count)
             {
                 if (imported > 0) await _library.TriggerLibraryScanAsync(force: true);
+                SettleTracked(album, landed, "Lidarr finished the album without this track.");
                 if (settings.CompletionMode == LidarrCompletionMode.Imported && imported > 0)
                 {
                     _notifications.Notify(new NotificationEvent
@@ -264,6 +331,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         if (imported > 0) await _library.TriggerLibraryScanAsync(force: true);
         var detail = $"Lidarr import timed out after {(int)timeout.TotalMinutes} minute(s)"
                      + (expected > 0 ? $" ({visibleToOcto}/{expected} files visible to Octo)" : "");
+        SettleTracked(album, landed, $"Lidarr import timed out after {(int)timeout.TotalMinutes} minute(s).");
         _logger.LogWarning("{Detail} for '{Artist} - {Album}'", detail, album.Artist, album.Title);
         if (settings.CompletionMode == LidarrCompletionMode.Imported)
         {
@@ -388,7 +456,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     }
 
     private async Task<bool> TryAcquireAsync(
-        Func<Task> work, string kind, string externalId, bool notifyFailure)
+        Func<Task> work, string kind, string provider, string externalId, bool notifyFailure)
     {
         try
         {
@@ -398,6 +466,13 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         catch (Exception ex)
         {
             _logger.LogError(ex, "Lidarr {Kind} heart failed for {Id}", kind, externalId);
+            // notifyFailure is true only for the last source in the chain, which is also the
+            // only failure the progress list may show.
+            if (notifyFailure)
+            {
+                if (kind == "album") _tracker?.FailAlbum(provider, externalId, ex.Message);
+                else _tracker?.Fail(provider, externalId, ex.Message);
+            }
             if (notifyFailure) _notifications.Notify(new NotificationEvent
             {
                 Type = NotificationEventType.DownloadFailed,

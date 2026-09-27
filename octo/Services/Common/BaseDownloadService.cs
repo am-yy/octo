@@ -1276,8 +1276,7 @@ public abstract class BaseDownloadService : IDownloadService
         return mappings.Any(mapping =>
             !string.IsNullOrEmpty(mapping.LocalPath)
             && string.Equals(Path.GetFullPath(mapping.LocalPath), full, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(mapping.Artist, song.Artist, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(mapping.Title, song.Title, StringComparison.OrdinalIgnoreCase));
+            && SongIdentity.MatchKey(mapping.Artist, mapping.Title) == SongIdentity.MatchKey(song.Artist, song.Title));
     }
 
     /// <summary>

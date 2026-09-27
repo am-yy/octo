@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 
 namespace Octo.Services.Library;
 
@@ -131,12 +132,14 @@ public sealed class LibraryActionJournal : IDisposable
     {
         if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return false;
 
+        // However the request writes it ("Drake - Too Good (feat. Rihanna)" for a deleted "Drake
+        // feat. Rihanna - Too Good"), but a live take of a deleted song is still its own song.
+        var wanted = SongIdentity.MatchKey(artist, title);
         return _byKey.Values.Any(entry =>
             entry.Action == LibraryAction.Delete
             && entry.State == LibraryActionState.Applied
             && !entry.DryRun
-            && string.Equals(entry.Artist?.Trim(), artist.Trim(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(entry.Title?.Trim(), title.Trim(), StringComparison.OrdinalIgnoreCase));
+            && SongIdentity.MatchKey(entry.Artist, entry.Title) == wanted);
     }
 
     public IReadOnlyList<LibraryActionEntry> Pending() =>

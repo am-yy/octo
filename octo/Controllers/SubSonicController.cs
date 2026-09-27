@@ -1594,7 +1594,7 @@ public class SubsonicController : ControllerBase
         if (deezerArtists.Count > 0)
         {
             var deezerArtist = deezerArtists[0];
-            if (deezerArtist.Name.Equals(artistName, StringComparison.OrdinalIgnoreCase))
+            if (SongIdentity.SameArtistName(deezerArtist.Name, artistName))
             {
                 deezerAlbums = await _metadataService.GetArtistAlbumsAsync("deezer", deezerArtist.ExternalId!);
                 
@@ -1764,9 +1764,9 @@ public class SubsonicController : ControllerBase
         // Find matching album on Deezer (exact match first)
         foreach (var candidate in deezerAlbums)
         {
-            if (candidate.Artist != null && 
-                candidate.Artist.Equals(artistName, StringComparison.OrdinalIgnoreCase) &&
-                candidate.Title.Equals(albumName, StringComparison.OrdinalIgnoreCase))
+            if (candidate.Artist != null &&
+                SongIdentity.SameArtistName(candidate.Artist, artistName) &&
+                SongIdentity.Key(candidate.Title) == SongIdentity.Key(albumName))
             {
                 // The provider must come from the candidate. A hardcoded "deezer" never
                 // matches the metadata service's provider name, so this always returned null.
@@ -1780,10 +1780,12 @@ public class SubsonicController : ControllerBase
         {
             foreach (var candidate in deezerAlbums)
             {
-                if (candidate.Artist != null && 
-                    candidate.Artist.Contains(artistName, StringComparison.OrdinalIgnoreCase) &&
-                    (candidate.Title.Contains(albumName, StringComparison.OrdinalIgnoreCase) ||
-                     albumName.Contains(candidate.Title, StringComparison.OrdinalIgnoreCase)))
+                var candidateTitle = SongIdentity.Key(candidate.Title);
+                var wantedTitle = SongIdentity.Key(albumName);
+                if (candidate.Artist != null &&
+                    SongIdentity.Key(candidate.Artist).Contains(SongIdentity.Key(artistName)) &&
+                    candidateTitle.Length > 0 && wantedTitle.Length > 0 &&
+                    (candidateTitle.Contains(wantedTitle) || wantedTitle.Contains(candidateTitle)))
                 {
                     deezerAlbum = await _metadataService.GetAlbumAsync(candidate.ExternalProvider!, candidate.ExternalId!);
                     break;
@@ -1793,19 +1795,21 @@ public class SubsonicController : ControllerBase
 
         if (deezerAlbum != null && deezerAlbum.Songs.Count > 0)
         {
-            var localSongTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // One album, one artist: a track is owned when its title is, "Song (feat. X)" and
+            // "Song" alike, but never "Song (Live)" for "Song".
+            var localSongTitles = new HashSet<string>(StringComparer.Ordinal);
             foreach (var song in localSongs)
             {
                 if (song is Dictionary<string, object> dict && dict.TryGetValue("title", out var titleObj))
                 {
-                    localSongTitles.Add(titleObj?.ToString() ?? "");
+                    localSongTitles.Add(SongIdentity.TitleKey(titleObj?.ToString()));
                 }
             }
 
             var mergedSongs = localSongs.ToList();
             foreach (var deezerSong in deezerAlbum.Songs)
             {
-                if (!localSongTitles.Contains(deezerSong.Title))
+                if (!localSongTitles.Contains(SongIdentity.TitleKey(deezerSong.Title)))
                 {
                     mergedSongs.Add(_responseBuilder.ConvertSongToJson(deezerSong));
                 }

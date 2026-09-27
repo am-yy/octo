@@ -6,6 +6,7 @@ using Octo.Models.Download;
 using Octo.Models.Search;
 using Octo.Models.Subsonic;
 using Octo.Services;
+using Octo.Services.Common;
 using Octo.Services.Soulseek;
 using Octo.Services.Subsonic;
 
@@ -236,14 +237,15 @@ public class LocalLibraryService : ILocalLibraryService
         if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
 
         var mappings = await LoadMappingsAsync();
+        // One song in one version, however its tags write the artist and title.
+        var wanted = SongIdentity.MatchKey(artist, title);
         var matches = mappings.Values
             .Where(mapping =>
-                string.Equals(mapping.Artist?.Trim(), artist.Trim(), StringComparison.OrdinalIgnoreCase)
-                && string.Equals(mapping.Title?.Trim(), title.Trim(), StringComparison.OrdinalIgnoreCase)
+                SongIdentity.MatchKey(mapping.Artist, mapping.Title) == wanted
                 // Album only narrows when both sides have one; a mapping written before album
                 // enrichment should not be excluded for lacking it.
                 && (string.IsNullOrWhiteSpace(album) || string.IsNullOrWhiteSpace(mapping.Album)
-                    || string.Equals(mapping.Album.Trim(), album.Trim(), StringComparison.OrdinalIgnoreCase))
+                    || SongIdentity.Key(mapping.Album) == SongIdentity.Key(album))
                 && !string.IsNullOrEmpty(mapping.LocalPath)
                 && File.Exists(mapping.LocalPath))
             .Take(2)

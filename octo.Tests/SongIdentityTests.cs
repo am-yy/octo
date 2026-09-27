@@ -215,6 +215,23 @@ public class SongIdentityTests
         Assert.Equal(1.0, exact.Confidence);
     }
 
+    [Theory]
+    [InlineData("Beyoncé", "Beyonce", true)]
+    [InlineData("The Weeknd", "Weeknd", true)]
+    [InlineData("$uicideboy$", "Suicideboys", true)]
+    [InlineData("Kanye West", "Ye", true)]
+    [InlineData("Bob Marley & The Wailers", "Bob Marley", false)]
+    [InlineData("Drake feat. Rihanna", "Rihanna", false)]
+    public void SameArtistName_IsTheWholeNameNeverAPart(string a, string b, bool same)
+        => Assert.Equal(same, SongIdentity.SameArtistName(a, b));
+
+    [Fact]
+    public void TitleKey_IgnoresGuestsButKeepsTheVersion()
+    {
+        Assert.Equal(SongIdentity.TitleKey("Too Good"), SongIdentity.TitleKey("Too Good (feat. Rihanna)"));
+        Assert.NotEqual(SongIdentity.TitleKey("Too Good"), SongIdentity.TitleKey("Too Good (Live)"));
+    }
+
     [Fact]
     public void MatchKey_OneSongOneKey_OneVersionOneKey()
     {

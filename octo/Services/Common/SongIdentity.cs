@@ -969,8 +969,30 @@ public static class SongIdentity
         var credit = ParseArtists(string.IsNullOrWhiteSpace(artist) ? parsed.ArtistFromTitle : artist);
         var primary = Key(credit.Primary);
         if (Aliases.TryGetValue(primary, out var alias)) primary = alias;
+        return $"{primary}|{VersionedKey(parsed)}";
+    }
+
+    /// <summary>The title part of <see cref="MatchKey"/>, for songs already known to share an
+    /// artist, such as the tracks of one album.</summary>
+    public static string TitleKey(string? title) => VersionedKey(ParseTitle(title));
+
+    private static string VersionedKey(SongTitle parsed)
+    {
         var versions = DistinctVersions(parsed).Order(StringComparer.Ordinal).ToList();
-        return versions.Count == 0 ? $"{primary}|{parsed.Key}" : $"{primary}|{parsed.Key}|{string.Join('+', versions)}";
+        return versions.Count == 0 ? parsed.Key : $"{parsed.Key}|{string.Join('+', versions)}";
+    }
+
+    /// <summary>
+    /// Whether two names are one artist, whole: case, accents, a leading "The", stylized
+    /// characters and the alias table ignored, but never split, so "Bob Marley" is not "Bob
+    /// Marley &amp; The Wailers". For an artist page, where a credit's guests do not belong.
+    /// </summary>
+    public static bool SameArtistName(string? a, string? b)
+    {
+        var left = ParseArtists(a).Display;
+        var right = ParseArtists(b).Display;
+        if (Key(left).Length == 0 || Key(right).Length == 0) return false;
+        return Keys([left], false).Overlaps(Keys([right], false)) || Keys([left], true).Overlaps(Keys([right], true));
     }
 
     // ---- searching ----------------------------------------------------------------------

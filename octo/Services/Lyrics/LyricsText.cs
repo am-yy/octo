@@ -167,6 +167,9 @@ internal static class LyricsText
     /// each word and one after the last when its end is known. The standard line tags stay, so
     /// a player that knows nothing of word timing still shows every line at its time.
     /// </summary>
+    /// <summary>A silence between two words at least this long (ms) is written down.</summary>
+    private const int WordGapMs = 30;
+
     public static string WriteLrc(IEnumerable<LyricLine> lines)
     {
         var lrc = new StringBuilder();
@@ -185,6 +188,12 @@ internal static class LyricsText
                 var word = line.Words[index];
                 var to = index + 1 < line.Words.Count ? line.Words[index + 1].From : line.Text.Length;
                 lrc.Append('<').Append(Stamp(word.StartMs)).Append('>').Append(line.Text[word.From..Math.Max(word.From, to)]);
+                // A word followed by a pause gets its own end, or a reader stretches it to the
+                // next word and lights it late. Readers that only take the line's last end skip
+                // this tag harmlessly, since no text follows it.
+                if (index + 1 < line.Words.Count && word.EndMs is { } wordEnd
+                    && line.Words[index + 1].StartMs - wordEnd >= WordGapMs)
+                    lrc.Append('<').Append(Stamp(wordEnd)).Append('>');
             }
             if (line.Words[^1].EndMs is { } end) lrc.Append('<').Append(Stamp(end)).Append('>');
             lrc.Append('\n');

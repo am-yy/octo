@@ -86,6 +86,36 @@ public sealed class LyricsWordTimingTests
         Assert.Equal(1590, back[0].EndMs);
     }
 
+    [Fact]
+    public void AWordBeforeAPauseKeepsItsOwnEnd()
+    {
+        // "Hold" ends at 1.40 s and "on" starts at 2.00 s: without its own end, "Hold" would
+        // fill across the whole pause.
+        var text = "Hold on";
+        var line = new LyricLine(1000, text)
+        {
+            Words = [new LyricWord(1000, 1400, 0, 5), new LyricWord(2000, 2300, 5, 7)],
+            EndMs = 2300,
+        };
+
+        var lrc = LyricsText.WriteLrc([line]);
+        Assert.Equal("[00:01.00]<00:01.00>Hold <00:01.40><00:02.00>on<00:02.30>", lrc);
+
+        var back = LyricsText.ParseLrc(lrc)[0];
+        Assert.Equal(text, back.Text);
+        Assert.Equal(1400, back.Words[0].EndMs);
+        Assert.Equal(2000, back.Words[1].StartMs);
+        Assert.Equal(2300, back.EndMs);
+
+        // Words that run into each other get no extra tag.
+        var joined = new LyricLine(1000, text)
+        {
+            Words = [new LyricWord(1000, 1990, 0, 5), new LyricWord(2000, 2300, 5, 7)],
+            EndMs = 2300,
+        };
+        Assert.Equal("[00:01.00]<00:01.00>Hold <00:02.00>on<00:02.30>", LyricsText.WriteLrc([joined]));
+    }
+
     // ---- Enhanced LRC -----------------------------------------------------------------------
 
     [Fact]

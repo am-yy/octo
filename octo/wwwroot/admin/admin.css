@@ -1448,3 +1448,17 @@ h1[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
 
 /* Stored tokens are masked until the field is being edited. */
 .secret-text:not(:focus) { -webkit-text-security: disc; }
+
+/* Lyrics: the review list, the song search and the candidates share one row shape, the song
+ * on the left and its buttons on the right. */
+.lyrics-row { grid-template-columns: minmax(0, 1fr) auto; }
+.lyrics-row .lyrics-song { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lyrics-row .lyrics-song .set-info-d { margin: 0; }
+.lyrics-row.is-chosen { background: var(--accent-soft); }
+.lyrics-preview { color: var(--fg-soft); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.lyrics-search { display: flex; gap: 8px; flex-wrap: wrap; }
+.lyrics-search .set-input { flex: 1 1 180px; min-width: 0; }
+.lyrics-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+@media (max-width: 600px) {
+  .lyrics-row { grid-template-columns: minmax(0, 1fr); }
+}

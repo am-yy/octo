@@ -208,6 +208,7 @@ async function loadSettings() {
   updateStreamSettings();
   updateRadioPublicationSettings();
   renderHeartSourceOrder(currentSettings?.Subsonic?.HeartDownloadSources);
+  renderLyricsSources(currentSettings?.Metadata?.LyricsSources ?? '');
   renderRadioDiscovery(currentSettings?.LastFm?.DiscoveryStations);
   renderRejectedPeerCount();
   renderGenreMappings(currentSettings?.Genre?.Mappings);
@@ -218,6 +219,8 @@ async function loadSettings() {
   // retry: false, so a page load never pops a sign-in prompt. Without a session the section
   // simply stays empty until the user asks for a preview.
   loadGenreBackfill();
+  loadLyricsLibrary();
+  loadLyricsChoices();
   loadRadioStatus();
 
   // Meta references
@@ -2479,6 +2482,375 @@ function renderSetupChecklist() {
 // Once the user opens or closes it themselves, stop opening and closing it for them.
 document.getElementById('setup-summary')?.addEventListener('click', () => {
   document.getElementById('setup-checklist-wrap').dataset.userToggled = '1';
+});
+
+// ---- Lyrics sources ------------------------------------------------------
+//
+// The order is the saved LYRICS_SOURCES string: the sources that are on, top first. A source
+// that is off keeps its place on the page until the next load, where it goes to the bottom.
+const lyricsSourceMeta = {
+  kugou: { title: 'KuGou', detail: 'Word-timed lyrics for most songs. An unofficial API that can change without notice.' },
+  lrclib: { title: 'LRCLIB', detail: 'Open and keyless. Timed line by line, now and then word by word.' },
+  netease: { title: 'NetEase', detail: 'Deep on non-Western and older music. An unofficial API.' },
+  lyricsovh: { title: 'lyrics.ovh', detail: 'Plain text only, the last resort.' },
+};
+let lyricsSources = [];
+
+function renderLyricsSources(saved) {
+  const list = document.getElementById('lyrics-source-order');
+  if (!list) return;
+  if (saved !== undefined) {
+    const on = String(saved ?? '').split(',').map(name => name.trim().toLowerCase()).filter(name => lyricsSourceMeta[name]);
+    const unique = [...new Set(on)];
+    lyricsSources = [
+      ...unique.map(name => ({ name, on: true })),
+      ...Object.keys(lyricsSourceMeta).filter(name => !unique.includes(name)).map(name => ({ name, on: false })),
+    ];
+  }
+  list.innerHTML = lyricsSources.map((source, index) => {
+    const meta = lyricsSourceMeta[source.name];
+    return `
+      <div class="source-priority-row${source.on ? '' : ' is-disabled'}" data-source="${source.name}" data-index="${index}">
+        <button type="button" class="source-drag" draggable="true"
+                aria-label="Drag ${esc(meta.title)} to reorder. Use arrow keys to move it."
+                title="Drag to reorder; arrow keys also work">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3h1M10 3h1M5 8h1M10 8h1M5 13h1M10 13h1"/></svg>
+        </button>
+        <span class="source-step" aria-hidden="true">${index + 1}</span>
+        <span class="source-copy">
+          <span class="source-title">${esc(meta.title)}</span>
+          <span class="source-detail">${esc(meta.detail)}</span>
+        </span>
+        <label class="switch source-kind-switch">
+          <input type="checkbox" data-lyrics-source-on aria-label="Use ${esc(meta.title)}" ${source.on ? 'checked' : ''} />
+          <span class="sw-track"></span><span class="sw-thumb"></span>
+        </label>
+      </div>`;
+  }).join('');
+  syncLyricsSourcesInput();
+}
+
+function syncLyricsSourcesInput() {
+  const input = document.getElementById('f-lyrics-sources');
+  const help = document.getElementById('lyrics-source-order-help');
+  const value = lyricsSources.filter(source => source.on).map(source => source.name).join(',');
+  if (input && input.value !== value) {
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  if (help) {
+    help.hidden = value.length > 0;
+    help.textContent = value.length ? '' : 'Every source is off, so no lyrics will be found.';
+  }
+}
+
+function moveLyricsSource(from, to) {
+  if (from === to || to < 0 || to >= lyricsSources.length) return;
+  const [source] = lyricsSources.splice(from, 1);
+  lyricsSources.splice(to, 0, source);
+  renderLyricsSources();
+  document.querySelector(`#lyrics-source-order .source-priority-row[data-index="${to}"] .source-drag`)?.focus();
+}
+
+const lyricsSourceList = document.getElementById('lyrics-source-order');
+let draggedLyricsRow = null;
+lyricsSourceList?.addEventListener('change', event => {
+  if (!event.target.matches('[data-lyrics-source-on]')) return;
+  const row = event.target.closest('.source-priority-row');
+  lyricsSources[Number(row.dataset.index)].on = event.target.checked;
+  row.classList.toggle('is-disabled', !event.target.checked);
+  syncLyricsSourcesInput();
+});
+lyricsSourceList?.addEventListener('keydown', event => {
+  const handle = event.target.closest('.source-drag');
+  if (!handle || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  const from = Number(handle.closest('.source-priority-row').dataset.index);
+  moveLyricsSource(from, from + (event.key === 'ArrowUp' ? -1 : 1));
+});
+lyricsSourceList?.addEventListener('dragstart', event => {
+  const handle = event.target.closest('.source-drag');
+  if (!handle) return;
+  draggedLyricsRow = handle.closest('.source-priority-row');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedLyricsRow.dataset.source);
+  draggedLyricsRow.classList.add('is-dragging');
+});
+lyricsSourceList?.addEventListener('dragover', event => {
+  const target = event.target.closest('.source-priority-row');
+  if (!target || !draggedLyricsRow || target === draggedLyricsRow) return;
+  event.preventDefault();
+  previewLyricsRowMove(target, event.clientY);
+});
+lyricsSourceList?.addEventListener('drop', event => event.preventDefault());
+lyricsSourceList?.addEventListener('dragend', () => finishLyricsDrag());
+// Touch and pen: the same move, by pointer, since those never fire drag events.
+lyricsSourceList?.addEventListener('pointerdown', event => {
+  const handle = event.target.closest('.source-drag');
+  if (!handle || event.pointerType === 'mouse') return;
+  event.preventDefault();
+  draggedLyricsRow = handle.closest('.source-priority-row');
+  draggedLyricsRow.classList.add('is-dragging');
+  handle.setPointerCapture(event.pointerId);
+});
+lyricsSourceList?.addEventListener('pointermove', event => {
+  if (!draggedLyricsRow || event.pointerType === 'mouse') return;
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('#lyrics-source-order .source-priority-row');
+  if (target) previewLyricsRowMove(target, event.clientY);
+});
+lyricsSourceList?.addEventListener('pointerup', event => { if (event.pointerType !== 'mouse') finishLyricsDrag(); });
+lyricsSourceList?.addEventListener('pointercancel', event => { if (event.pointerType !== 'mouse') finishLyricsDrag(); });
+
+function previewLyricsRowMove(target, clientY) {
+  if (!draggedLyricsRow || target === draggedLyricsRow) return;
+  const after = clientY > target.getBoundingClientRect().top + target.offsetHeight / 2;
+  lyricsSourceList.insertBefore(draggedLyricsRow, after ? target.nextSibling : target);
+}
+
+function finishLyricsDrag() {
+  if (!draggedLyricsRow) return;
+  draggedLyricsRow.classList.remove('is-dragging');
+  draggedLyricsRow = null;
+  const byName = new Map(lyricsSources.map(source => [source.name, source]));
+  lyricsSources = [...lyricsSourceList.querySelectorAll('.source-priority-row')]
+    .map(row => byName.get(row.dataset.source)).filter(Boolean);
+  renderLyricsSources();
+}
+
+// ---- Find lyrics for the library -----------------------------------------
+//
+// Gated on the Navidrome admin sign-in, as the genre backfill is: it writes files and names
+// them. A 401 asks for the sign-in once and tries again.
+
+let lyricsLibraryPoll = null;
+
+async function lyricsFetch(url, options = {}, retry = true, holderId = 'lyrics-library-status') {
+  const response = await api(url, options);
+  if (response.status === 401 && retry) {
+    const holder = document.getElementById(holderId);
+    if (await browseAuthenticate(holder ?? document.createElement('div'))) return lyricsFetch(url, options, false, holderId);
+  }
+  return response;
+}
+
+async function lyricsError(response) {
+  try { return (await response.json()).error || `HTTP ${response.status}`; } catch { return `HTTP ${response.status}`; }
+}
+
+function renderLyricsLibrary(run) {
+  const status = document.getElementById('lyrics-library-status');
+  if (!status) return;
+  const running = run.status === 'Running';
+  document.getElementById('lyrics-library-cancel').hidden = !running;
+  document.getElementById('lyrics-library-resume').hidden = running || !run.canResume;
+  document.getElementById('lyrics-library-start').disabled = running;
+
+  const scope = document.getElementById('lyrics-library-scope');
+  const scopeHint = document.getElementById('lyrics-library-scope-d');
+  if (scope) scope.textContent = run.writesBesideAll ? 'Every song in the library' : 'Songs Octo downloaded';
+  if (scopeHint) scopeHint.textContent = run.writesBesideAll
+    ? 'Lyrics files are written beside every song that has none, your own rips and purchases included.'
+    : 'Turn on "Write lyrics files beside all library songs" above to include the rest.';
+
+  if (run.status === 'Idle') {
+    status.innerHTML = '';
+  } else {
+    const label = { Running: 'Finding lyrics', Completed: 'Finished', Cancelled: 'Stopped', Interrupted: 'Paused', Failed: 'Stopped' }[run.status] ?? run.status;
+    const counts = [
+      `${run.processed} of ${run.total} songs`,
+      `${run.written} written${run.wordTimed ? ` (${run.wordTimed} word-timed)` : ''}`,
+      run.upgraded ? `${run.upgraded} upgraded` : null,
+      run.alreadyHad ? `${run.alreadyHad} already had lyrics` : null,
+      run.notFound ? `${run.notFound} not found` : null,
+      run.instrumental ? `${run.instrumental} instrumental` : null,
+      run.busy ? `${run.busy} not answered` : null,
+      run.failed ? `${run.failed} failed` : null,
+    ].filter(Boolean).join(' · ');
+    status.innerHTML = `
+      <div class="set-info">
+        <div class="set-info-t">${esc(label)}</div>
+        <div class="set-info-d">${esc(counts)}${run.reason ? `. ${esc(run.reason)}` : ''}</div>
+      </div>
+      ${run.total ? `<progress class="lyrics-progress" max="${run.total}" value="${run.processed}"></progress>` : ''}`;
+  }
+
+  const review = document.getElementById('lyrics-review');
+  const list = document.getElementById('lyrics-review-list');
+  if (review && list) {
+    review.hidden = !run.review?.length;
+    list.innerHTML = (run.review ?? []).slice(0, 100).map(entry => `
+      <div class="config-row lyrics-row">
+        <span class="lyrics-song">
+          <strong>${esc(entry.title)}</strong> <span class="set-opt">${esc(entry.artist)}</span>
+          <span class="set-info-d">${esc(entry.source)}, ${esc(entry.kind)}: ${esc(entry.reason)}</span>
+        </span>
+        <span class="genre-preset-actions">
+          <button class="btn btn-ghost" type="button" data-review-choose="${esc(entry.path)}">Choose other lyrics</button>
+          <button class="btn btn-ghost" type="button" data-review-dismiss="${esc(entry.path)}">They're right</button>
+        </span>
+      </div>`).join('');
+  }
+}
+
+async function loadLyricsLibrary(retry = false) {
+  const response = await lyricsFetch('/api/admin/lyrics/library', {}, retry);
+  if (!response.ok) return null;
+  const run = await response.json();
+  renderLyricsLibrary(run);
+  if (run.status === 'Running') {
+    if (!lyricsLibraryPoll) lyricsLibraryPoll = setInterval(() => loadLyricsLibrary(), 2000);
+  } else if (lyricsLibraryPoll) {
+    clearInterval(lyricsLibraryPoll);
+    lyricsLibraryPoll = null;
+  }
+  return run;
+}
+
+async function lyricsLibraryAction(url, body) {
+  const response = await lyricsFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) toast(await lyricsError(response), 'err');
+  await loadLyricsLibrary();
+}
+
+document.getElementById('lyrics-library-start')?.addEventListener('click', () =>
+  lyricsLibraryAction('/api/admin/lyrics/library', { upgrade: !!document.getElementById('lyrics-library-upgrade')?.checked }));
+document.getElementById('lyrics-library-resume')?.addEventListener('click', () => lyricsLibraryAction('/api/admin/lyrics/library/resume'));
+document.getElementById('lyrics-library-cancel')?.addEventListener('click', () => lyricsLibraryAction('/api/admin/lyrics/library/cancel'));
+document.getElementById('lyrics-review-list')?.addEventListener('click', event => {
+  const choose = event.target.closest('[data-review-choose]');
+  if (choose) openLyricsPicker({ path: choose.dataset.reviewChoose });
+  const dismiss = event.target.closest('[data-review-dismiss]');
+  if (dismiss) lyricsLibraryAction('/api/admin/lyrics/review/dismiss', { path: dismiss.dataset.reviewDismiss });
+});
+
+// ---- Fix a song's lyrics -------------------------------------------------
+
+let lyricsPicked = null;
+const lyricsChoiceLabel = choice => choice === 'auto' ? 'Automatic' : choice === 'none' ? 'Hidden' : 'Chosen by hand';
+
+async function searchLyricsSongs() {
+  const q = document.getElementById('lyrics-song-search')?.value.trim();
+  const results = document.getElementById('lyrics-song-results');
+  if (!q || !results) return;
+  results.innerHTML = '<div class="config-row"><span class="set-info-d">Searching…</span></div>';
+  const response = await lyricsFetch(`/api/admin/lyrics/songs?q=${encodeURIComponent(q)}`, {}, true, 'lyrics-song-results');
+  if (!response.ok) {
+    results.innerHTML = `<div class="field-error" role="alert">${esc(await lyricsError(response))}</div>`;
+    return;
+  }
+  const { songs } = await response.json();
+  results.innerHTML = songs.length ? songs.map(song => `
+    <div class="config-row lyrics-row">
+      <span class="lyrics-song"><strong>${esc(song.title)}</strong> <span class="set-opt">${esc(song.artist)}</span>
+        <span class="set-info-d">${esc(song.album ?? '')}${song.choice !== 'auto' ? ` · ${lyricsChoiceLabel(song.choice)}` : ''}</span></span>
+      <span><button class="btn btn-ghost" type="button" data-lyrics-song="${esc(song.id)}">Lyrics…</button></span>
+    </div>`).join('') : '<div class="config-row"><span class="set-info-d">No songs found.</span></div>';
+}
+
+document.getElementById('lyrics-song-search-go')?.addEventListener('click', searchLyricsSongs);
+document.getElementById('lyrics-song-search')?.addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); searchLyricsSongs(); }
+});
+document.getElementById('lyrics-song-results')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-lyrics-song]');
+  if (button) openLyricsPicker({ id: button.dataset.lyricsSong });
+});
+
+async function openLyricsPicker(target, manual = null) {
+  const picker = document.getElementById('lyrics-picker');
+  const list = document.getElementById('lyrics-candidates');
+  if (!picker || !list) return;
+  picker.hidden = false;
+  list.innerHTML = '<div class="config-row"><span class="set-info-d">Asking every lyrics source… this takes a few seconds.</span></div>';
+  picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  const query = new URLSearchParams();
+  if (target.id) query.set('id', target.id);
+  if (target.path) query.set('path', target.path);
+  if (manual?.artist) query.set('artist', manual.artist);
+  if (manual?.title) query.set('title', manual.title);
+  const response = await lyricsFetch(`/api/admin/lyrics/candidates?${query}`, {}, true, 'lyrics-candidates');
+  if (!response.ok) {
+    list.innerHTML = `<div class="field-error" role="alert">${esc(await lyricsError(response))}</div>`;
+    return;
+  }
+  const song = await response.json();
+  lyricsPicked = { id: song.id, path: song.path };
+  document.getElementById('lyrics-picker-title').textContent = `${song.title} · ${song.artist}`;
+  document.getElementById('lyrics-picker-state').textContent = `Now: ${lyricsChoiceLabel(song.choice)}.`;
+  if (!manual) {
+    document.getElementById('lyrics-picker-artist').value = song.artist ?? '';
+    document.getElementById('lyrics-picker-song').value = song.title ?? '';
+  }
+  document.getElementById('lyrics-picker-hide').disabled = !song.id;
+
+  list.innerHTML = song.candidates.length ? song.candidates.map(candidate => `
+    <div class="config-row lyrics-row${candidate.id === song.choice ? ' is-chosen' : ''}">
+      <span class="lyrics-song">
+        <strong>${esc(candidate.title)}</strong> <span class="set-opt">${esc(candidate.artist)}</span>
+        <span class="set-info-d">${esc(lyricsSourceMeta[candidate.source]?.title ?? candidate.source)} · ${esc({ word: 'timed word by word', line: 'timed line by line', plain: 'not timed', instrumental: 'instrumental' }[candidate.kind] ?? candidate.kind)}${candidate.album ? ` · ${esc(candidate.album)}` : ''}${candidate.duration ? ` · ${Math.floor(candidate.duration / 60)}:${String(candidate.duration % 60).padStart(2, '0')}` : ''}${candidate.sameSong ? '' : ' · <em>may be another song</em>'}</span>
+        <span class="lyrics-preview">${candidate.preview.map(esc).join('<br>')}</span>
+      </span>
+      <span><button class="btn btn-ghost" type="button" data-lyrics-candidate="${esc(candidate.id)}" ${candidate.kind === 'instrumental' ? 'disabled' : ''}>${candidate.id === song.choice ? 'In use' : 'Use these'}</button></span>
+    </div>`).join('') : '<div class="config-row"><span class="set-info-d">No source has lyrics for this. Try another title or artist above.</span></div>';
+}
+
+async function chooseLyrics(candidate) {
+  if (!lyricsPicked) return;
+  const response = await lyricsFetch('/api/admin/lyrics/choice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: lyricsPicked.id, path: lyricsPicked.path, candidate }),
+  }, true, 'lyrics-candidates');
+  if (!response.ok) {
+    toast(await lyricsError(response), 'err');
+    return;
+  }
+  toast(candidate === 'none' ? 'Lyrics hidden for this song.' : candidate === 'auto' ? 'Back to automatic lyrics.' : 'Lyrics chosen for this song.');
+  document.getElementById('lyrics-picker-state').textContent = `Now: ${lyricsChoiceLabel(candidate === 'none' || candidate === 'auto' ? candidate : 'pinned')}.`;
+  loadLyricsChoices();
+  loadLyricsLibrary();
+}
+
+document.getElementById('lyrics-candidates')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-lyrics-candidate]');
+  if (button) chooseLyrics(button.dataset.lyricsCandidate);
+});
+document.getElementById('lyrics-picker-hide')?.addEventListener('click', () => chooseLyrics('none'));
+document.getElementById('lyrics-picker-auto')?.addEventListener('click', () => chooseLyrics('auto'));
+document.getElementById('lyrics-picker-search')?.addEventListener('click', () => {
+  if (!lyricsPicked) return;
+  openLyricsPicker(lyricsPicked, {
+    artist: document.getElementById('lyrics-picker-artist')?.value.trim(),
+    title: document.getElementById('lyrics-picker-song')?.value.trim(),
+  });
+});
+
+async function loadLyricsChoices(retry = false) {
+  const response = await lyricsFetch('/api/admin/lyrics/choices', {}, retry, 'lyrics-choices-list');
+  if (!response.ok) return;
+  const { choices } = await response.json();
+  const wrap = document.getElementById('lyrics-choices');
+  const list = document.getElementById('lyrics-choices-list');
+  if (!wrap || !list) return;
+  wrap.hidden = !choices.length;
+  list.innerHTML = choices.slice(0, 100).map(choice => `
+    <div class="config-row lyrics-row">
+      <span class="lyrics-song"><strong>${esc(choice.title ?? choice.id)}</strong> <span class="set-opt">${esc(choice.artist ?? '')}</span>
+        <span class="set-info-d">${choice.choice === 'none' ? 'Hidden' : `${esc(lyricsSourceMeta[choice.source?.toLowerCase()]?.title ?? choice.source ?? '')}, ${esc(choice.kind)}`}${choice.setBy ? ` · by ${esc(choice.setBy)}` : ''}</span></span>
+      <span><button class="btn btn-ghost" type="button" data-lyrics-reset="${esc(choice.id)}">Back to automatic</button></span>
+    </div>`).join('');
+}
+
+document.getElementById('lyrics-choices-list')?.addEventListener('click', async event => {
+  const button = event.target.closest('[data-lyrics-reset]');
+  if (!button) return;
+  lyricsPicked = { id: button.dataset.lyricsReset };
+  await chooseLyrics('auto');
 });
 
 // ────────────────────────────────────────────────────────────────

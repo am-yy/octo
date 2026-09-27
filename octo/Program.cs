@@ -350,6 +350,13 @@ builder.Services.AddSingleton(sp => new Octo.Services.Lyrics.LyricsChoiceStore(
 builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsChoiceService>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsSidecarWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Lyrics.LyricsSidecarWriter>());
+// "Find lyrics for the library": its progress beside the settings, so a stop or a restart can
+// be resumed from where it was.
+builder.Services.AddSingleton(sp => new Octo.Services.Lyrics.LyricsLibraryStore(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "lyrics-library.json"),
+    sp.GetRequiredService<ILogger<Octo.Services.Lyrics.LyricsLibraryStore>>()));
+builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsLibraryWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Lyrics.LyricsLibraryWorker>());
 
 builder.Services.AddCors(options =>
 {

@@ -2818,8 +2818,11 @@ public class SubsonicController : ControllerBase
                 return _responseBuilder.CreateLyricsListResponse(format, pin.Lyrics, pin.Artist ?? artist, pin.Title ?? title, enhanced);
 
             Octo.Services.Lyrics.LyricsResult? found = null;
+            var stillLooking = false;
             if (fetching && routing is { HasArtistTitle: true })
-                found = await LiveLyricsAsync(artist, title, routing.Album, routing.Duration);
+                (found, stillLooking) = await LiveLyricsAsync(artist, title, routing.Album, routing.Duration);
+            if (found is null && stillLooking && DrawsItsOwnMarks(parameters))
+                return StillLookingForLyrics(format);
             return _responseBuilder.CreateLyricsListResponse(format, found, artist, title, enhanced);
         }
 
@@ -2836,9 +2839,11 @@ public class SubsonicController : ControllerBase
                 && HasNoStructuredLyrics(relay.Body)
                 && await LibrarySongAsync(parameters, id) is { } song)
             {
-                var found = await LiveLyricsAsync(song.Artist, song.Title, song.Album, song.Duration);
+                var (found, stillLooking) = await LiveLyricsAsync(song.Artist, song.Title, song.Album, song.Duration);
                 if (found is not null)
                     return _responseBuilder.CreateLyricsListResponse(format, found, song.Artist, song.Title, enhanced);
+                if (stillLooking && DrawsItsOwnMarks(parameters))
+                    return StillLookingForLyrics(format);
             }
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
         }
@@ -2871,7 +2876,7 @@ public class SubsonicController : ControllerBase
 
         var fetching = _lyricsService is not null && _metadataSettings?.CurrentValue.FetchLyrics == true;
         if (fetching && HasNoLegacyLyrics(relay.Body, format)
-            && await LiveLyricsAsync(artist, title, null, null) is { } found)
+            && (await LiveLyricsAsync(artist, title, null, null)).Found is { } found)
             return _responseBuilder.CreateLyricsResponse(format, found, artist, title);
         return File(relay.Body, relay.ContentType ?? $"application/{format}");
     }
@@ -2995,21 +3000,42 @@ public class SubsonicController : ControllerBase
             : null;
     }
 
-    private async Task<Octo.Services.Lyrics.LyricsResult?> LiveLyricsAsync(string artist, string title, string? album, int? duration)
+    /// <summary>
+    /// Lyrics for a song as it plays, within the interactive budget. A lookup that runs out of
+    /// time keeps going in the background (up to <see cref="BackgroundLyricsLimit"/>), so the
+    /// service has the answer cached for the next ask; the caller learns it is still looking.
+    /// </summary>
+    private async Task<(Octo.Services.Lyrics.LyricsResult? Found, bool StillLooking)> LiveLyricsAsync(
+        string artist, string title, string? album, int? duration)
     {
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
-        budget.CancelAfter(InteractiveLyricsBudget);
+        var query = new Octo.Services.Lyrics.LyricsQuery(
+            artist, Octo.Services.Lyrics.LyricsText.QueryTitle(title, artist), album, duration);
+        // Not tied to the request: a client that stops waiting must not stop the lookup.
+        var limit = new CancellationTokenSource(BackgroundLyricsLimit);
+        var lookup = _lyricsService!.FindAsync(query, limit.Token);
+        _ = lookup.ContinueWith(_ => limit.Dispose(), TaskScheduler.Default);
         try
         {
-            var lookup = await _lyricsService!.FindAsync(new Octo.Services.Lyrics.LyricsQuery(
-                artist, Octo.Services.Lyrics.LyricsText.QueryTitle(title, artist), album, duration), budget.Token);
-            return lookup.Result;
+            var done = await Task.WhenAny(lookup, Task.Delay(InteractiveLyricsBudget, HttpContext.RequestAborted));
+            if (done != lookup) return (null, true);
+            var answer = await lookup;
+            return (answer.Result, answer.Result is null && answer.Transient);
         }
         catch (OperationCanceledException)
         {
-            return null;
+            return (null, true);
         }
     }
+
+    /// <summary>How long a lookup the caller stopped waiting for may keep going.</summary>
+    private static readonly TimeSpan BackgroundLyricsLimit = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Told only to the Octo app: the lookup is not finished, so this is "not yet", never "none".
+    /// Other clients keep getting the ordinary empty list, which is what the spec gives them.
+    /// </summary>
+    private IActionResult StillLookingForLyrics(string format) =>
+        _responseBuilder.CreateError(format, 0, "Still looking for lyrics; ask again shortly");
 
     private static bool HasNoStructuredLyrics(byte[] body)
     {

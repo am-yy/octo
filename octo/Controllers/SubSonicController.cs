@@ -69,6 +69,7 @@ public class SubsonicController : ControllerBase
     private readonly Octo.Services.Library.NoticeQueue? _noticeQueue;
     private readonly Octo.Services.Library.GeneratedPlaylistService? _generatedPlaylists;
     private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedSettings;
+    private readonly AcquisitionTracker? _acquisitionTracker;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -105,8 +106,10 @@ public class SubsonicController : ControllerBase
         IOptionsMonitor<MetadataSettings>? metadataSettings = null,
         Octo.Services.Library.NoticeQueue? noticeQueue = null,
         Octo.Services.Library.GeneratedPlaylistService? generatedPlaylists = null,
-        IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null)
+        IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null,
+        AcquisitionTracker? acquisitionTracker = null)
     {
+        _acquisitionTracker = acquisitionTracker;
         _generatedPlaylists = generatedPlaylists;
         _generatedSettings = generatedSettings;
         _listenBrainz = listenBrainz;
@@ -2163,6 +2166,11 @@ public class SubsonicController : ControllerBase
 
             // An empty exclude means "download every track". The engine already skips
             // tracks that are downloaded or in flight and isolates per-track failures.
+            //
+            // The progress list is claimed first, so the chain's first step already has a row
+            // to move. Its name is the one the request authenticated as, not RequesterFor: it
+            // decides who may see the row, and it is never written anywhere.
+            _acquisitionTracker?.BeginAlbum(albumProviderName, albumCandidate, NativeUsername(parameters));
             _heartAcquisitions.QueueAlbum(albumProviderName, albumCandidate,
                 RequesterFor(parameters));
 
@@ -2186,6 +2194,11 @@ public class SubsonicController : ControllerBase
             // than inheriting whatever a concurrent play happened to ask for.
             _logger.LogInformation("Starring external song {SongId}, queueing permanent download", itemId);
 
+            // Keyed by what the pipeline knows, labelled with the id the client starred so the
+            // app can find its row. Named from the routing, which is already in memory.
+            var routing = _idRegistry.Lookup(externalId!);
+            _acquisitionTracker?.Begin(provider!, externalId!, itemId, NativeUsername(parameters),
+                routing?.Artist, routing?.Title, routing?.Album);
             _heartAcquisitions.QueueTrack(provider!, externalId!, RequesterFor(parameters));
 
             // Return success response immediately
@@ -2210,6 +2223,54 @@ public class SubsonicController : ControllerBase
         {
             return _responseBuilder.CreateError(format, 0, $"Error connecting to Subsonic server: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// The caller's own hearted downloads, while they run and for half an hour after, so the
+    /// app can draw progress on the button that started one. Octo answers this itself, so it
+    /// works wherever the Subsonic API does, including away from home, unlike the admin API.
+    ///
+    /// Credentials are checked the way a station or a mix checks them: a ping to Navidrome with
+    /// the caller's own. Only rows that user asked for come back, admin or not.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/getAcquisitions")]
+    [Route("rest/getAcquisitions.view")]
+    public async Task<IActionResult> GetAcquisitions()
+    {
+        var parameters = await ExtractAllParameters();
+        const string format = "json";
+
+        var auth = parameters.ToDictionary(pair => pair.Key, pair => pair.Value);
+        auth["f"] = format;
+        var check = await _proxyService.RelaySafeAsync("rest/ping", auth);
+        if (!check.Success || check.Body is null)
+            return _responseBuilder.CreateError(format, 0, "Octo can't reach Navidrome to check who is asking");
+        if (!IsSuccessfulSubsonicResponse(check.Body, format))
+            return _responseBuilder.CreateError(format, 40, "Wrong username or password");
+
+        var username = NativeUsername(parameters);
+        var rows = _acquisitionTracker is not null && !string.IsNullOrWhiteSpace(username)
+            ? _acquisitionTracker.ForUser(username)
+            : [];
+        return _responseBuilder.CreateAcquisitionsResponse(rows);
+    }
+
+    /// <summary>
+    /// Navidrome's extension list with octoAcquisitions added, so a client can tell this server
+    /// answers getAcquisitions before it asks. Relayed, then merged; no credentials are needed,
+    /// as the OpenSubsonic spec has it.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/getOpenSubsonicExtensions")]
+    [Route("rest/getOpenSubsonicExtensions.view")]
+    public async Task<IActionResult> GetOpenSubsonicExtensions()
+    {
+        var parameters = await ExtractAllParameters();
+        var format = parameters.GetValueOrDefault("f", "xml");
+        var relay = await _proxyService.RelaySafeAsync("rest/getOpenSubsonicExtensions", parameters);
+        return _responseBuilder.MergeOpenSubsonicExtensions(format,
+            relay.Success ? relay.Body : null, relay.ContentType);
     }
 
     /// <summary>

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 
 namespace Octo.Services.Metadata;
 
@@ -181,10 +182,10 @@ public class DeezerMetadataService : IDisposable
         var yearUnresolved = false;
         try
         {
-            var q = Uri.EscapeDataString(PlainQuery(artist, title));
-            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit={MatchCandidates}", ct, background);
-            if (r.Transient) return null;
-            if (BestMatch(r.Doc, artist, title) is JsonElement t)
+            var (r, found) = await FindTrackAsync(artist, title, ct, background);
+            using var response = r;
+            if (r?.Transient == true) return null;
+            if (found is JsonElement t)
             {
                 string? albTitle = null, cover = null, artName = null, artImg = null;
                 long albId = 0;
@@ -245,10 +246,10 @@ public class DeezerMetadataService : IDisposable
         var detailUnresolved = false;
         try
         {
-            var q = Uri.EscapeDataString(PlainQuery(artist, title));
-            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit={MatchCandidates}", ct);
-            if (r.Transient) return null;
-            if (BestMatch(r.Doc, artist, title) is JsonElement t)
+            var (r, found) = await FindTrackAsync(artist, title, ct);
+            using var response = r;
+            if (r?.Transient == true) return null;
+            if (found is JsonElement t)
             {
                 string? albTitle = null, cover = null, artName = null;
                 var isrc = Str(t, "isrc");
@@ -662,6 +663,32 @@ public class DeezerMetadataService : IDisposable
         }
     }
 
+    /// <summary>How many searches one track lookup may make: the song as asked, then written
+    /// another way, then the title alone. Each is one request against Deezer's shared budget,
+    /// and only a miss makes the next.</summary>
+    private const int TrackSearches = 3;
+
+    /// <summary>
+    /// The first track search hit that is this song, trying the song as asked and then the
+    /// other ways <see cref="SongIdentity.QueryVariants"/> writes it ("suicideboys SUICIDE" for
+    /// "$uicideboy$ $UICIDE", the title without its guests, the primary artist, the title
+    /// alone). Every hit is judged against the song as asked, so a looser query never means a
+    /// looser match. The response holding the hit is the caller's to dispose; a transient one
+    /// comes back with no hit and must not be cached.
+    /// </summary>
+    private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackAsync(string? artist, string? title,
+        CancellationToken ct, bool background = false)
+    {
+        foreach (var variant in SongIdentity.QueryVariants(title, artist).Take(TrackSearches))
+        {
+            var r = await GetJsonAsync($"{Base}/search?q={Uri.EscapeDataString(variant.Text)}&limit={MatchCandidates}", ct, background);
+            if (r.Transient) return (r, null);
+            if (BestMatch(r.Doc, artist, title) is JsonElement hit) return (r, hit);
+            r.Dispose();
+        }
+        return (null, null);
+    }
+
     /// <summary>
     /// Deezer no longer supports field-qualified search on the track endpoints. A query
     /// like artist:"X" track:"Y" is now read as free text, so the literal words "artist"
@@ -676,28 +703,39 @@ public class DeezerMetadataService : IDisposable
     /// recording and the first row is not reliably the right one.</summary>
     private const int MatchCandidates = 5;
 
-    /// <summary>Letters and digits only, so punctuation, case and spacing cannot decide
-    /// a match.</summary>
-    private static string MatchKey(string? value) =>
-        new((value ?? string.Empty).Normalize().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
-
     /// <summary>What one field of a hit says about the request.</summary>
     private enum FieldVerdict { Match, Absent, Mismatch }
 
     /// <summary>
-    /// Compare one field. Containment rather than equality, because Deezer decorates
-    /// titles ("Reckoner (Remastered)") and credits features in the artist field; an exact
-    /// compare rejects the correct recording far more often than it rejects a wrong one.
+    /// Compare the titles by <see cref="SongIdentity"/>: the same key, or the same key once
+    /// stylized characters are read as letters, or one key containing the other, because
+    /// Deezer decorates titles in ways no list names. Never another version: a live take or a
+    /// remix carries its own album and length, and attaching those to the original is wrong.
     ///
     /// A field either side left empty is <see cref="FieldVerdict.Absent"/>, never a
     /// mismatch. Absent evidence is not counter-evidence, and treating a field Deezer
     /// simply did not send as a contradiction would throw away good hits the moment the
     /// payload shape changes.
     /// </summary>
-    private static FieldVerdict Compare(string want, string got)
+    private static FieldVerdict CompareTitles(string? want, string? got)
     {
-        if (want.Length == 0 || got.Length == 0) return FieldVerdict.Absent;
-        return got.Contains(want) || want.Contains(got) ? FieldVerdict.Match : FieldVerdict.Mismatch;
+        var a = SongIdentity.ParseTitle(want);
+        var b = SongIdentity.ParseTitle(got);
+        if (a.Key.Length == 0 || b.Key.Length == 0) return FieldVerdict.Absent;
+        if (!SongIdentity.DistinctVersions(a).SetEquals(SongIdentity.DistinctVersions(b))) return FieldVerdict.Mismatch;
+        return a.Key == b.Key || a.LooseKey == b.LooseKey || a.Key.Contains(b.Key) || b.Key.Contains(a.Key)
+            ? FieldVerdict.Match : FieldVerdict.Mismatch;
+    }
+
+    /// <summary>The artists by <see cref="SongIdentity"/>, and one key containing the other, since
+    /// Deezer credits guests in the artist field.</summary>
+    private static FieldVerdict CompareArtists(string? want, string? got)
+    {
+        var a = SongIdentity.Key(want);
+        var b = SongIdentity.Key(got);
+        if (a.Length == 0 || b.Length == 0) return FieldVerdict.Absent;
+        return SongIdentity.ArtistsAgree(want, got) || a.Contains(b) || b.Contains(a)
+            ? FieldVerdict.Match : FieldVerdict.Mismatch;
     }
 
     /// <summary>
@@ -713,14 +751,11 @@ public class DeezerMetadataService : IDisposable
         if (!doc.RootElement.TryGetProperty("data", out var data)
             || data.ValueKind != JsonValueKind.Array) return null;
 
-        var wantArtist = MatchKey(artist);
-        var wantTitle = MatchKey(title);
-
         foreach (var hit in data.EnumerateArray())
         {
-            var titleVerdict = Compare(wantTitle, MatchKey(Str(hit, "title")));
-            var artistVerdict = Compare(wantArtist,
-                MatchKey(hit.TryGetProperty("artist", out var a) ? Str(a, "name") : null));
+            var titleVerdict = CompareTitles(title, Str(hit, "title"));
+            var artistVerdict = CompareArtists(artist,
+                hit.TryGetProperty("artist", out var a) ? Str(a, "name") : null);
 
             if (titleVerdict == FieldVerdict.Mismatch || artistVerdict == FieldVerdict.Mismatch) continue;
             if (titleVerdict == FieldVerdict.Match || artistVerdict == FieldVerdict.Match) return hit;

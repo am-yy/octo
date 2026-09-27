@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lyrics;
 
@@ -49,11 +50,17 @@ public sealed class LrclibLyricsSource : ILyricsSource
                     if (IsThisSong(found.RootElement, query)) return new LyricsLookup(Parse(found.RootElement, query), false);
             }
 
-            var search = await SendAsync(SearchUrl(query), ct);
-            if (search.Transient) return LyricsLookup.Failed;
-            if (search.Json is not { } results) return LyricsLookup.Miss;
-            using (results)
-                return new LyricsLookup(Pick(results.RootElement, query) is { } hit ? Parse(hit, query) : null, false);
+            // Then its search, as asked and as the same song written other ways ("suicideboys"
+            // for "$uicideboy$"), until one finds it.
+            foreach (var variant in LyricsIdentity.Searches(query))
+            {
+                var search = await SendAsync(SearchUrl(variant), ct);
+                if (search.Transient) return LyricsLookup.Failed;
+                if (search.Json is not { } results) continue;
+                using (results)
+                    if (Pick(results.RootElement, query) is { } hit) return new LyricsLookup(Parse(hit, query), false);
+            }
+            return LyricsLookup.Miss;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -64,22 +71,31 @@ public sealed class LrclibLyricsSource : ILyricsSource
     public async Task<LyricsSearch> SearchAsync(LyricsQuery query, CancellationToken ct)
     {
         if (DateTime.UtcNow < _coolDownUntilUtc) return LyricsSearch.Failed;
-        var search = await SendAsync(SearchUrl(query), ct);
-        if (search.Transient) return LyricsSearch.Failed;
-        if (search.Json is not { } results) return LyricsSearch.Empty;
-        using (results)
+        // The first search that returns anything: a person choosing wants the entries, and the
+        // later searches only exist for a song the first one could not find.
+        foreach (var variant in LyricsIdentity.Searches(query))
         {
-            if (results.RootElement.ValueKind != JsonValueKind.Array) return LyricsSearch.Empty;
-            return new LyricsSearch(results.RootElement.EnumerateArray()
-                .Where(row => row.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
-                .Take(12)
-                .Select(row => new LyricsCandidate("lrclib", row.GetProperty("id").GetInt64().ToString(),
-                    Str(row, "trackName") ?? Str(row, "name") ?? "", Str(row, "artistName") ?? "", Str(row, "albumName"),
-                    Seconds(row) is { } seconds ? (int)Math.Round(seconds) : null)
-                { Lyrics = Parse(row, null) })
-                .ToList(), false);
+            var search = await SendAsync(SearchUrl(variant), ct);
+            if (search.Transient) return LyricsSearch.Failed;
+            if (search.Json is not { } results) continue;
+            using (results)
+            {
+                if (results.RootElement.ValueKind != JsonValueKind.Array || results.RootElement.GetArrayLength() == 0) continue;
+                return Candidates(results.RootElement);
+            }
         }
+        return LyricsSearch.Empty;
     }
+
+    private static LyricsSearch Candidates(JsonElement results) =>
+        new(results.EnumerateArray()
+            .Where(row => row.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
+            .Take(12)
+            .Select(row => new LyricsCandidate("lrclib", row.GetProperty("id").GetInt64().ToString(),
+                Str(row, "trackName") ?? Str(row, "name") ?? "", Str(row, "artistName") ?? "", Str(row, "albumName"),
+                Seconds(row) is { } seconds ? (int)Math.Round(seconds) : null)
+            { Lyrics = Parse(row, null) })
+            .ToList(), false);
 
     public async Task<LyricsLookup> FetchAsync(string id, CancellationToken ct)
     {
@@ -103,7 +119,7 @@ public sealed class LrclibLyricsSource : ILyricsSource
         return url;
     }
 
-    private static string SearchUrl(LyricsQuery query) =>
+    private static string SearchUrl(SongQuery query) =>
         $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(query.Title)}"
         + $"&artist_name={Uri.EscapeDataString(query.Artist)}";
 

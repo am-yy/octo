@@ -797,11 +797,12 @@ public abstract class BaseDownloadService : IDownloadService
     protected async Task EnrichAsync(Song song, string filePath, CancellationToken cancellationToken)
     {
         // Last.fm/YouTube titles often carry a redundant "Artist - " prefix (e.g.
-        // "Radiohead - No Surprises") which both mislabels the file and breaks the
-        // Deezer lookup. Strip it for the written title; strip bracketed junk too for
-        // the lookup query so the match lands and we get real album art + tags.
+        // "Radiohead - No Surprises") which mislabels the file, so it goes from the written
+        // title. The lookup gets the title whole: Deezer tries it without "(Official Video)"
+        // and guests on its own, and a "(Live)" left in is what stops a live download being
+        // tagged with the studio album's cover, track number and year.
         song.Title = StripArtistPrefix(song.Artist, song.Title);
-        var queryTitle = StripBracketedJunk(song.Title);
+        var queryTitle = song.Title;
 
         try
         {
@@ -885,18 +886,6 @@ public abstract class BaseDownloadService : IDownloadService
         if (a.Length > 0 && t.StartsWith(a + " - ", StringComparison.OrdinalIgnoreCase))
             t = t[(a.Length + 3)..].Trim();
         return t;
-    }
-
-    /// <summary>Strip [bracketed] / (parenthesized) annotations for a cleaner Deezer
-    /// query (e.g. "No Surprises (Official Video)" -> "No Surprises"). Only used for
-    /// the lookup, not the written title, so real "(feat. …)" tags are preserved.</summary>
-    private static string StripBracketedJunk(string title)
-    {
-        var stripped = System.Text.RegularExpressions.Regex
-            .Replace(title ?? string.Empty, @"\s*[\[\(][^\]\)]*[\]\)]", "").Trim();
-        // A title that is entirely an annotation ("(Exchange)") strips to nothing, which
-        // would send an empty query to Deezer. Fall back to the original.
-        return stripped.Length == 0 ? (title ?? string.Empty).Trim() : stripped;
     }
 
     /// <summary>

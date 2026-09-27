@@ -45,6 +45,21 @@ internal static class LyricsIdentity
         return string.IsNullOrWhiteSpace(artist) && listed is { Count: > 0 } ? string.Join("、", listed) : artist;
     }
 
+    /// <summary>
+    /// The searches a lyrics source tries for a song, the first as asked, then cleaned, with
+    /// stylized characters read as letters, and by the primary artist alone, from
+    /// <see cref="SongIdentity.QueryVariants"/>. Each has an artist: a lyrics search by title
+    /// alone returns every song of that name, and the sources that need one have their own way
+    /// to look past a renamed artist. At most three, so a miss costs a source three requests.
+    /// Whatever they find is still held to <see cref="SameSong"/> against the song as asked.
+    /// </summary>
+    internal static IReadOnlyList<SongQuery> Searches(LyricsQuery query, int max = 3)
+    {
+        var searches = SongIdentity.QueryVariants(query.Title, query.Artist)
+            .Where(search => search.Artist.Length > 0).Take(max).ToList();
+        return searches.Count > 0 ? searches : [new SongQuery(query.Title, query.Artist)];
+    }
+
     /// <summary>Within a few seconds, or unknown on either side.</summary>
     public static bool LengthFits(int? want, double? got) => SongIdentity.LengthFits(want, got);
 

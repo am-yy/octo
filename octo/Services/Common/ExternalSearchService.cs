@@ -113,7 +113,8 @@ public sealed class ExternalSearchService
     ///   1. track.search hits (best fuzzy matches for the query as typed)
     ///   2. canonical artist's top tracks (in case (1) was thin — common for
     ///      single-word artist queries)
-    /// Deduped by artist+title so the same track cannot appear twice.
+    /// Deduped by SongIdentity.MatchKey, so the same track cannot appear twice however its
+    /// artist and title are written.
     /// </summary>
     private async Task<List<Song>> BuildAsync(string query, CancellationToken ct)
     {
@@ -123,7 +124,7 @@ public sealed class ExternalSearchService
         var tracks = await _lastFm!.SearchTracksAsync(query, Math.Min(50, BuildSize * 2));
         foreach (var t in tracks)
         {
-            var key = $"{t.Artist}|{t.Title}".ToLowerInvariant();
+            var key = SongIdentity.MatchKey(t.Artist, t.Title);
             if (seen.Add(key)) collected.Add((t.Artist, t.Title));
             if (collected.Count >= BuildSize) break;
         }
@@ -137,7 +138,7 @@ public sealed class ExternalSearchService
             var topTracks = await _lastFm.GetArtistTopTracksAsync(anchor, BuildSize * 2);
             foreach (var t in topTracks)
             {
-                var key = $"{t.Artist}|{t.Title}".ToLowerInvariant();
+                var key = SongIdentity.MatchKey(t.Artist, t.Title);
                 if (seen.Add(key)) collected.Add((t.Artist, t.Title));
                 if (collected.Count >= BuildSize) break;
             }

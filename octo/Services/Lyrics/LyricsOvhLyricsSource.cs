@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lyrics;
 
@@ -22,15 +23,36 @@ public sealed class LyricsOvhLyricsSource : ILyricsSource
 
     public string Key => "lyricsovh";
 
-    public Task<LyricsLookup> FindAsync(LyricsQuery query, CancellationToken ct) => GetAsync(query.Artist, query.Title, ct);
+    public async Task<LyricsLookup> FindAsync(LyricsQuery query, CancellationToken ct) => (await LookUpAsync(query, ct)).Lookup;
 
     public async Task<LyricsSearch> SearchAsync(LyricsQuery query, CancellationToken ct)
     {
-        var lookup = await GetAsync(query.Artist, query.Title, ct);
+        var (lookup, asked) = await LookUpAsync(query, ct);
         if (lookup.Transient) return LyricsSearch.Failed;
         if (lookup.Result is not { } result) return LyricsSearch.Empty;
-        return new LyricsSearch([new LyricsCandidate("lyricsovh", IdOf(query.Artist, query.Title), query.Title, query.Artist, null, null)
+        return new LyricsSearch([new LyricsCandidate("lyricsovh", IdOf(asked.Artist, asked.Title), asked.Title, asked.Artist, null, null)
             { Lyrics = result }], false);
+    }
+
+    /// <summary>
+    /// The song as asked, then written the other ways <see cref="LyricsIdentity.Searches"/> gives
+    /// ("suicideboys" for "$uicideboy$", the primary artist alone). lyrics.ovh names nothing back,
+    /// so nothing it answers can be checked: only a variant that is the same song by
+    /// construction is tried, and none for a title that names a version ("Song (Live)"), whose
+    /// cleaned query would ask for the original.
+    /// </summary>
+    private async Task<(LyricsLookup Lookup, SongQuery Asked)> LookUpAsync(LyricsQuery query, CancellationToken ct)
+    {
+        var searches = LyricsIdentity.Searches(query);
+        if (SongIdentity.DistinctVersions(SongIdentity.ParseTitle(query.Title, query.Artist)).Count > 0)
+            searches = [searches[0]];
+        (LyricsLookup Lookup, SongQuery Asked) last = (LyricsLookup.Miss, searches[0]);
+        foreach (var search in searches)
+        {
+            last = (await GetAsync(search.Artist, search.Title, ct), search);
+            if (last.Lookup.Transient || last.Lookup.Result is not null) break;
+        }
+        return last;
     }
 
     public Task<LyricsLookup> FetchAsync(string id, CancellationToken ct)

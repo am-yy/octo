@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lidarr;
 
@@ -96,10 +97,10 @@ public sealed class LidarrClient
     internal static LidarrAlbumCandidate? SelectBestAlbum(
         IReadOnlyList<LidarrAlbumCandidate> candidates, string artist, string album, int? year)
     {
-        var wantedArtist = Normalize(artist);
-        var wantedAlbum = Normalize(album);
+        var wantedArtist = SongIdentity.Key(artist);
+        var wantedAlbum = SongIdentity.Key(album);
         var exact = candidates
-            .Where(c => Normalize(c.Artist) == wantedArtist && Normalize(c.Title) == wantedAlbum)
+            .Where(c => SongIdentity.Key(c.Artist) == wantedArtist && SongIdentity.Key(c.Title) == wantedAlbum)
             .GroupBy(c => c.ForeignAlbumId, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .ToList();
@@ -313,9 +314,6 @@ public sealed class LidarrClient
             year,
             (JsonObject)row.DeepClone());
     }
-
-    internal static string Normalize(string value) =>
-        new(value.Normalize().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
 
     private static int? ParseTrackNumber(string value)
     {

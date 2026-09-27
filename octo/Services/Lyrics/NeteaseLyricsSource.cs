@@ -40,15 +40,23 @@ public sealed class NeteaseLyricsSource : ILyricsSource
             candidate.Artist.Split(" & ", StringSplitOptions.RemoveEmptyEntries))
         && LyricsIdentity.LengthFits(query.DurationSeconds, candidate.DurationSeconds);
 
+    /// <summary>The songs a search for "artist title" returns, and for the same song written
+    /// the ways <see cref="LyricsIdentity.Searches"/> gives, until one of them is this song.</summary>
     public async Task<LyricsSearch> SearchAsync(LyricsQuery query, CancellationToken ct)
     {
         try
         {
             var client = _http.CreateClient(LrclibLyricsSource.ClientName);
-            using var search = await GetJsonAsync(client,
-                $"https://music.163.com/api/search/get?s={Uri.EscapeDataString($"{query.Artist} {query.Title}")}&type=1&limit=8", ct);
-            if (search is null) return LyricsSearch.Failed;
-            return new LyricsSearch(Read(search.RootElement), false);
+            var candidates = new List<LyricsCandidate>();
+            foreach (var variant in LyricsIdentity.Searches(query))
+            {
+                using var search = await GetJsonAsync(client,
+                    $"https://music.163.com/api/search/get?s={Uri.EscapeDataString(variant.Text)}&type=1&limit=8", ct);
+                if (search is null) return candidates.Count == 0 ? LyricsSearch.Failed : new LyricsSearch(candidates, true);
+                candidates.AddRange(Read(search.RootElement).Where(found => candidates.All(seen => seen.Id != found.Id)));
+                if (candidates.Any(candidate => IsThisSong(candidate, query))) break;
+            }
+            return new LyricsSearch(candidates, false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

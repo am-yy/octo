@@ -252,7 +252,8 @@ public class SongLengthTests
         svc.CompleteSongLengths(songs);
         await svc.LastLengthWarm;
 
-        Assert.Equal(20, fixture.Requests.Count(url => url.Contains("api.deezer.com/search?q=")));
+        // One row, one lookup: a miss may try the title alone too, but twenty rows are asked about.
+        Assert.Equal(20, fixture.Requests.Count(url => url.Contains("api.deezer.com/search?q=Artist")));
     }
 
     [Fact]

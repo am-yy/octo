@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lyrics;
 
@@ -105,24 +106,31 @@ public sealed class KugouLyricsSource : ILyricsSource
         artist.Split(['、', ',', '&', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     /// <summary>
-    /// The lyric entries for "artist - title". When none of them is this song, the song
-    /// catalogue is asked too, and the lyric entries for each catalogue song that IS this song
-    /// are added under that song's name and album.
+    /// The lyric entries for "artist - title", then for the same song written the ways
+    /// <see cref="SongIdentity.QueryVariants"/> gives ("suicideboys - SUICIDE" for "$uicideboy$ -
+    /// $UICIDE"), until one of them is this song. When none is, the song catalogue is asked too,
+    /// and the lyric entries for each catalogue song that IS this song are added under that
+    /// song's name and album.
     /// </summary>
     public async Task<LyricsSearch> SearchAsync(LyricsQuery query, CancellationToken ct)
     {
-        var keyword = $"{query.Artist} - {query.Title}";
-        var url = "https://lyrics.kugou.com/search?ver=1&man=yes&client=pc&keyword=" + Uri.EscapeDataString(keyword);
-        if (query.DurationSeconds is > 0 and <= 3600) url += $"&duration={query.DurationSeconds * 1000}";
-
-        var direct = await GetJsonAsync(url, ct);
-        if (direct.Transient) return LyricsSearch.Failed;
+        var searches = LyricsIdentity.Searches(query);
         var candidates = new List<LyricsCandidate>();
-        using (direct.Json) candidates.AddRange(ReadLyricEntries(direct.Json?.RootElement, null));
-        if (candidates.Any(candidate => IsThisSong(candidate, query))) return new LyricsSearch(Distinct(candidates), false);
+        foreach (var search in searches)
+        {
+            var url = "https://lyrics.kugou.com/search?ver=1&man=yes&client=pc&keyword="
+                + Uri.EscapeDataString($"{search.Artist} - {search.Title}");
+            if (query.DurationSeconds is > 0 and <= 3600) url += $"&duration={query.DurationSeconds * 1000}";
+
+            var direct = await GetJsonAsync(url, ct);
+            if (direct.Transient) return candidates.Count == 0 ? LyricsSearch.Failed : new LyricsSearch(Distinct(candidates), true);
+            // In front: the list is cut to a dozen, and an earlier search's entries were not the song.
+            using (direct.Json) candidates.InsertRange(0, ReadLyricEntries(direct.Json?.RootElement, null));
+            if (candidates.Any(candidate => IsThisSong(candidate, query))) return new LyricsSearch(Distinct(candidates), false);
+        }
 
         var catalogue = await GetJsonAsync("https://mobileservice.kugou.com/api/v3/search/song?format=json&page=1&pagesize=10&showtype=1&keyword="
-            + Uri.EscapeDataString($"{query.Artist} {query.Title}"), ct);
+            + Uri.EscapeDataString(searches[0].Text), ct);
         if (catalogue.Transient) return new LyricsSearch(Distinct(candidates), true);
 
         List<Song> songs;

@@ -383,10 +383,12 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         });
     }
 
+    /// <summary>The album's song Lidarr imported: by title, read by <see cref="SongIdentity"/> so
+    /// Deezer's "Song (feat. X)" is MusicBrainz's "Song" but never its "Song (Live)", then by
+    /// track number.</summary>
     internal static Song? MatchSong(Album album, LidarrImportedTrack track)
     {
-        var normalized = LidarrClient.Normalize(track.Title);
-        var byTitle = album.Songs.Where(s => LidarrClient.Normalize(s.Title) == normalized).ToList();
+        var byTitle = album.Songs.Where(s => SongIdentity.SameTitle(track.Title, s.Title, SongIdentity.StrictTitles).IsSame).ToList();
         if (byTitle.Count == 1) return byTitle[0];
         if (track.TrackNumber is int number)
         {

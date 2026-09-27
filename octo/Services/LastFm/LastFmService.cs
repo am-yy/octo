@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 using Octo.Services.Metadata;
 
 namespace Octo.Services.LastFm;
@@ -51,81 +52,31 @@ public class LastFmService
 
         try
         {
-            var url = $"{BaseUrl}?method=track.getsimilar&artist={Uri.EscapeDataString(artist)}&track={Uri.EscapeDataString(title)}&api_key={_settings.ApiKey}&format=json&limit={limit}";
-            
             _logger.LogInformation("Fetching similar tracks from Last.fm for {Artist} - {Title}", artist, title);
-            
-            var response = await _httpClient.GetAsync(url, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            
-            var json = await response.Content.ReadAsStringAsync();
-            var doc = JsonDocument.Parse(json);
-            
-            var tracks = new List<SimilarTrack>();
-            
-            if (doc.RootElement.TryGetProperty("similartracks", out var similarTracks) &&
-                similarTracks.TryGetProperty("track", out var trackArray))
-            {
-                foreach (var track in trackArray.EnumerateArray())
-                {
-                    var trackName = track.GetProperty("name").GetString() ?? "";
-                    var artistName = "";
-                    
-                    if (track.TryGetProperty("artist", out var artistObj))
-                    {
-                        artistName = artistObj.TryGetProperty("name", out var name) 
-                            ? name.GetString() ?? "" 
-                            : "";
-                    }
-                    
-                    var match = 0.0;
-                    if (track.TryGetProperty("match", out var matchProp))
-                    {
-                        // Last.fm returns match as a number, not a string
-                        if (matchProp.ValueKind == JsonValueKind.Number)
-                        {
-                            match = matchProp.GetDouble();
-                        }
-                        else if (matchProp.ValueKind == JsonValueKind.String)
-                        {
-                            double.TryParse(matchProp.GetString(), out match);
-                        }
-                    }
-                    
-                    // Last.fm returns duration in milliseconds (sometimes a string,
-                    // sometimes a number, sometimes "0" when unknown — treat 0 as null
-                    // so we fall back to the placeholder default downstream).
-                    int? durationSec = null;
-                    if (track.TryGetProperty("duration", out var durEl))
-                    {
-                        long durMs = durEl.ValueKind switch
-                        {
-                            JsonValueKind.Number => durEl.GetInt64(),
-                            JsonValueKind.String => long.TryParse(durEl.GetString(), out var d) ? d : 0,
-                            _ => 0
-                        };
-                        if (durMs > 1000) durationSec = (int)(durMs / 1000);
-                    }
 
-                    if (!string.IsNullOrEmpty(trackName) && !string.IsNullOrEmpty(artistName))
-                    {
-                        tracks.Add(new SimilarTrack(artistName, trackName, match, durationSec));
-                    }
-                }
+            // Last.fm knows a song under one spelling. "$uicideboy$ - $UICIDE" or a title
+            // carrying "(feat. X)" or "- Remastered 2011" can come back empty where the same song
+            // written plainly does not, so those are asked before falling back to similar artists.
+            var tracks = new List<SimilarTrack>();
+            foreach (var variant in SongIdentity.QueryVariants(title, artist)
+                         .Where(variant => variant.Artist.Length > 0).Take(3))
+            {
+                tracks = await FetchSimilarTracksAsync(variant.Artist, variant.Title, limit, cancellationToken);
+                if (tracks.Count > 0) break;
             }
-            
+
             _logger.LogInformation("Found {Count} similar tracks from Last.fm", tracks.Count);
-            
+
             // Cache results
             _cache[cacheKey] = (DateTime.UtcNow.AddHours(_settings.EffectiveRadioCacheDurationHours), tracks);
-            
+
             // If no similar tracks found, try getting top tracks from similar artists
             if (tracks.Count == 0)
             {
                 _logger.LogInformation("No similar tracks found, trying similar artists for {Artist}", artist);
                 tracks = await GetTopTracksFromSimilarArtistsAsync(artist, limit, cancellationToken);
             }
-            
+
             return tracks.Take(limit).ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -133,6 +84,73 @@ public class LastFmService
             _logger.LogError(ex, "Error fetching similar tracks from Last.fm for {Artist} - {Title}", artist, title);
             return new List<SimilarTrack>();
         }
+    }
+
+    /// <summary>One track.getsimilar request, read into tracks.</summary>
+    private async Task<List<SimilarTrack>> FetchSimilarTracksAsync(string artist, string title, int limit,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{BaseUrl}?method=track.getsimilar&artist={Uri.EscapeDataString(artist)}&track={Uri.EscapeDataString(title)}&api_key={_settings.ApiKey}&format=json&limit={limit}";
+
+        var response = await _httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        var tracks = new List<SimilarTrack>();
+        
+        if (doc.RootElement.TryGetProperty("similartracks", out var similarTracks) &&
+            similarTracks.TryGetProperty("track", out var trackArray))
+        {
+            foreach (var track in trackArray.EnumerateArray())
+            {
+                var trackName = track.GetProperty("name").GetString() ?? "";
+                var artistName = "";
+                
+                if (track.TryGetProperty("artist", out var artistObj))
+                {
+                    artistName = artistObj.TryGetProperty("name", out var name) 
+                        ? name.GetString() ?? "" 
+                        : "";
+                }
+                
+                var match = 0.0;
+                if (track.TryGetProperty("match", out var matchProp))
+                {
+                    // Last.fm returns match as a number, not a string
+                    if (matchProp.ValueKind == JsonValueKind.Number)
+                    {
+                        match = matchProp.GetDouble();
+                    }
+                    else if (matchProp.ValueKind == JsonValueKind.String)
+                    {
+                        double.TryParse(matchProp.GetString(), out match);
+                    }
+                }
+                
+                // Last.fm returns duration in milliseconds (sometimes a string,
+                // sometimes a number, sometimes "0" when unknown — treat 0 as null
+                // so we fall back to the placeholder default downstream).
+                int? durationSec = null;
+                if (track.TryGetProperty("duration", out var durEl))
+                {
+                    long durMs = durEl.ValueKind switch
+                    {
+                        JsonValueKind.Number => durEl.GetInt64(),
+                        JsonValueKind.String => long.TryParse(durEl.GetString(), out var d) ? d : 0,
+                        _ => 0
+                    };
+                    if (durMs > 1000) durationSec = (int)(durMs / 1000);
+                }
+
+                if (!string.IsNullOrEmpty(trackName) && !string.IsNullOrEmpty(artistName))
+                {
+                    tracks.Add(new SimilarTrack(artistName, trackName, match, durationSec));
+                }
+            }
+        }
+        return tracks;
     }
 
     private async Task<List<SimilarTrack>> GetTopTracksFromSimilarArtistsAsync(string artist, int limit,

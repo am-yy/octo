@@ -230,7 +230,8 @@ public sealed class LyricsWordTimingTests
     [InlineData("Shotta Flow", "NLE Choppa", "Shotta Flow 4", "NLE Choppa", false)]
     [InlineData("Peek A Boo", "Lil Yachty", "Peek a Boo", "Lil Yachty、Migos", true)]
     [InlineData("Work", "Rihanna", "Work (feat. Drake)", "Rihanna feat. Drake", true)]
-    [InlineData("Stronger", "Kanye West", "Stronger", "Ye (侃爷)", false)]
+    // KuGou names Kanye West "Ye (侃爷)": the alias table knows him, the bracket is ignored.
+    [InlineData("Stronger", "Kanye West", "Stronger", "Ye (侃爷)", true)]
     [InlineData("Unsteady", "X Ambassadors", "Unsteady", "X Ambassadors", true)]
     [InlineData("Stronger", "Kanye West", "Stronger", "Kelly Clarkson", false)]
     public void Identity_SameTitleSameKindSameArtist(string title, string artist, string gotTitle, string gotArtist, bool same)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 using Octo.Services.Fingerprint;
 using Octo.Services.Subsonic;
 
@@ -181,7 +182,7 @@ public sealed class DuplicateScanWorker : BackgroundService
             foreach (var track in recording.OrderBy(track => track.Id, StringComparer.Ordinal))
             {
                 var home = clusters.FirstOrDefault(cluster =>
-                    TrackMatchComparer.SameVersion(track.Title, cluster[0].Title)
+                    SongIdentity.SameTitle(track.Title, cluster[0].Title, SongIdentity.StrictTitles).IsSame
                     && TrackMatchComparer.ArtistMatches(track.Artist, cluster[0].Artist, [cluster[0].Artist])
                     && TrackMatchComparer.ArtistMatches(cluster[0].Artist, track.Artist, [track.Artist]));
                 if (home is null) clusters.Add([track]);

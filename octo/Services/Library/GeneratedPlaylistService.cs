@@ -9,7 +9,6 @@ using Octo.Models.Domain;
 using Octo.Models.Radio;
 using Octo.Models.Settings;
 using Octo.Services.Common;
-using Octo.Services.Fingerprint;
 using Octo.Services.LastFm;
 using Octo.Services.Metadata;
 using Octo.Services.Subsonic;
@@ -362,7 +361,7 @@ public sealed class GeneratedPlaylistService
     }
 
     private static string ArtistKey(JsonObject song) =>
-        Str(song, "artistId") is { Length: > 0 } id ? id : TrackMatchComparer.Normalize(Str(song, "artist"));
+        Str(song, "artistId") is { Length: > 0 } id ? id : SongIdentity.Key(Str(song, "artist"));
 
     /// <summary>
     /// Keep MIX_NEW_SHARE percent of Discovery Mix for library songs new to the listener. Discovery
@@ -441,7 +440,7 @@ public sealed class GeneratedPlaylistService
     }
 
     private static string SongKey(string? artist, string? title) =>
-        TrackMatchComparer.Normalize(artist) + "|" + TrackMatchComparer.Normalize(title);
+        SongIdentity.MatchKey(artist, title);
 
     /// <summary>
     /// The songs of one Subsonic call, or null when it did not answer: an empty list is a real

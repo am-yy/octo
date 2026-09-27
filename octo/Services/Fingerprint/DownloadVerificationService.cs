@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using Octo.Models.Domain;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 
 namespace Octo.Services.Fingerprint;
 
@@ -83,7 +84,7 @@ public sealed record VerificationResult
     /// </summary>
     public static bool AlbumIsFromRelease(Song song) =>
         !string.IsNullOrWhiteSpace(song.MusicBrainzAlbumTitle)
-        && TrackMatchComparer.Normalize(song.Album) == TrackMatchComparer.Normalize(song.MusicBrainzAlbumTitle);
+        && SongIdentity.Key(song.Album) == SongIdentity.Key(song.MusicBrainzAlbumTitle);
 
     public string Describe() => string.IsNullOrEmpty(MatchedArtist) && string.IsNullOrEmpty(MatchedTitle)
         ? "a different recording"

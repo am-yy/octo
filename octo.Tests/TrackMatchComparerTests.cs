@@ -1,3 +1,4 @@
+using Octo.Services.Common;
 using Octo.Services.Fingerprint;
 
 namespace Octo.Tests;
@@ -16,7 +17,7 @@ public class TrackMatchComparerTests
     [InlineData("Don't Stop Me Now", "Dont Stop Me Now")]
     [InlineData("Blue (Da Ba Dee)", "Blue [Da Ba Dee]")]
     public void Normalize_FoldsDiacriticsAmpersandsAndPunctuation(string a, string b)
-        => Assert.Equal(TrackMatchComparer.Normalize(a), TrackMatchComparer.Normalize(b));
+        => Assert.Equal(SongIdentity.Key(a), SongIdentity.Key(b));
 
     /// <summary>Last.fm appends remaster and video tails that MusicBrainz does not carry.</summary>
     [Theory]
@@ -117,8 +118,8 @@ public class TrackMatchComparerTests
     [InlineData("Song (Remastered Version)", "Song")]
     public void SameVersion_TheSameTake_IsTheSame(string a, string b)
     {
-        Assert.True(TrackMatchComparer.SameVersion(a, b));
-        Assert.True(TrackMatchComparer.SameVersion(b, a));
+        Assert.True(SongIdentity.SameTitle(a, b, SongIdentity.StrictTitles).IsSame);
+        Assert.True(SongIdentity.SameTitle(b, a, SongIdentity.StrictTitles).IsSame);
     }
 
     [Theory]
@@ -132,7 +133,7 @@ public class TrackMatchComparerTests
     [InlineData("", "")]
     public void SameVersion_ADifferentTake_IsNot(string a, string b)
     {
-        Assert.False(TrackMatchComparer.SameVersion(a, b));
-        Assert.False(TrackMatchComparer.SameVersion(b, a));
+        Assert.False(SongIdentity.SameTitle(a, b, SongIdentity.StrictTitles).IsSame);
+        Assert.False(SongIdentity.SameTitle(b, a, SongIdentity.StrictTitles).IsSame);
     }
 }

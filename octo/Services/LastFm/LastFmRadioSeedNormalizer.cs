@@ -1,38 +1,26 @@
-using System.Text.RegularExpressions;
+using Octo.Services.Common;
 
 namespace Octo.Services.LastFm;
 
-/// <summary>Canonicalizes artist/title seeds for every Last.fm radio path.</summary>
-public static partial class LastFmRadioSeedNormalizer
+/// <summary>Canonicalizes artist/title seeds for every Last.fm radio path, by
+/// <see cref="SongIdentity"/>'s reading of a credit and a title.</summary>
+public static class LastFmRadioSeedNormalizer
 {
-    private static readonly string[] ArtistSeparators =
-    [
-        " • ", " · ", " & ", " feat. ", " feat ", " ft. ", " ft ",
-        " x ", " X ", " / ", ", ", " with "
-    ];
-
+    /// <summary>The primary artist, as written: "Beyoncé" for "Beyoncé feat. Jay-Z", and
+    /// "Tyler, The Creator" or "Simon &amp; Garfunkel" whole.</summary>
     public static string? Artist(string? artist)
     {
         if (string.IsNullOrWhiteSpace(artist)) return artist;
-        var normalized = artist;
-        foreach (var separator in ArtistSeparators)
-        {
-            var index = normalized.IndexOf(separator, StringComparison.OrdinalIgnoreCase);
-            if (index > 0) normalized = normalized[..index];
-        }
-        return normalized.Trim();
+        return SongIdentity.PrimaryArtist(artist).Trim();
     }
 
+    /// <summary>The title without its guest credits.</summary>
     public static string? Title(string? title)
     {
         if (string.IsNullOrWhiteSpace(title)) return title;
-        return FeaturedArtistSuffix().Replace(title, "").Trim();
+        return SongIdentity.StripFeatures(title);
     }
 
-    public static string TrackKey(string? artist, string? title) =>
-        $"{Artist(artist)?.Trim().ToLowerInvariant()}|{Title(title)?.Trim().ToLowerInvariant()}";
-
-    [GeneratedRegex(@"\s*[\(\[](?:feat\.?|featuring|with|ft\.?)\s*[^\)\]]*[\)\]]\s*",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex FeaturedArtistSuffix();
+    /// <summary>One song in one version, however its artist and title are written.</summary>
+    public static string TrackKey(string? artist, string? title) => SongIdentity.MatchKey(artist, title);
 }

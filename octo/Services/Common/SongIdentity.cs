@@ -261,6 +261,10 @@ public static class SongIdentity
             return new string(word.Select(ch => Homoglyphs.TryGetValue(ch, out var latin) ? latin : ch).ToArray());
         });
 
+    /// <summary>The folded text lowercased and without accents, spacing and punctuation kept:
+    /// for matching words inside something that is not a title, such as a file name.</summary>
+    public static string Plain(string? value) => LowerFold(Fold(value));
+
     /// <summary>Lowercase, the letters that do not decompose spelled out, accents stripped,
     /// "&amp;" and a spaced "+" read as "and".</summary>
     private static string LowerFold(string folded)
@@ -438,7 +442,9 @@ public static class SongIdentity
     }
 
     /// <summary>A title read into its core, its key, its version markers and its guests. The
-    /// artist, when given, lets a leading "Artist - " be recognised.</summary>
+    /// artist, when given, lets a leading "Artist - " be recognised; an artist given as empty
+    /// means the song has none, and then any "X - Y" title is read as artist X and title Y. Null
+    /// reads the title alone.</summary>
     public static SongTitle ParseTitle(string? title, string? artist = null)
     {
         var raw = title ?? "";
@@ -475,7 +481,8 @@ public static class SongIdentity
             var right = text[(dash.Index + dash.Length)..];
             var tail = Read(right);
             var namesArtist = !string.IsNullOrWhiteSpace(artist) && NamesArtist(left, artist);
-            var noArtist = string.IsNullOrWhiteSpace(artist) && tail.Kind is Kind.Extra && Key(right).Length > 0;
+            var noArtist = artist is not null && string.IsNullOrWhiteSpace(artist)
+                && tail.Kind is Kind.Extra && Key(right).Length > 0;
             if ((namesArtist && Key(right).Length > 0) || noArtist)
             {
                 artistFromTitle = left.Trim();
@@ -489,8 +496,12 @@ public static class SongIdentity
             if (!match.Success) break;
             var inner = match.Groups[1].Value;
             var rest = text.Remove(match.Index, match.Length).Insert(match.Index, " ").Trim();
-            // A title that is nothing but a bracket, "(Exchange)", keeps it.
-            if (Key(rest).Length == 0 && Read(inner).Kind is Kind.Extra or Kind.Noise) break;
+            // A title that is nothing but a bracket, "(Exchange)", is the words inside it.
+            if (Key(rest).Length == 0 && Read(inner).Kind is Kind.Extra or Kind.Noise)
+            {
+                text = inner;
+                break;
+            }
             Take(Read(inner), inner);
             text = rest;
         }
@@ -566,8 +577,8 @@ public static class SongIdentity
     /// <summary>The title without its guest credits, as a person would write it.</summary>
     public static string StripFeatures(string? title)
     {
-        var text = Fold(title);
-        text = Bracket.Replace(text, match => Read(match.Groups[1].Value).Kind == Kind.Feature ? "" : match.Value);
+        var text = (title ?? "").Trim();
+        text = Bracket.Replace(text, match => Read(Fold(match.Groups[1].Value)).Kind == Kind.Feature ? "" : match.Value);
         var trailing = TrailingFeature.Match(text);
         if (trailing.Success && trailing.Index > 0) text = text[..trailing.Index];
         return Whitespace.Replace(text, " ").Trim();
@@ -803,6 +814,14 @@ public static class SongIdentity
 
     private static readonly HashSet<string> CreditedVersions = new(StringComparer.Ordinal) { "remix", "mix", "dub", "edit" };
 
+    /// <summary>
+    /// For telling duplicates apart (#53) and choosing the one MusicBrainz recording a kept
+    /// fingerprint belongs to (#47): a subtitle only one title has ("Song (Interlude)") is
+    /// another title, because a false yes there deletes a file or files it under the wrong
+    /// recording.
+    /// </summary>
+    public static readonly SongMatchOptions StrictTitles = new() { ExtrasMustAgree = true, LengthToleranceSeconds = null };
+
     /// <summary>Whether two titles are one song, and one version of it. Artists are not looked at.</summary>
     public static SongMatch SameTitle(string? a, string? b, SongMatchOptions? options = null) =>
         CompareTitles(ParseTitle(a), ParseTitle(b), options ?? SongMatchOptions.Default);
@@ -864,8 +883,8 @@ public static class SongIdentity
     public static SongMatch Same(SongRef a, SongRef b, SongMatchOptions? options = null)
     {
         options ??= SongMatchOptions.Default;
-        var titleA = ParseTitle(a.Title, a.Artist);
-        var titleB = ParseTitle(b.Title, b.Artist);
+        var titleA = ParseTitle(a.Title, a.Artist ?? "");
+        var titleB = ParseTitle(b.Title, b.Artist ?? "");
         var title = CompareTitles(titleA, titleB, options);
         if (title.Verdict == SongVerdict.Different) return title;
 
@@ -936,7 +955,7 @@ public static class SongIdentity
     /// </summary>
     public static string MatchKey(string? artist, string? title)
     {
-        var parsed = ParseTitle(title, artist);
+        var parsed = ParseTitle(title, artist ?? "");
         var credit = ParseArtists(string.IsNullOrWhiteSpace(artist) ? parsed.ArtistFromTitle : artist);
         var primary = Key(credit.Primary);
         if (Aliases.TryGetValue(primary, out var alias)) primary = alias;
@@ -973,7 +992,7 @@ public static class SongIdentity
             variants.Add(new SongQuery(t, a));
         }
 
-        var parsed = ParseTitle(title, artist);
+        var parsed = ParseTitle(title, artist ?? "");
         var credit = ParseArtists(string.IsNullOrWhiteSpace(artist) ? parsed.ArtistFromTitle : artist);
         var cleanTitle = parsed.Core;
         var parts = Bracket.Matches(Fold(title)).Select(match => match.Groups[1].Value.Trim())

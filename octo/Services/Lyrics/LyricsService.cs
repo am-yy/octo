@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
-using Octo.Services.Fingerprint;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lyrics;
 
@@ -50,7 +50,7 @@ public sealed class LyricsService : IDisposable
 
         var settings = _settings.CurrentValue;
         var preferWords = settings.PreferWordTimedLyrics;
-        var key = $"{TrackMatchComparer.Normalize(query.Artist)}|{TrackMatchComparer.Normalize(query.Title)}|{query.DurationSeconds}"
+        var key = $"{SongIdentity.MatchKey(query.Artist, query.Title)}|{query.DurationSeconds}"
             + $"|{string.Join(',', settings.EffectiveLyricsSources)}|{preferWords}";
         if (_cache.TryGetValue(key, out LyricsLookup? cached) && cached is not null) return cached;
 

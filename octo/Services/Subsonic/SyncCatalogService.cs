@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 using Octo.Models.Domain;
 using Octo.Models.Radio;
 using Octo.Models.Settings;
-using Octo.Services.Fingerprint;
+using Octo.Services.Common;
 using Octo.Services.LastFm;
 using Octo.Services.Soulseek;
 
@@ -286,7 +286,7 @@ public sealed class SyncCatalogService
                 if (index >= station.Tracks.Count || output.Count >= limit) continue;
                 var track = station.Tracks[index];
                 if (string.IsNullOrWhiteSpace(track.Artist) || string.IsNullOrWhiteSpace(track.Title)) continue;
-                if (seen.Add(TrackMatchComparer.Normalize(track.Artist) + "|" + TrackMatchComparer.Normalize(track.Title)))
+                if (seen.Add(SongIdentity.MatchKey(track.Artist, track.Title)))
                     output.Add(track);
             }
         return output;
@@ -312,7 +312,7 @@ public sealed class SyncCatalogService
         // One library lookup per artist answers everything the catalog needs to know: which
         // of the artist's tracks are owned (they are already on the device), and the ids to
         // file the rest under so an artist or album the user owns does not appear twice.
-        var artists = tracks.GroupBy(track => TrackMatchComparer.Normalize(track.Artist))
+        var artists = tracks.GroupBy(track => SongIdentity.Key(track.Artist))
             .Select(group => group.First().Artist).ToList();
         var library = new ConcurrentDictionary<string, LibraryArtist?>(StringComparer.Ordinal);
         using (var scope = _scopes.CreateScope())
@@ -321,7 +321,7 @@ public sealed class SyncCatalogService
             await Parallel.ForEachAsync(artists,
                 new ParallelOptions { MaxDegreeOfParallelism = LookupConcurrency },
                 async (artist, _) =>
-                    library[TrackMatchComparer.Normalize(artist)] = await LookupArtistAsync(proxy, auth, artist));
+                    library[SongIdentity.Key(artist)] = await LookupArtistAsync(proxy, auth, artist));
         }
 
         var songs = new List<Song>();
@@ -329,7 +329,7 @@ public sealed class SyncCatalogService
         var localIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var track in tracks)
         {
-            if (!library.TryGetValue(TrackMatchComparer.Normalize(track.Artist), out var owned) || owned is null)
+            if (!library.TryGetValue(SongIdentity.Key(track.Artist), out var owned) || owned is null)
                 continue;
             if (owned.Owns(track.Artist, track.Title)) continue;
 
@@ -355,7 +355,7 @@ public sealed class SyncCatalogService
             else hit.ArtistId = _registry.Register(new SoulseekRouting { Kind = RoutingKind.Artist, Artist = hit.Artist });
 
             if (owned.ArtistId is not null
-                && owned.AlbumIds.TryGetValue(TrackMatchComparer.Normalize(album), out var albumId))
+                && owned.AlbumIds.TryGetValue(SongIdentity.Key(album), out var albumId))
             { hit.AlbumId = albumId; localIds.Add(albumId); }
             else hit.AlbumId = _registry.Register(new SoulseekRouting
                 { Kind = RoutingKind.Album, Artist = hit.Artist, Album = album });
@@ -424,7 +424,7 @@ public sealed class SyncCatalogService
         using var document = JsonDocument.Parse(body);
         if (!document.RootElement.TryGetProperty("subsonic-response", out var response)) return null;
         if (response.TryGetProperty("status", out var status) && status.GetString() != "ok") return null;
-        var want = TrackMatchComparer.Normalize(artist);
+        var want = SongIdentity.Key(artist);
         if (!response.TryGetProperty("searchResult3", out var result))
             return new LibraryArtist(null, new Dictionary<string, string>(), []);
 
@@ -436,7 +436,7 @@ public sealed class SyncCatalogService
                 ? rows.EnumerateArray() : [];
 
         var artistId = Rows(result, "artist")
-            .Where(row => TrackMatchComparer.Normalize(Text(row, "name")) == want)
+            .Where(row => SongIdentity.Key(Text(row, "name")) == want)
             .Select(row => Text(row, "id")).FirstOrDefault(id => id.Length > 0);
 
         var albums = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -444,8 +444,8 @@ public sealed class SyncCatalogService
             foreach (var row in Rows(result, "album"))
             {
                 var byArtist = Text(row, "artistId") == artistId
-                    || TrackMatchComparer.Normalize(Text(row, "artist")) == want;
-                var name = TrackMatchComparer.Normalize(Text(row, "name"));
+                    || SongIdentity.Key(Text(row, "artist")) == want;
+                var name = SongIdentity.Key(Text(row, "name"));
                 var id = Text(row, "id");
                 if (byArtist && name.Length > 0 && id.Length > 0) albums.TryAdd(name, id);
             }

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
-using Octo.Services.Fingerprint;
+using Octo.Services.Common;
 
 namespace Octo.Services.Lyrics;
 
@@ -46,15 +46,16 @@ public sealed class LyricsChoiceStore
         lock (_lock) return _pins.GetValueOrDefault(songId);
     }
 
-    /// <summary>A pin for the song with this artist and title, whatever its id.</summary>
+    /// <summary>A pin for the song with this artist and title, whatever its id, and however the
+    /// two are written ("Drake feat. Rihanna" or "Too Good (feat. Rihanna)"). Never a pin for
+    /// another version of it.</summary>
     public LyricsPin? FindByName(string artist, string title)
     {
-        var wantArtist = TrackMatchComparer.Normalize(artist);
-        var wantTitle = TrackMatchComparer.Normalize(title);
-        if (wantArtist.Length == 0 || wantTitle.Length == 0) return null;
+        if (SongIdentity.Key(artist).Length == 0 || SongIdentity.Key(title).Length == 0) return null;
+        var want = SongIdentity.MatchKey(artist, title);
         lock (_lock)
             return _pins.Values
-                .Where(pin => TrackMatchComparer.Normalize(pin.Artist) == wantArtist && TrackMatchComparer.Normalize(pin.Title) == wantTitle)
+                .Where(pin => SongIdentity.MatchKey(pin.Artist, pin.Title) == want)
                 .OrderByDescending(pin => pin.SetUtc)
                 .FirstOrDefault();
     }

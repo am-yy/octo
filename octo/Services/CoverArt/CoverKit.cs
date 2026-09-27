@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Octo.Services.Fingerprint;
+using Octo.Services.Common;
 
 namespace Octo.Services.CoverArt;
 
@@ -46,10 +46,10 @@ public sealed class CoverKit
             {
                 if (!list.Value.TryGetProperty("from", out var from) || !list.Value.TryGetProperty("to", out var to)) continue;
                 var swatch = new Swatch(list.Name, from.GetString() ?? "", to.GetString() ?? "");
-                _exact.TryAdd(TrackMatchComparer.Normalize(list.Name), swatch);
+                _exact.TryAdd(SongIdentity.Key(list.Name), swatch);
                 // "R&B & Soul" answers to "R&B" and to "Soul" as well.
                 foreach (var part in list.Name.Split(" & ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    _parts.TryAdd(TrackMatchComparer.Normalize(part), swatch);
+                    _parts.TryAdd(SongIdentity.Key(part), swatch);
             }
         }
         catch (Exception ex)
@@ -70,7 +70,7 @@ public sealed class CoverKit
         entry = null!;
         foreach (var candidate in Candidates(name))
         {
-            var key = TrackMatchComparer.Normalize(candidate);
+            var key = SongIdentity.Key(candidate);
             if (key.Length == 0) continue;
             if ((_exact.TryGetValue(key, out var swatch) || _parts.TryGetValue(key, out swatch))
                 && Template(swatch.Name) is { } template)
@@ -98,7 +98,7 @@ public sealed class CoverKit
     /// </summary>
     public static (string From, string To) Generic(string name)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(TrackMatchComparer.Normalize(name)));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(SongIdentity.Key(name)));
         var hue = ((hash[0] << 8) | hash[1]) % 360;
         return (Hsl(hue, 0.42, 0.52), Hsl((hue + 14) % 360, 0.48, 0.34));
     }

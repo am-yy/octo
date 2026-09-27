@@ -1,3 +1,4 @@
+using Octo.Services.Common;
 using System.Text.Json;
 
 namespace Octo.Services.Fingerprint;
@@ -76,7 +77,7 @@ public sealed class MusicBrainzClient
             var disambiguation = recording.TryGetProperty("disambiguation", out var d) ? d.GetString() ?? "" : "";
             // A live take or a remix says so in its disambiguation, not always in its title.
             var described = disambiguation.Length > 0 ? $"{name} ({disambiguation})" : name;
-            if (!TrackMatchComparer.SameVersion(title, described)) continue;
+            if (!SongIdentity.SameTitle(title, described, SongIdentity.StrictTitles).IsSame) continue;
 
             var credits = recording.TryGetProperty("artist-credit", out var credit) && credit.ValueKind == JsonValueKind.Array
                 ? credit.EnumerateArray().Select(entry => entry.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "")

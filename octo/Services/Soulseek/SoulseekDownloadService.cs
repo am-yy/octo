@@ -314,44 +314,36 @@ public class SoulseekDownloadService : BaseDownloadService
     // first successful transfer wins.
     private async Task<string> DownloadViaSoulseekAsync(SoulseekRouting routing, Song song, bool suppressNotify, CancellationToken cancellationToken)
     {
-        // Clean the title before searching Soulseek. Last.fm's track.search
-        // sometimes returns `title="Adele - Hello"` with the artist redundantly
-        // prefixed, or YouTube-flavored titles like `"Long Season [LIVE][4K]"`.
-        // Without normalization the Soulseek query "Adele Adele - Hello" or
-        // "Long Season [LIVE][4K]" matches no peer.
-        var cleanTitle = NormalizeTitle(routing.Title!, routing.Artist!);
-        var primaryQuery = $"{routing.Artist} {cleanTitle}".Trim();
+        var queries = SearchQueries(routing.Title!, routing.Artist!);
+        var primaryQuery = queries[0].Text;
 
         var trackKey = song.ExternalId ?? "";
         Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "Soulseek"));
 
-        Logger.LogInformation("Soulseek search-for-star: '{Query}'", primaryQuery);
-        var hits = await _slskd.SearchAsync(
-            primaryQuery,
-            _settings.MinFileSizeBytes > 0 ? 30 : 10,
-            cancellationToken,
-            // Stop waiting once there is a real choice to make. Not on the first
-            // usable hit: ranking picks on queue length and upload speed, so
-            // committing to a single candidate would often mean committing to the
-            // slowest peer that happened to answer first. A handful is enough to
-            // choose well without waiting for stragglers.
-            enough: h => RankCandidates(h.ToList(), routing.Title!, routing.Duration).Count >= 3);
-
-        var ranked = RankCandidates(hits, routing.Title!, routing.Duration);
-
-        // Fallback search: if the artist+title combo returned nothing usable,
-        // try with just the cleaned title. Catches cases where the Last.fm
-        // artist field is junk (uploader names, weird capitalization) but the
-        // title alone is enough for Soulseek to find the right file.
-        if (ranked.Count == 0 && !string.IsNullOrWhiteSpace(cleanTitle))
+        List<SoulseekFileHit> hits = [];
+        List<SoulseekFileHit> ranked = [];
+        foreach (var query in queries)
         {
-            Logger.LogInformation("Soulseek primary query returned no usable hits; retrying with title-only");
+            // The title alone is the last resort, and held to a stricter filename rule: with the
+            // artist gone from the query, scattered words are no evidence at all. A junk artist
+            // field (an uploader's name) is what it is for.
+            var titleOnly = query.Artist.Length == 0;
+            if (ReferenceEquals(query, queries[0]))
+                Logger.LogInformation("Soulseek search-for-star: '{Query}'", query.Text);
+            else
+                Logger.LogInformation("Soulseek query returned no usable hits; retrying with '{Query}'", query.Text);
             hits = await _slskd.SearchAsync(
-                cleanTitle,
+                query.Text,
                 _settings.MinFileSizeBytes > 0 ? 30 : 10,
                 cancellationToken,
-                enough: h => RankCandidates(h.ToList(), routing.Title!, routing.Duration, titleOnlySearch: true).Count >= 3);
-            ranked = RankCandidates(hits, routing.Title!, routing.Duration, titleOnlySearch: true);
+                // Stop waiting once there is a real choice to make. Not on the first
+                // usable hit: ranking picks on queue length and upload speed, so
+                // committing to a single candidate would often mean committing to the
+                // slowest peer that happened to answer first. A handful is enough to
+                // choose well without waiting for stragglers.
+                enough: h => RankCandidates(h.ToList(), routing.Title!, routing.Duration, titleOnly).Count >= 3);
+            ranked = RankCandidates(hits, routing.Title!, routing.Duration, titleOnly);
+            if (ranked.Count > 0) break;
         }
 
         // Logged here rather than inside RankCandidates, which the search's `enough:` predicate
@@ -564,47 +556,24 @@ public class SoulseekDownloadService : BaseDownloadService
     }
 
     /// <summary>
-    /// Normalize a Last.fm/YouTube-flavored title for Soulseek search:
-    ///  - Strip leading "Artist - " prefix (Last.fm sometimes does this).
-    ///  - Strip trailing [bracketed] and (parenthesized) annotations like
-    ///    "[LIVE]", "(Official Video)", "[Remastered 2009]". Soulseek peers
-    ///    almost never have those in their filenames; with them included our
-    ///    query gets zero hits.
+    /// The Soulseek searches for a song, in order, from <see cref="SongIdentity.QueryVariants"/>.
+    ///
+    /// Peers name files, not catalogue entries, so a query carrying a bracket finds nothing:
+    /// Last.fm and YouTube titles such as "Adele - Hello" or "Long Season [LIVE][4K]" are
+    /// searched as "Adele Hello" and "Long Season". A title that is only an annotation,
+    /// Mezzanine's "(Exchange)", keeps it. Then the stylized spelling read as letters
+    /// ("suicideboys SUICIDE", for a peer who tagged it that way), and the title alone last.
+    /// At most two queries with the artist and one without: each search waits seconds.
     /// </summary>
-    private static string NormalizeTitle(string title, string artist)
+    internal static IReadOnlyList<SongQuery> SearchQueries(string title, string artist)
     {
-        var t = (title ?? "").Trim();
-        if (string.IsNullOrEmpty(t)) return t;
-
-        // Strip "<Artist> - " prefix — case-insensitive, with optional surrounding spaces.
-        if (!string.IsNullOrEmpty(artist))
-        {
-            var prefix = $"{artist.Trim()} - ";
-            if (t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                t = t.Substring(prefix.Length).Trim();
-            }
-        }
-
-        // Strip [...] and (...) annotations. Repeat-replace until no more are found
-        // so chained annotations like "[LIVE][4K][98.12.28]" all peel off.
-        for (int i = 0; i < 5; i++)
-        {
-            var before = t;
-            t = System.Text.RegularExpressions.Regex.Replace(t, @"\s*\[[^\]]*\]\s*", " ").Trim();
-            t = System.Text.RegularExpressions.Regex.Replace(t, @"\s*\([^)]*\)\s*", " ").Trim();
-            if (t == before) break;
-        }
-
-        // Collapse runs of whitespace
-        t = System.Text.RegularExpressions.Regex.Replace(t, @"\s+", " ").Trim();
-
-        // Some titles ARE an annotation, e.g. Mezzanine's "(Exchange)" or a bare
-        // "(Interlude)". Stripping leaves nothing, which used to surface as an
-        // "Unknown Title" filename and an empty search query. Keep the original.
-        if (t.Length == 0) return (title ?? "").Trim();
-
-        return t;
+        var variants = SongIdentity.QueryVariants(title, artist);
+        var withArtist = variants
+            .Where(query => query.Artist.Length > 0 && query.Title.IndexOfAny(['(', '[', '{']) < 0)
+            .Take(2);
+        var titleOnly = variants.Where(query => query.Artist.Length == 0).Take(1);
+        var queries = withArtist.Concat(titleOnly).ToList();
+        return queries.Count > 0 ? queries : [new SongQuery((title ?? "").Trim(), (artist ?? "").Trim())];
     }
 
     /// <summary>
@@ -619,20 +588,23 @@ public class SoulseekDownloadService : BaseDownloadService
     private const int DurationToleranceSeconds = 8;
 
     /// <summary>
-    /// Words that mean "a different recording of this song". When the title we asked for
-    /// carries none of these and a candidate does, it is the wrong version. This is the
-    /// only signal that separates "Group Four" from "Group Four (Security Forces dub)",
-    /// whose runtimes are two seconds apart.
+    /// Whether a file is a version of the song the request did not ask for: a live take, a
+    /// remix, a dub, a sped-up upload. This is the only signal that separates "Group Four" from
+    /// "Group Four (Security Forces dub)", whose runtimes are two seconds apart.
     ///
-    /// Shared with TrackMatchComparer, which asks the same question of the title AcoustID
-    /// identified rather than of a filename. One list, so ranking and verification cannot
-    /// disagree about what a different take looks like.
+    /// The same reading TrackMatchComparer applies to the title AcoustID identified, so a peer
+    /// is never chosen for a file the verification would then reject, delete and deny-list. A
+    /// remaster, an explicit tag or an "Original Mix" is the same recording and passes.
     /// </summary>
-    internal static readonly string[] VariantMarkers =
+    internal static bool AddsVersion(string filename, string title) =>
+        SongIdentity.AddedVersions(title, LeafTitle(filename)).Count > 0;
+
+    private static string LeafTitle(string filename)
     {
-        "dub", "remix", "live", "instrumental", "acoustic", "edit", "mix",
-        "version", "demo", "session", "karaoke", "cover", "reprise",
-    };
+        var leaf = LeafOf(filename);
+        var dot = leaf.LastIndexOf('.');
+        return dot > 0 ? leaf[..dot] : leaf;
+    }
 
     private List<SoulseekFileHit> RankCandidates(List<SoulseekFileHit> hits, string title, int? expectedDuration,
         bool titleOnlySearch = false)
@@ -648,8 +620,9 @@ public class SoulseekDownloadService : BaseDownloadService
             .Where(h => h.Size >= _settings.MinFileSizeBytes)
             .Where(h => FilenamePlausiblyMatchesTitle(h.Filename, title, requirePhrase: titleOnlySearch))
             .Where(h => DurationPlausible(h.Length, expectedDuration, requireKnownLength: titleOnlySearch))
-            // Variant mixes sort last rather than being dropped: sometimes a remix really
-            // is what was asked for, and sometimes it is all a peer has.
+            .Where(h => !AddsVersion(h.Filename, title))
+            // An unnamed bracketed addition sorts last rather than being dropped: it may be a
+            // different take ("Angel (Angel Dust)"), or only a peer's own label.
             .OrderBy(h => VariantPenalty(h.Filename, title))
             .ThenBy(h => QualityPenalty(h))
             .ThenBy(h => h.QueueLength ?? int.MaxValue)
@@ -731,7 +704,7 @@ public class SoulseekDownloadService : BaseDownloadService
             ? s[^1] : path;
 
     private static List<string> TitleTokens(string title) =>
-        title.ToLowerInvariant()
+        SongIdentity.Plain(title)
             .Split(new[] { ' ', '-', '(', ')', '[', ']', '_', '.', ',', '\'', '"' },
                    StringSplitOptions.RemoveEmptyEntries)
             .Where(t => t.Length >= 3)
@@ -773,7 +746,9 @@ public class SoulseekDownloadService : BaseDownloadService
     internal static bool FilenamePlausiblyMatchesTitle(string filename, string title, bool requirePhrase = false)
     {
         if (string.IsNullOrEmpty(filename) || string.IsNullOrEmpty(title)) return true;
-        var leaf = LeafOf(filename).ToLowerInvariant();
+        // Folded the way titles are, so "Huntin’ Wabbitz" finds "Huntin' Wabbitz" and
+        // "Hoppípolla" finds "Hoppipolla".
+        var leaf = SongIdentity.Plain(LeafOf(filename));
 
         var wantedRoman = TrailingRomanNumeral.Match(title.Trim());
         if (wantedRoman.Success
@@ -785,19 +760,26 @@ public class SoulseekDownloadService : BaseDownloadService
         // Phrase evidence supersedes token scattering rather than adding to it: the
         // token rule would demand a "the" from a filename that legitimately dropped
         // the article, and its scattered matches are exactly what this mode distrusts.
-        if (requirePhrase) return LeafContainsTitlePhrase(leaf, title);
+        if (requirePhrase)
+            return LeafContainsTitlePhrase(leaf, title)
+                || LeafContainsTitlePhrase(Stylized(leaf), SongIdentity.FoldStylized(title));
 
+        // A stylized title ("$UICIDE") and a peer who spelled it out ("Suicide"), either way
+        // round: each word may match as written or with its stylized characters read as letters.
         var tokens = TitleTokens(title);
         if (tokens.Count == 0) return true;
-        return tokens.All(t => leaf.Contains(t));
+        var looseLeaf = Stylized(leaf);
+        return tokens.All(t => leaf.Contains(t) || looseLeaf.Contains(Stylized(t)));
     }
+
+    private static string Stylized(string value) => SongIdentity.Plain(SongIdentity.FoldStylized(value));
 
     private static readonly string[] LeadingArticles = { "the ", "a ", "an " };
 
     private static bool LeafContainsTitlePhrase(string leaf, string title)
     {
         var leafNorm = $" {SpaceNormalize(leaf)} ";
-        var phrase = SpaceNormalize(title.ToLowerInvariant());
+        var phrase = SpaceNormalize(SongIdentity.Plain(title));
         if (phrase.Length == 0) return true;
 
         if (leafNorm.Contains($" {phrase} ", StringComparison.Ordinal)) return true;
@@ -832,7 +814,7 @@ public class SoulseekDownloadService : BaseDownloadService
     }
 
     private static string SpaceNormalize(string value) =>
-        Regex.Replace(Regex.Replace(value, @"[^a-z0-9]+", " "), @"\s+", " ").Trim();
+        Regex.Replace(Regex.Replace(value, @"[^\p{L}\p{N}]+", " "), @"\s+", " ").Trim();
 
     /// <summary>Reject a candidate whose advertised length is nowhere near the known one.</summary>
     internal static bool DurationPlausible(int? candidateSeconds, int? expectedSeconds,
@@ -852,28 +834,27 @@ public class SoulseekDownloadService : BaseDownloadService
 
     /// <summary>
     /// How many "this is a different recording" signals the candidate carries that the
-    /// requested title never asked for.
+    /// requested title never asked for: the version markers <see cref="SongIdentity"/> reads,
+    /// and every bracketed addition.
     ///
     /// The generic half matters more than the word list. "Angel (Angel Dust)" and
     /// "Inertia Creeps (Floating on Dubwise)" are both dub mixes, and neither contains a
-    /// keyword any sane list would hold — but both are bracketed additions the title did
+    /// keyword any sane list would hold, but both are bracketed additions the title did
     /// not ask for, and that is the thing they have in common with every other wrong take.
     ///
-    /// Ranked rather than rejected: sometimes a remaster is all a peer has, and sometimes
-    /// the remix genuinely is what was requested.
+    /// Ranked rather than rejected, for the generic half: a bracket may only be a peer's own
+    /// label. A named version the request lacks is rejected before ranking, by AddsVersion.
     /// </summary>
     internal static int VariantPenalty(string filename, string title)
     {
         var leaf = LeafOf(filename);
-        var leafLower = leaf.ToLowerInvariant();
-        var wanted = (title ?? "").ToLowerInvariant();
+        var wanted = SongIdentity.Plain(title);
 
-        var penalty = VariantMarkers.Count(m =>
-            Regex.IsMatch(leafLower, $@"\b{m}\b") && !Regex.IsMatch(wanted, $@"\b{m}\b"));
+        var penalty = SongIdentity.AddedVersions(title, LeafTitle(filename)).Count;
 
         foreach (Match group in Regex.Matches(leaf, @"[\(\[]([^\)\]]*)[\)\]]"))
         {
-            var inner = group.Groups[1].Value.Trim().ToLowerInvariant();
+            var inner = SongIdentity.Plain(group.Groups[1].Value).Trim();
             if (inner.Length == 0) continue;
             // A year or a format tag is how peers label a good rip, not a different take.
             if (Regex.IsMatch(inner, @"^(19|20)\d{2}$")) continue;

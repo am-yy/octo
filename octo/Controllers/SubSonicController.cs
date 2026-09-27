@@ -70,6 +70,7 @@ public class SubsonicController : ControllerBase
     private readonly Octo.Services.Library.GeneratedPlaylistService? _generatedPlaylists;
     private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedSettings;
     private readonly AcquisitionTracker? _acquisitionTracker;
+    private readonly Octo.Services.Lyrics.LyricsChoiceService? _lyricsChoices;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -107,9 +108,11 @@ public class SubsonicController : ControllerBase
         Octo.Services.Library.NoticeQueue? noticeQueue = null,
         Octo.Services.Library.GeneratedPlaylistService? generatedPlaylists = null,
         IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null,
-        AcquisitionTracker? acquisitionTracker = null)
+        AcquisitionTracker? acquisitionTracker = null,
+        Octo.Services.Lyrics.LyricsChoiceService? lyricsChoices = null)
     {
         _acquisitionTracker = acquisitionTracker;
+        _lyricsChoices = lyricsChoices;
         _generatedPlaylists = generatedPlaylists;
         _generatedSettings = generatedSettings;
         _listenBrainz = listenBrainz;
@@ -2284,7 +2287,8 @@ public class SubsonicController : ControllerBase
         var format = parameters.GetValueOrDefault("f", "xml");
         var relay = await _proxyService.RelaySafeAsync("rest/getOpenSubsonicExtensions", parameters);
         return _responseBuilder.MergeOpenSubsonicExtensions(format,
-            relay.Success ? relay.Body : null, relay.ContentType);
+            relay.Success ? relay.Body : null, relay.ContentType,
+            lyricsChoices: _lyricsChoices is not null && _metadataSettings?.CurrentValue.FetchLyrics == true);
     }
 
     /// <summary>
@@ -2784,6 +2788,10 @@ public class SubsonicController : ControllerBase
     // track has no lyrics in Navidrome, so relaying one returned code 70 "data not found" per
     // play; it now gets real lyrics when LYRICS_FETCH is on (#52), and an empty-but-ok list
     // otherwise. A library song Navidrome has no lyrics for gets the same live lookup.
+    //
+    // A song someone pinned lyrics for (setLyricsChoice, or the dashboard) answers with those,
+    // for every client; one set to "none" answers with none. Word cues go only to a client that
+    // asked with enhanced=true; anyone else gets the lines exactly as before.
     [HttpGet, HttpPost]
     [Route("rest/getLyricsBySongId")]
     [Route("rest/getLyricsBySongId.view")]
@@ -2792,25 +2800,32 @@ public class SubsonicController : ControllerBase
         var parameters = await ExtractAllParameters();
         var id = parameters.GetValueOrDefault("id", "");
         var format = parameters.GetValueOrDefault("f", "xml");
+        var enhanced = IsTrue(parameters.GetValueOrDefault("enhanced", ""));
         var (isExternal, _, _) = _localLibraryService.ParseSongId(id);
         var fetching = _lyricsService is not null && _metadataSettings?.CurrentValue.FetchLyrics == true;
+        var pin = string.IsNullOrEmpty(id) ? null : _lyricsChoices?.PinFor(id);
 
         if (isExternal)
         {
+            var routing = _idRegistry.Lookup(id) ?? SoulseekMetadataService.TryDecodeExternalId(id);
+            string artist = routing is { HasArtistTitle: true } ? routing.Artist! : "";
+            string title = routing is { HasArtistTitle: true } ? routing.Title! : "";
+            if (pin is not null)
+                return _responseBuilder.CreateLyricsListResponse(format, pin.Lyrics, pin.Artist ?? artist, pin.Title ?? title, enhanced);
+
             Octo.Services.Lyrics.LyricsResult? found = null;
-            string artist = "", title = "";
-            if (fetching && (_idRegistry.Lookup(id) ?? SoulseekMetadataService.TryDecodeExternalId(id)) is { HasArtistTitle: true } routing)
-            {
-                artist = routing.Artist!;
-                title = routing.Title!;
+            if (fetching && routing is { HasArtistTitle: true })
                 found = await LiveLyricsAsync(artist, title, routing.Album, routing.Duration);
-            }
-            return _responseBuilder.CreateLyricsListResponse(format, found, artist, title);
+            return _responseBuilder.CreateLyricsListResponse(format, found, artist, title, enhanced);
         }
 
         var relay = await _proxyService.RelaySafeAsync("rest/getLyricsBySongId", parameters);
         if (relay.Success && relay.Body != null)
         {
+            // Navidrome answering ok is also what says the caller may see this song.
+            if (pin is not null && IsSuccessfulSubsonicResponse(relay.Body, format))
+                return _responseBuilder.CreateLyricsListResponse(format, pin.Lyrics, pin.Artist ?? "", pin.Title ?? "", enhanced);
+
             // Navidrome answered, but with nothing: look the song up live, read-only. Nothing is
             // written beside a file Octo did not download.
             if (fetching && format.Equals("json", StringComparison.OrdinalIgnoreCase)
@@ -2818,11 +2833,162 @@ public class SubsonicController : ControllerBase
                 && await LibrarySongAsync(parameters, id) is { } song)
             {
                 var found = await LiveLyricsAsync(song.Artist, song.Title, song.Album, song.Duration);
-                if (found is not null) return _responseBuilder.CreateLyricsListResponse(format, found, song.Artist, song.Title);
+                if (found is not null)
+                    return _responseBuilder.CreateLyricsListResponse(format, found, song.Artist, song.Title, enhanced);
             }
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
         }
         return _responseBuilder.CreateResponse(format, "lyricsList", new { });
+    }
+
+    /// <summary>
+    /// The legacy lyrics call, by artist and title, which older clients (DSub, Subsonic's own)
+    /// use. Navidrome answers for its own songs; when it has nothing, the same live lookup as
+    /// getLyricsBySongId fills in, as plain text, and a pin for that artist and title wins.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/getLyrics")]
+    [Route("rest/getLyrics.view")]
+    public async Task<IActionResult> GetLyrics()
+    {
+        var parameters = await ExtractAllParameters();
+        var format = parameters.GetValueOrDefault("f", "xml");
+        var artist = parameters.GetValueOrDefault("artist", "").Trim();
+        var title = parameters.GetValueOrDefault("title", "").Trim();
+
+        var relay = await _proxyService.RelaySafeAsync("rest/getLyrics", parameters);
+        if (!relay.Success || relay.Body is null)
+            return _responseBuilder.CreateError(format, 0, "Octo can't reach Navidrome");
+        if (!IsSuccessfulSubsonicResponse(relay.Body, format) || artist.Length == 0 || title.Length == 0)
+            return File(relay.Body, relay.ContentType ?? $"application/{format}");
+
+        if (_lyricsChoices?.PinFor(artist, title) is { } pin)
+            return _responseBuilder.CreateLyricsResponse(format, pin.Lyrics, artist, title);
+
+        var fetching = _lyricsService is not null && _metadataSettings?.CurrentValue.FetchLyrics == true;
+        if (fetching && HasNoLegacyLyrics(relay.Body, format)
+            && await LiveLyricsAsync(artist, title, null, null) is { } found)
+            return _responseBuilder.CreateLyricsResponse(format, found, artist, title);
+        return File(relay.Body, relay.ContentType ?? $"application/{format}");
+    }
+
+    private static bool HasNoLegacyLyrics(byte[] body, string format)
+    {
+        try
+        {
+            if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+                return string.IsNullOrWhiteSpace(JsonNode.Parse(body)?["subsonic-response"]?["lyrics"]?["value"]?.GetValue<string>());
+            var root = XDocument.Parse(Encoding.UTF8.GetString(body)).Root;
+            return string.IsNullOrWhiteSpace(root?.Elements().FirstOrDefault(element => element.Name.LocalName == "lyrics")?.Value);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>How long getLyricsCandidates may take: every source that is on, several
+    /// entries each, is a slower thing than playing a song, and a person is choosing.</summary>
+    private static readonly TimeSpan CandidatesBudget = TimeSpan.FromSeconds(12);
+
+    /// <summary>
+    /// octoLyrics v1: every lyrics entry the sources that are on hold for a song, for choosing
+    /// between them, with what the song is set to now. title and artist, when given, search
+    /// for those instead of the song's own tags, for a song that is tagged wrong. Always JSON.
+    /// Credentials are checked with a ping to Navidrome, as getAcquisitions checks them.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/getLyricsCandidates")]
+    [Route("rest/getLyricsCandidates.view")]
+    public async Task<IActionResult> GetLyricsCandidates()
+    {
+        var parameters = await ExtractAllParameters();
+        const string format = "json";
+        if (await CheckCallerAsync(parameters) is { } refused) return refused;
+        if (_lyricsChoices is null || _lyricsService is null || _metadataSettings?.CurrentValue.FetchLyrics != true)
+            return _responseBuilder.CreateError(format, 0, "Lyrics lookups are off on this server");
+
+        var id = parameters.GetValueOrDefault("id", "");
+        if (string.IsNullOrWhiteSpace(id)) return _responseBuilder.CreateError(format, 10, "Required parameter is missing: id");
+        if (await SongForLyricsAsync(parameters, id) is not { } song)
+            return _responseBuilder.CreateError(format, 70, "Song not found");
+
+        var artist = parameters.GetValueOrDefault("artist", "").Trim() is { Length: > 0 } a ? a : song.Artist;
+        var title = parameters.GetValueOrDefault("title", "").Trim() is { Length: > 0 } t ? t : song.Title;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+        budget.CancelAfter(CandidatesBudget);
+        var candidates = await _lyricsChoices.CandidatesAsync(new Octo.Services.Lyrics.LyricsQuery(
+            artist, Octo.Services.Lyrics.LyricsText.QueryTitle(title, artist), song.Album, song.Duration), budget.Token);
+        return _responseBuilder.CreateLyricsCandidatesResponse(id, _lyricsChoices.ChoiceFor(id), candidates);
+    }
+
+    /// <summary>
+    /// octoLyrics v1: set a song's lyrics to one candidate from getLyricsCandidates, to "none"
+    /// to show no lyrics, or to "auto" to go back to finding them. The choice is the server's,
+    /// so every client and every user sees it, and getLyricsBySongId and getLyrics honour it.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/setLyricsChoice")]
+    [Route("rest/setLyricsChoice.view")]
+    public async Task<IActionResult> SetLyricsChoice()
+    {
+        var parameters = await ExtractAllParameters();
+        const string format = "json";
+        if (await CheckCallerAsync(parameters) is { } refused) return refused;
+        if (_lyricsChoices is null) return _responseBuilder.CreateError(format, 0, "Lyrics are off on this server");
+
+        var id = parameters.GetValueOrDefault("id", "");
+        var candidate = parameters.GetValueOrDefault("candidate", "").Trim();
+        if (string.IsNullOrWhiteSpace(id) || candidate.Length == 0)
+            return _responseBuilder.CreateError(format, 10, "Required parameter is missing: id and candidate");
+
+        var who = NativeUsername(parameters);
+        if (candidate.Equals(Octo.Services.Lyrics.LyricsPin.Auto, StringComparison.OrdinalIgnoreCase))
+        {
+            _lyricsChoices.Clear(id);
+            return _responseBuilder.CreateLyricsChoiceResponse(id, Octo.Services.Lyrics.LyricsPin.Auto);
+        }
+
+        if (await SongForLyricsAsync(parameters, id) is not { } song)
+            return _responseBuilder.CreateError(format, 70, "Song not found");
+        if (candidate.Equals(Octo.Services.Lyrics.LyricsPin.Hidden, StringComparison.OrdinalIgnoreCase))
+        {
+            _lyricsChoices.Hide(id, song.Artist, song.Title, who);
+            return _responseBuilder.CreateLyricsChoiceResponse(id, Octo.Services.Lyrics.LyricsPin.Hidden);
+        }
+
+        if (_metadataSettings?.CurrentValue.FetchLyrics != true)
+            return _responseBuilder.CreateError(format, 0, "Lyrics lookups are off on this server");
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+        budget.CancelAfter(CandidatesBudget);
+        if (!await _lyricsChoices.PinAsync(id, candidate, song.Artist, song.Title, who, budget.Token))
+            return _responseBuilder.CreateError(format, 70, "Those lyrics could not be found; ask for the candidates again");
+        return _responseBuilder.CreateLyricsChoiceResponse(id, candidate);
+    }
+
+    /// <summary>Null when Navidrome accepts the caller's credentials, or the error to send.</summary>
+    private async Task<IActionResult?> CheckCallerAsync(IReadOnlyDictionary<string, string> parameters)
+    {
+        var auth = parameters.ToDictionary(pair => pair.Key, pair => pair.Value);
+        auth["f"] = "json";
+        var check = await _proxyService.RelaySafeAsync("rest/ping", auth);
+        if (!check.Success || check.Body is null)
+            return _responseBuilder.CreateError("json", 0, "Octo can't reach Navidrome to check who is asking");
+        if (!IsSuccessfulSubsonicResponse(check.Body, "json"))
+            return _responseBuilder.CreateError("json", 40, "Wrong username or password");
+        return null;
+    }
+
+    /// <summary>What lyrics are looked up by, for an outside song from the registry and for a
+    /// library song from Navidrome as the caller sees it.</summary>
+    private async Task<Song?> SongForLyricsAsync(IReadOnlyDictionary<string, string> parameters, string id)
+    {
+        var (isExternal, _, _) = _localLibraryService.ParseSongId(id);
+        if (!isExternal) return await LibrarySongAsync(parameters, id);
+        var routing = _idRegistry.Lookup(id) ?? SoulseekMetadataService.TryDecodeExternalId(id);
+        return routing is { HasArtistTitle: true }
+            ? new Song { Artist = routing.Artist!, Title = routing.Title!, Album = routing.Album ?? "", Duration = routing.Duration }
+            : null;
     }
 
     private async Task<Octo.Services.Lyrics.LyricsResult?> LiveLyricsAsync(string artist, string title, string? album, int? duration)

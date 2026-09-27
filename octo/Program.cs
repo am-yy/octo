@@ -342,6 +342,12 @@ builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.
 builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.NeteaseLyricsSource>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.ILyricsSource, Octo.Services.Lyrics.LyricsOvhLyricsSource>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsService>();
+// Lyrics someone chose by hand, for every client. Beside the settings, like the other state
+// that is a person's decision rather than a cache.
+builder.Services.AddSingleton(sp => new Octo.Services.Lyrics.LyricsChoiceStore(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "lyrics-choices.json"),
+    sp.GetRequiredService<ILogger<Octo.Services.Lyrics.LyricsChoiceStore>>()));
+builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsChoiceService>();
 builder.Services.AddSingleton<Octo.Services.Lyrics.LyricsSidecarWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Lyrics.LyricsSidecarWriter>());
 

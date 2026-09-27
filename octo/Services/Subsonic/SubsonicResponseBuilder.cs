@@ -11,7 +11,7 @@ namespace Octo.Services.Subsonic;
 /// <summary>
 /// Handles building Subsonic API responses in both XML and JSON formats.
 /// </summary>
-public class SubsonicResponseBuilder
+public partial class SubsonicResponseBuilder
 {
     private const string SubsonicNamespace = "http://subsonic.org/restapi";
     private const string SubsonicVersion = "1.16.1";
@@ -135,63 +135,6 @@ public class SubsonicResponseBuilder
             )
         );
         return new ContentResult { Content = doc.ToString(), ContentType = "application/xml" };
-    }
-
-    /// <summary>
-    /// OpenSubsonic getLyricsBySongId (#52). Synced lyrics become timed lines in milliseconds,
-    /// plain lyrics untimed lines; nothing, or an instrumental, is an empty but ok list, which
-    /// is what stops a client logging "data not found" on every play.
-    /// </summary>
-    public IActionResult CreateLyricsListResponse(string format, Octo.Services.Lyrics.LyricsResult? found,
-        string artist, string title)
-    {
-        var lines = found switch
-        {
-            { HasSynced: true } timed => Octo.Services.Lyrics.LyricsText.ParseLrc(timed.Synced!)
-                .Select(line => (Start: (long?)line.StartMs, Text: line.Text)).ToList(),
-            { HasPlain: true } plain => plain.Plain!.Replace("\r\n", "\n").Split('\n')
-                .Select(line => (Start: (long?)null, Text: line.Trim())).ToList(),
-            _ => [],
-        };
-        var synced = found?.HasSynced == true;
-
-        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
-        {
-            var structured = lines.Count == 0 ? new List<object>() : new List<object>
-            {
-                new Dictionary<string, object>
-                {
-                    ["lang"] = "xxx",
-                    ["synced"] = synced,
-                    ["displayArtist"] = artist,
-                    ["displayTitle"] = title,
-                    ["offset"] = 0,
-                    ["line"] = lines.Select(line => line.Start is { } start
-                        ? new Dictionary<string, object> { ["start"] = start, ["value"] = line.Text }
-                        : new Dictionary<string, object> { ["value"] = line.Text }).ToList(),
-                },
-            };
-            return CreateJsonResponse(new Dictionary<string, object>
-            {
-                ["status"] = "ok",
-                ["version"] = SubsonicVersion,
-                ["lyricsList"] = new Dictionary<string, object> { ["structuredLyrics"] = structured },
-            });
-        }
-
-        var ns = XNamespace.Get(SubsonicNamespace);
-        var list = new XElement(ns + "lyricsList");
-        if (lines.Count > 0)
-            list.Add(new XElement(ns + "structuredLyrics",
-                new XAttribute("lang", "xxx"), new XAttribute("synced", synced ? "true" : "false"),
-                new XAttribute("displayArtist", artist), new XAttribute("displayTitle", title),
-                new XAttribute("offset", 0),
-                lines.Select(line => line.Start is { } start
-                    ? new XElement(ns + "line", new XAttribute("start", start), line.Text)
-                    : new XElement(ns + "line", line.Text))));
-        var document = new XDocument(new XElement(ns + "subsonic-response",
-            new XAttribute("status", "ok"), new XAttribute("version", SubsonicVersion), list));
-        return new ContentResult { Content = document.ToString(), ContentType = "application/xml" };
     }
 
     public Dictionary<string, object> RadioPlaylistFields(LastFmRadioStation station)
@@ -527,12 +470,29 @@ public class SubsonicResponseBuilder
             .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>
+    /// The extensions Octo answers itself, with their versions. songLyrics is here because Octo
+    /// answers getLyricsBySongId for every song, and for the ones it answers itself it honours
+    /// enhanced=true (version 2) with word cues; a Navidrome that lists fewer versions has them
+    /// added, never removed.
+    /// </summary>
+    internal static readonly (string Name, int[] Versions)[] OwnExtensions =
+    [
+        (AcquisitionsExtension, [AcquisitionsExtensionVersion]),
+        (LyricsExtension, [LyricsExtensionVersion]),
+        ("songLyrics", [1, 2]),
+    ];
+
+    /// <summary>
     /// Navidrome's getOpenSubsonicExtensions with Octo's own added, in the format asked for.
     /// A failed answer passes through untouched; with no answer at all, Octo lists its own.
     /// </summary>
-    public IActionResult MergeOpenSubsonicExtensions(string format, byte[]? upstream, string? contentType)
+    public IActionResult MergeOpenSubsonicExtensions(string format, byte[]? upstream, string? contentType,
+        bool lyricsChoices = true)
     {
         var json = format.Equals("json", StringComparison.OrdinalIgnoreCase);
+        // octoLyrics is only listed while its lookups can run, so a client never offers a
+        // "choose lyrics" that can only answer that lookups are off.
+        var own = OwnExtensions.Where(extension => lyricsChoices || extension.Name != LyricsExtension).ToArray();
         try
         {
             if (upstream is { Length: > 0 })
@@ -545,12 +505,21 @@ public class SubsonicResponseBuilder
                     {
                         if (envelope["openSubsonicExtensions"] is not System.Text.Json.Nodes.JsonArray list)
                             envelope["openSubsonicExtensions"] = list = new System.Text.Json.Nodes.JsonArray();
-                        if (!list.Any(item => (string?)item?["name"] == AcquisitionsExtension))
-                            list.Add(new System.Text.Json.Nodes.JsonObject
-                            {
-                                ["name"] = AcquisitionsExtension,
-                                ["versions"] = new System.Text.Json.Nodes.JsonArray(AcquisitionsExtensionVersion),
-                            });
+                        foreach (var (name, versions) in own)
+                        {
+                            var existing = list.FirstOrDefault(item => (string?)item?["name"] == name) as System.Text.Json.Nodes.JsonObject;
+                            var have = (existing?["versions"] as System.Text.Json.Nodes.JsonArray)?
+                                .Select(version => version?.GetValue<int>() ?? 0).ToHashSet() ?? [];
+                            var all = have.Union(versions).Where(version => version > 0).Order().ToArray();
+                            if (existing is null)
+                                list.Add(new System.Text.Json.Nodes.JsonObject
+                                {
+                                    ["name"] = name,
+                                    ["versions"] = new System.Text.Json.Nodes.JsonArray(all.Select(v => (System.Text.Json.Nodes.JsonNode?)v).ToArray()),
+                                });
+                            else if (all.Length != have.Count)
+                                existing["versions"] = new System.Text.Json.Nodes.JsonArray(all.Select(v => (System.Text.Json.Nodes.JsonNode?)v).ToArray());
+                        }
                     }
                     return new ContentResult { Content = root.ToJsonString(), ContentType = "application/json" };
                 }
@@ -559,11 +528,21 @@ public class SubsonicResponseBuilder
                 if (document.Root is { } response && (string?)response.Attribute("status") == "ok")
                 {
                     var ns = response.Name.Namespace;
-                    if (!response.Elements(ns + "openSubsonicExtensions")
-                            .Any(item => (string?)item.Attribute("name") == AcquisitionsExtension))
-                        response.Add(new XElement(ns + "openSubsonicExtensions",
-                            new XAttribute("name", AcquisitionsExtension),
-                            new XElement(ns + "versions", AcquisitionsExtensionVersion)));
+                    foreach (var (name, versions) in own)
+                    {
+                        var existing = response.Elements(ns + "openSubsonicExtensions")
+                            .FirstOrDefault(item => (string?)item.Attribute("name") == name);
+                        if (existing is null)
+                        {
+                            response.Add(new XElement(ns + "openSubsonicExtensions", new XAttribute("name", name),
+                                versions.Select(version => new XElement(ns + "versions", version))));
+                            continue;
+                        }
+                        var have = existing.Elements(ns + "versions")
+                            .Select(version => int.TryParse(version.Value, out var number) ? number : 0).ToHashSet();
+                        foreach (var version in versions.Where(version => !have.Contains(version)))
+                            existing.Add(new XElement(ns + "versions", version));
+                    }
                 }
                 return new ContentResult { Content = document.ToString(), ContentType = contentType ?? "application/xml" };
             }
@@ -580,21 +559,17 @@ public class SubsonicResponseBuilder
                 ["status"] = "ok",
                 ["version"] = SubsonicVersion,
                 ["type"] = "octo",
-                ["openSubsonicExtensions"] = new[]
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["name"] = AcquisitionsExtension, ["versions"] = new[] { AcquisitionsExtensionVersion },
-                    },
-                },
+                ["openSubsonicExtensions"] = own
+                    .Select(extension => new Dictionary<string, object?> { ["name"] = extension.Name, ["versions"] = extension.Versions })
+                    .ToArray(),
             });
         var xmlNs = XNamespace.Get(SubsonicNamespace);
-        var own = new XDocument(new XElement(xmlNs + "subsonic-response",
+        var ours = new XDocument(new XElement(xmlNs + "subsonic-response",
             new XAttribute("status", "ok"), new XAttribute("version", SubsonicVersion),
-            new XElement(xmlNs + "openSubsonicExtensions",
-                new XAttribute("name", AcquisitionsExtension),
-                new XElement(xmlNs + "versions", AcquisitionsExtensionVersion))));
-        return new ContentResult { Content = own.ToString(), ContentType = "application/xml" };
+            own.Select(extension => new XElement(xmlNs + "openSubsonicExtensions",
+                new XAttribute("name", extension.Name),
+                extension.Versions.Select(version => new XElement(xmlNs + "versions", version))))));
+        return new ContentResult { Content = ours.ToString(), ContentType = "application/xml" };
     }
 
     /// <summary>

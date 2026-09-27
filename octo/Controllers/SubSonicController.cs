@@ -1905,6 +1905,10 @@ public class SubsonicController : ControllerBase
         // Registry-backed id (song / album / artist). Resolve to artist+title via the
         // registry and look the cover up on iTunes. Watermark with the Octo logo so
         // radio-sourced art is visually distinct from local-library art.
+        // The Octo app marks songs outside the library itself, so its covers come back
+        // plain, and a missing one is a 404 it draws its own empty tile for. Every other
+        // client keeps the badge, the only sign it gets that a song came from Octo's search.
+        var plain = DrawsItsOwnMarks(parameters);
         var routing = _idRegistry.Lookup(id);
         if (routing != null)
         {
@@ -1915,16 +1919,16 @@ public class SubsonicController : ControllerBase
                 {
                     _logger.LogDebug("cover art all-source miss for {Kind} '{A} - {T}/{Al}', serving placeholder",
                         routing.Kind, routing.Artist, routing.Title, routing.Album);
-                    return ServePlaceholder();
+                    return plain ? NotFound() : ServePlaceholder();
                 }
 
-                var watermarked = _coverArtService?.AddOctoBadge(raw) ?? raw;
+                var watermarked = plain ? raw : _coverArtService?.AddOctoBadge(raw) ?? raw;
                 return File(watermarked, "image/jpeg");
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Cover art pipeline failed for registry id {Id}", id);
-                return ServePlaceholder();
+                return plain ? NotFound() : ServePlaceholder();
             }
         }
 
@@ -1934,7 +1938,7 @@ public class SubsonicController : ControllerBase
         if (id.StartsWith("ext-album-", StringComparison.OrdinalIgnoreCase)
             || id.StartsWith("ext-artist-", StringComparison.OrdinalIgnoreCase))
         {
-            return ServePlaceholder();
+            return plain ? NotFound() : ServePlaceholder();
         }
 
         // Existing ext-{provider}-{type}-{id} path (Deezer/Tidal-era, kept for
@@ -1957,11 +1961,11 @@ public class SubsonicController : ControllerBase
                 if (response.IsSuccessStatusCode)
                 {
                     var imageBytes = await response.Content.ReadAsByteArrayAsync();
-                    var watermarked = _coverArtService?.AddOctoBadge(imageBytes) ?? imageBytes;
+                    var watermarked = plain ? imageBytes : _coverArtService?.AddOctoBadge(imageBytes) ?? imageBytes;
                     return File(watermarked, "image/jpeg");
                 }
             }
-            return ServePlaceholder();
+            return plain ? NotFound() : ServePlaceholder();
         }
 
         // Local library — proxy to Navidrome unchanged.
@@ -1982,6 +1986,12 @@ public class SubsonicController : ControllerBase
             return ServePlaceholder(branded: false);
         }
     }
+
+    /// <summary>Whether the request comes from the Octo app, which shows on its own
+    /// artwork that a song is not in the library, so it wants covers without the badge.
+    /// Told apart by the Subsonic client name it sends on every call.</summary>
+    internal static bool DrawsItsOwnMarks(IReadOnlyDictionary<string, string> parameters) =>
+        string.Equals(parameters.GetValueOrDefault("c", "")?.Trim(), "Octo", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Returns a 200 response with the Octo placeholder JPEG. Used in every code

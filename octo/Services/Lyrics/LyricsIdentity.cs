@@ -22,8 +22,10 @@ internal static class LyricsIdentity
     /// <summary>How far apart two lengths may be and still be one recording.</summary>
     public const int LengthToleranceSeconds = SongIdentity.LengthToleranceSeconds;
 
-    /// <summary>Lengths are compared by <see cref="LengthFits"/>, where a source knows one.</summary>
-    private static readonly SongMatchOptions Titles = new() { LengthToleranceSeconds = null };
+    /// <summary>Lengths are compared by <see cref="LengthFits"/>, where a source knows one. A
+    /// clean edit counts as the song here: its lyrics are the same words at the same times, with
+    /// a few bleeped, so its timing fits the explicit recording. Downloads stay strict.</summary>
+    private static readonly SongMatchOptions Titles = new() { LengthToleranceSeconds = null, AlsoNeutral = ["clean"] };
 
     public static bool SameSong(string wantTitle, string wantArtist, string? gotTitle, string? gotArtist,
         IEnumerable<string>? gotCredits = null)

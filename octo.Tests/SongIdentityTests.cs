@@ -197,6 +197,19 @@ public class SongIdentityTests
         => Assert.True(KugouLyricsSource.IsThisSong(new LyricsCandidate("kugou", "1.a", got, gotArtist, null, 200),
             new LyricsQuery(wantArtist, want, null, 201)));
 
+    [Theory]
+    [InlineData("Movie Star", "Movie Star (Clean)")]
+    [InlineData("Movie Star", "Movie Star (Clean Version)")]
+    [InlineData("Movie Star (Explicit)", "Movie Star (Censored)")]
+    public void Lyrics_ACleanEditsWordsFitTheSong(string want, string got)
+    {
+        // Same words at the same times, a few bleeped: good lyrics for the explicit recording.
+        Assert.True(KugouLyricsSource.IsThisSong(new LyricsCandidate("kugou", "1.a", got, "Artist", null, 200),
+            new LyricsQuery("Artist", want, null, 200)));
+        // A download still never takes the clean edit for the song asked for.
+        Assert.NotEqual(SongVerdict.Same, SongIdentity.Same(want, "Artist", got, "Artist").Verdict);
+    }
+
     // ---- the comparison itself --------------------------------------------------------------
 
     [Fact]

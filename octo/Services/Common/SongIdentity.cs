@@ -766,14 +766,24 @@ public static class SongIdentity
 
         // "Bizarrap, Duki" against "Bizarrap & Rauw Alejandro": one artist in common, and each
         // names a guest the other does not. A name in another script is not counted, since it
-        // may be one of the Latin names written its own way.
+        // may be one of the Latin names written its own way. Nor is a name that holds, or is
+        // held in, one on the other side: "feat 2 Chainz B.O.B" never had a separator to split on.
         var leftKeys = left.Named.Where(name => HasLatin.IsMatch(name)).Select(name => Keys([name], true)).ToList();
         var rightKeys = right.Named.Where(name => HasLatin.IsMatch(name)).Select(name => Keys([name], true)).ToList();
-        var rightAll = Keys(right.All, true);
-        var leftAll = Keys(left.All, true);
-        var onlyLeft = leftKeys.Any(keys => !keys.Overlaps(rightAll));
-        var onlyRight = rightKeys.Any(keys => !keys.Overlaps(leftAll));
+        var onlyLeft = leftKeys.Any(keys => !Credited(keys, right));
+        var onlyRight = rightKeys.Any(keys => !Credited(keys, left));
         return onlyLeft && onlyRight ? ArtistAgreement.Conflict : found.Value;
+    }
+
+    /// <summary>Whether a name is credited on the other side: one of its keys is one there, or
+    /// holds or is held in one of the other side's names (never its whole credit, which holds
+    /// every name).</summary>
+    private static bool Credited(HashSet<string> keys, Credit other)
+    {
+        if (keys.Overlaps(Keys(other.All, true))) return true;
+        var named = Keys(other.Named.Concat(other.Artists.Pieces), true);
+        return keys.Any(key => named.Any(name => Math.Min(key.Length, name.Length) >= 3
+            && (key.Contains(name, StringComparison.Ordinal) || name.Contains(key, StringComparison.Ordinal))));
     }
 
     /// <summary>The two credits share an artist and do not disagree about the guests.</summary>

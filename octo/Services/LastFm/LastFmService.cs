@@ -130,7 +130,7 @@ public class LastFmService
                 }
                 
                 // Last.fm returns duration in milliseconds (sometimes a string,
-                // sometimes a number, sometimes "0" when unknown — treat 0 as null
+                // sometimes a number, sometimes "0" when unknown; treat 0 as null
                 // so we fall back to the placeholder default downstream).
                 int? durationSec = null;
                 if (track.TryGetProperty("duration", out var durEl))

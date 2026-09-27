@@ -216,6 +216,9 @@ public class SoulseekDownloadService : BaseDownloadService
         if (string.IsNullOrEmpty(DownloadPath))
             throw new InvalidOperationException("DownloadPath is not configured");
 
+        var trackKey = song.ExternalId ?? "";
+        Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "YouTube"));
+
         var videoId = routing.YouTubeId;
         if (string.IsNullOrEmpty(videoId))
         {
@@ -247,6 +250,8 @@ public class SoulseekDownloadService : BaseDownloadService
         SweepIncoming(incoming);
         var destWithoutExt = Path.Combine(incoming, $"{videoId}-{Guid.NewGuid():N}");
 
+        // The shim answers only once the file is written, so there is nothing to count here.
+        Track(t => t.Transfer(ProviderName, trackKey, null, null, null, "YouTube"));
         var path = await _youtube.DownloadAsync(videoId, destWithoutExt, routing.Artist, routing.Title, cancellationToken);
         if (string.IsNullOrEmpty(path) || !IOFile.Exists(path))
             throw new FileNotFoundException($"YouTube MP3 download failed for '{routing.Artist} - {routing.Title}'");
@@ -256,6 +261,7 @@ public class SoulseekDownloadService : BaseDownloadService
         // Identification only. YouTube has no second candidate to fall back to, so a
         // disagreement is something to ask a person about (the Review playlist), never a reason
         // to throw the song away.
+        Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Verifying));
         var verdict = await _verification.VerifyAsync(path, routing.Artist, routing.Title);
         if (verdict.Verdict == Octo.Services.Fingerprint.VerificationVerdict.Mismatch)
         {
@@ -315,6 +321,9 @@ public class SoulseekDownloadService : BaseDownloadService
         // "Long Season [LIVE][4K]" matches no peer.
         var cleanTitle = NormalizeTitle(routing.Title!, routing.Artist!);
         var primaryQuery = $"{routing.Artist} {cleanTitle}".Trim();
+
+        var trackKey = song.ExternalId ?? "";
+        Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "Soulseek"));
 
         Logger.LogInformation("Soulseek search-for-star: '{Query}'", primaryQuery);
         var hits = await _slskd.SearchAsync(
@@ -387,6 +396,10 @@ public class SoulseekDownloadService : BaseDownloadService
                 continue;
             }
 
+            // A peer took it, but it can sit in that peer's queue for a while, so this still
+            // reads as searching until bytes move. A retry on the next peer starts from nothing.
+            Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "Soulseek"));
+
             // Announced only after a peer actually accepted the transfer -- firing
             // before the loop would claim a start that five straight rejections later
             // never happened. Once per track: a retry on the next peer is the same
@@ -421,7 +434,14 @@ public class SoulseekDownloadService : BaseDownloadService
                     hit.Username,
                     hit.Filename,
                     _settings.DownloadTimeoutSeconds,
-                    cancellationToken);
+                    cancellationToken,
+                    // slskd's size is the real one once the peer answers; the search's is
+                    // what the peer advertised, kept for polls that leave it out.
+                    onProgress: p =>
+                    {
+                        if (p.IsMoving) Track(t => t.Transfer(ProviderName, trackKey,
+                            p.BytesTransferred, p.Size ?? hit.Size, p.PercentComplete, "Soulseek"));
+                    });
             }
             catch (Exception ex)
             {
@@ -456,6 +476,8 @@ public class SoulseekDownloadService : BaseDownloadService
                 cancellationToken);
             if (!string.IsNullOrEmpty(localPath))
             {
+                Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Verifying));
+
                 // Last line of defence, and the only one that inspects the actual audio.
                 // A peer can advertise a length it does not deliver, and the tagger runs
                 // straight after this and would stamp the RIGHT title onto the wrong

@@ -266,6 +266,11 @@ builder.Services.AddSingleton<Octo.Services.Common.ExternalSearchService>();
 builder.Services.AddSingleton<Octo.Services.Common.TrackAcquisitionQueue>();
 builder.Services.AddHostedService<Octo.Services.Common.AcquisitionWorker>();
 
+// Where each hearted download has got to, for the app's progress ring (getAcquisitions) and
+// the dashboard. In memory only; it watches the pipeline and never steers it.
+builder.Services.AddSingleton(sp => new Octo.Services.Common.AcquisitionTracker(
+    sp.GetRequiredService<ILogger<Octo.Services.Common.AcquisitionTracker>>(), sp));
+
 // Long enough for an already-downloaded file to finish being tagged and registered, and
 // no longer: sizing this for the transfer itself would tax every restart for a benefit
 // that only lands when a download happens to be seconds from done.

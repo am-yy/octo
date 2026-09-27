@@ -87,6 +87,23 @@ public abstract class BaseDownloadService : IDownloadService
     private MetadataSettings MetadataSettingsValue =>
         _serviceProvider.GetService<IOptionsMonitor<MetadataSettings>>()?.CurrentValue ?? new MetadataSettings();
 
+    /// <summary>
+    /// Tell the live progress list where a download has got to. It only watches, so it is
+    /// resolved per use through the provider like the settings above, and whatever it throws
+    /// stays here: a bookkeeping error must never fail or slow a download.
+    /// </summary>
+    protected void Track(Action<AcquisitionTracker> step)
+    {
+        try
+        {
+            if (_serviceProvider.GetService<AcquisitionTracker>() is { } tracker) step(tracker);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug("Acquisition tracker skipped a step: {Message}", ex.Message);
+        }
+    }
+
     /// <summary>The name a download was asked for under, captured before anything corrects it.</summary>
     protected internal sealed record RequestedIdentity(string Artist, string Title, string Album, int? Track);
 
@@ -395,6 +412,7 @@ public abstract class BaseDownloadService : IDownloadService
                 if (existingPath != null && IOFile.Exists(existingPath))
                 {
                     Logger.LogInformation("Song already downloaded: {Path}", existingPath);
+                    Track(t => t.Imported(externalProvider, externalId, null, null, existingPath));
                     return existingPath;
                 }
             }
@@ -407,6 +425,7 @@ public abstract class BaseDownloadService : IDownloadService
                     Logger.LogInformation("Song found in cache: {Path}", cachedPath);
                     // Update file access time for cache cleanup logic
                     IOFile.SetLastAccessTime(cachedPath, DateTime.UtcNow);
+                    Track(t => t.Complete(externalProvider, externalId));
                     return cachedPath;
                 }
             }
@@ -431,6 +450,9 @@ public abstract class BaseDownloadService : IDownloadService
                 
                 throw new Exception(activeDownload?.ErrorMessage ?? "Download failed");
             }
+
+            // The worker has it now. Looking the song up is the first part of the search.
+            Track(t => t.Stage(externalProvider, externalId, AcquisitionState.Searching));
 
             // Get metadata
             // In Album mode, fetch the full album first to ensure AlbumArtist is correctly set
@@ -466,6 +488,7 @@ public abstract class BaseDownloadService : IDownloadService
             {
                 throw new Exception("Song not found");
             }
+            Track(t => t.Describe(externalProvider, externalId, song.Artist, song.Title, song.Album));
 
             var downloadInfo = new DownloadInfo
             {
@@ -505,6 +528,7 @@ public abstract class BaseDownloadService : IDownloadService
             var landedPath = await DownloadTrackAsync(
                 externalId, song, silence, sourceOverride, cancellationToken);
             song.LocalPath = landedPath;
+            Track(t => t.Stage(externalProvider, externalId, AcquisitionState.Importing));
 
             // Enrich from Deezer before the file is placed: the album it finds names the folder
             // (#50) and its main artist names the artist folder (#49). Reads only; nothing is
@@ -552,6 +576,7 @@ public abstract class BaseDownloadService : IDownloadService
                 await LocalLibraryService.RegisterDownloadedSongAsync(song, localPath);
                 await RecordHistoryAsync(song, localPath, silence, requestedBy);
                 AskForReview(song, localPath, requestedBy);
+                Track(t => t.Imported(externalProvider, externalId, song.Artist, song.Title, localPath));
 
                 // Trigger a Subsonic library rescan (with debounce)
                 _ = Task.Run(async () =>
@@ -596,6 +621,7 @@ public abstract class BaseDownloadService : IDownloadService
             else
             {
                 Logger.LogInformation("Cache mode: skipping library registration and scan");
+                Track(t => t.Complete(externalProvider, externalId));
             }
             
             Logger.LogInformation("Download completed: {Path}", localPath);
@@ -652,6 +678,10 @@ public abstract class BaseDownloadService : IDownloadService
         Logger.LogInformation("Found {Count} additional tracks to download for album '{AlbumTitle}'",
             tracksToDownload.Count, album.Title);
 
+        // The whole list is known now, so a hearted album shows every track it will fetch.
+        Track(t => t.Announce(ProviderName, albumExternalId, excludeTrackExternalId,
+            tracksToDownload.Select(s => (s.ExternalId!, (string?)s.Artist, (string?)s.Title, (string?)album.Title))));
+
         // Per-track notifications are muted below; these feed one summary instead.
         int succeeded = 0, lossless = 0, failed = 0;
 
@@ -665,6 +695,7 @@ public abstract class BaseDownloadService : IDownloadService
                 if (existingPath != null && IOFile.Exists(existingPath))
                 {
                     Logger.LogDebug("Track {TrackId} already downloaded, skipping", track.ExternalId);
+                    Track(t => t.Imported(ProviderName, track.ExternalId!, track.Artist, track.Title, existingPath));
                     continue;
                 }
 
@@ -681,6 +712,8 @@ public abstract class BaseDownloadService : IDownloadService
                     if (activeDownload.Status == DownloadStatus.Completed)
                     {
                         Logger.LogDebug("Track {TrackId} already downloaded in this session, skipping", track.ExternalId);
+                        Track(t => t.Imported(ProviderName, track.ExternalId!, track.Artist, track.Title,
+                            activeDownload.LocalPath));
                         continue;
                     }
                 }
@@ -703,6 +736,9 @@ public abstract class BaseDownloadService : IDownloadService
             {
                 Logger.LogWarning(ex, "Failed to download track {TrackId} '{Title}'", track.ExternalId, track.Title);
                 failed++;
+                // Same rule as the summary: a source with another after it stays quiet, and
+                // the next walk picks the track up again.
+                if (!suppressSummary) Track(t => t.Fail(ProviderName, track.ExternalId ?? "", ex.Message));
             }
         }
 

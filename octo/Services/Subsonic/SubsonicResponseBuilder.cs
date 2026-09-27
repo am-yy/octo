@@ -480,6 +480,123 @@ public class SubsonicResponseBuilder
         return new JsonResult(response);
     }
 
+    /// <summary>The OpenSubsonic extension a client checks for before it asks for getAcquisitions.</summary>
+    public const string AcquisitionsExtension = "octoAcquisitions";
+    public const int AcquisitionsExtensionVersion = 1;
+
+    /// <summary>
+    /// getAcquisitions: the caller's own downloads in flight or recently ended. Always JSON,
+    /// whatever format was asked for; the only client that reads it parses JSON, and the
+    /// extension it is advertised under says so.
+    /// </summary>
+    public IActionResult CreateAcquisitionsResponse(IEnumerable<Octo.Services.Common.AcquisitionSnapshot> rows) =>
+        CreateJsonResponse(new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["version"] = SubsonicVersion,
+            ["type"] = "octo",
+            ["acquisitions"] = new Dictionary<string, object?>
+            {
+                ["acquisition"] = rows.Select(row => AcquisitionJson(row)).ToList(),
+            },
+        });
+
+    /// <summary>
+    /// One acquisition on the wire. The field names are a contract with the Octo app; a rename
+    /// here breaks its progress ring. Nulls are sent as null rather than left out.
+    /// </summary>
+    public static Dictionary<string, object?> AcquisitionJson(Octo.Services.Common.AcquisitionSnapshot row) => new()
+    {
+        ["id"] = row.Id,
+        ["artist"] = row.Artist,
+        ["title"] = row.Title,
+        ["album"] = row.Album,
+        ["state"] = row.State.ToString().ToLowerInvariant(),
+        ["progress"] = row.Progress,
+        ["bytesDone"] = row.BytesDone,
+        ["bytesTotal"] = row.BytesTotal,
+        ["source"] = row.Source,
+        ["startedAt"] = Utc(row.StartedAt),
+        ["updatedAt"] = Utc(row.UpdatedAt),
+        ["error"] = row.Error,
+        ["libraryId"] = row.LibraryId,
+    };
+
+    private static string Utc(DateTime value) =>
+        DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Navidrome's getOpenSubsonicExtensions with Octo's own added, in the format asked for.
+    /// A failed answer passes through untouched; with no answer at all, Octo lists its own.
+    /// </summary>
+    public IActionResult MergeOpenSubsonicExtensions(string format, byte[]? upstream, string? contentType)
+    {
+        var json = format.Equals("json", StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            if (upstream is { Length: > 0 })
+            {
+                if (json)
+                {
+                    var root = System.Text.Json.Nodes.JsonNode.Parse(upstream)!.AsObject();
+                    var envelope = root["subsonic-response"]!.AsObject();
+                    if ((string?)envelope["status"] == "ok")
+                    {
+                        if (envelope["openSubsonicExtensions"] is not System.Text.Json.Nodes.JsonArray list)
+                            envelope["openSubsonicExtensions"] = list = new System.Text.Json.Nodes.JsonArray();
+                        if (!list.Any(item => (string?)item?["name"] == AcquisitionsExtension))
+                            list.Add(new System.Text.Json.Nodes.JsonObject
+                            {
+                                ["name"] = AcquisitionsExtension,
+                                ["versions"] = new System.Text.Json.Nodes.JsonArray(AcquisitionsExtensionVersion),
+                            });
+                    }
+                    return new ContentResult { Content = root.ToJsonString(), ContentType = "application/json" };
+                }
+
+                var document = XDocument.Parse(System.Text.Encoding.UTF8.GetString(upstream));
+                if (document.Root is { } response && (string?)response.Attribute("status") == "ok")
+                {
+                    var ns = response.Name.Namespace;
+                    if (!response.Elements(ns + "openSubsonicExtensions")
+                            .Any(item => (string?)item.Attribute("name") == AcquisitionsExtension))
+                        response.Add(new XElement(ns + "openSubsonicExtensions",
+                            new XAttribute("name", AcquisitionsExtension),
+                            new XElement(ns + "versions", AcquisitionsExtensionVersion)));
+                }
+                return new ContentResult { Content = document.ToString(), ContentType = contentType ?? "application/xml" };
+            }
+        }
+        catch (Exception)
+        {
+            // Not something this can read. Hand it back as it came rather than break the call.
+            return new FileContentResult(upstream!, contentType ?? (json ? "application/json" : "application/xml"));
+        }
+
+        if (json)
+            return CreateJsonResponse(new Dictionary<string, object?>
+            {
+                ["status"] = "ok",
+                ["version"] = SubsonicVersion,
+                ["type"] = "octo",
+                ["openSubsonicExtensions"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = AcquisitionsExtension, ["versions"] = new[] { AcquisitionsExtensionVersion },
+                    },
+                },
+            });
+        var xmlNs = XNamespace.Get(SubsonicNamespace);
+        var own = new XDocument(new XElement(xmlNs + "subsonic-response",
+            new XAttribute("status", "ok"), new XAttribute("version", SubsonicVersion),
+            new XElement(xmlNs + "openSubsonicExtensions",
+                new XAttribute("name", AcquisitionsExtension),
+                new XElement(xmlNs + "versions", AcquisitionsExtensionVersion))));
+        return new ContentResult { Content = own.ToString(), ContentType = "application/xml" };
+    }
+
     /// <summary>
     /// Converts a Song domain model to Subsonic JSON format.
     /// </summary>

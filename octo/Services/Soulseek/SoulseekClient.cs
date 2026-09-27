@@ -421,8 +421,13 @@ public class SoulseekClient
     /// or the transfer silently disappeared from slskd's active list — which
     /// happens after rejection on some slskd versions and would otherwise hang
     /// us forever). Caller decides whether to retry or escalate.
+    ///
+    /// <paramref name="onProgress"/> hears the transfer's byte counts on every poll that finds
+    /// it. It only listens: the cadence, the deadline and the outcome are the same without it,
+    /// and anything it throws is swallowed here.
     /// </summary>
-    public async Task<SoulseekTransferState> WaitForCompletionAsync(string username, string filename, int? perAttemptTimeoutSeconds = null, CancellationToken ct = default)
+    public async Task<SoulseekTransferState> WaitForCompletionAsync(string username, string filename, int? perAttemptTimeoutSeconds = null, CancellationToken ct = default,
+        Action<SoulseekTransferProgress>? onProgress = null)
     {
         var timeoutSec = perAttemptTimeoutSeconds ?? _settings.DownloadTimeoutSeconds;
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSec);
@@ -458,12 +463,19 @@ public class SoulseekClient
 
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(json);
-                var state = FindTransferState(doc.RootElement, filename);
+                var transfer = FindTransfer(doc.RootElement, filename);
+                var state = transfer is { } found ? StateOf(found) : null;
                 bool foundThisPoll = state is not null;
                 if (foundThisPoll)
                 {
                     seenAtLeastOnce = true;
                     consecutiveMisses = 0;
+
+                    if (onProgress is not null)
+                    {
+                        try { onProgress(ReadTransferProgress(transfer!.Value)); }
+                        catch (Exception ex) { _logger.LogDebug("Transfer progress listener failed: {Msg}", ex.Message); }
+                    }
 
                     if (state!.Contains("Completed", StringComparison.OrdinalIgnoreCase) &&
                         state.Contains("Succeeded", StringComparison.OrdinalIgnoreCase))
@@ -508,7 +520,31 @@ public class SoulseekClient
     /// made every completed transfer look like a timeout: the poll loop rejected
     /// the object response wholesale and rode the per-attempt timer to the end.
     /// </summary>
-    internal static string? FindTransferState(JsonElement root, string filename)
+    internal static string? FindTransferState(JsonElement root, string filename) =>
+        FindTransfer(root, filename) is { } file ? StateOf(file) : null;
+
+    private static string StateOf(JsonElement file) =>
+        file.TryGetProperty("state", out var stEl) ? stEl.GetString() ?? "" : "";
+
+    /// <summary>
+    /// What slskd says a transfer has moved so far. Any field it leaves out, or sends as
+    /// something other than a number, is null rather than zero, so a missing size never reads
+    /// as a finished file.
+    /// </summary>
+    internal static SoulseekTransferProgress ReadTransferProgress(JsonElement file)
+    {
+        static long? Long(JsonElement el, string name) =>
+            el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
+                ? n : null;
+        static double? Double(JsonElement el, string name) =>
+            el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var n)
+                ? n : null;
+        return new SoulseekTransferProgress(StateOf(file),
+            Long(file, "bytesTransferred"), Long(file, "size"), Double(file, "percentComplete"));
+    }
+
+    /// <summary>The file object for a transfer, in either response shape, or null.</summary>
+    internal static JsonElement? FindTransfer(JsonElement root, string filename)
     {
         IEnumerable<JsonElement> userGroups = root.ValueKind switch
         {
@@ -530,7 +566,7 @@ public class SoulseekClient
                 {
                     var fn = file.TryGetProperty("filename", out var fnEl) ? fnEl.GetString() : null;
                     if (fn != filename) continue;
-                    return file.TryGetProperty("state", out var stEl) ? stEl.GetString() ?? "" : "";
+                    return file;
                 }
             }
         }
@@ -550,6 +586,20 @@ public class SoulseekFileHit
     public string Extension { get; set; } = "";
     public int? UploadSpeed { get; set; }
     public int? QueueLength { get; set; }
+}
+
+/// <summary>One poll's view of a transfer. PercentComplete is slskd's own, from 0 to 100.</summary>
+public sealed record SoulseekTransferProgress(
+    string State, long? BytesTransferred, long? Size, double? PercentComplete)
+{
+    /// <summary>
+    /// Bytes are flowing, or have. A transfer waiting in the peer's queue reads "Queued,
+    /// Remotely" with nothing moved, and that is still a wait, not a download.
+    /// </summary>
+    public bool IsMoving =>
+        BytesTransferred is > 0
+        || State.Contains("InProgress", StringComparison.OrdinalIgnoreCase)
+        || State.Contains("Succeeded", StringComparison.OrdinalIgnoreCase);
 }
 
 public enum SoulseekTransferState

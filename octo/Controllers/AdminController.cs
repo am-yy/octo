@@ -66,6 +66,7 @@ public class AdminController : ControllerBase
     private readonly Octo.Services.Library.NoticeQueue? _notices;
     private readonly Octo.Services.Library.DuplicateScanWorker? _duplicates;
     private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedOpts;
+    private readonly Octo.Services.Common.AcquisitionTracker? _acquisitions;
 
     public AdminController(
         SettingsFileWriter settings,
@@ -105,8 +106,10 @@ public class AdminController : ControllerBase
         Octo.Services.ListenBrainz.ListenBrainzService? listenBrainz = null,
         Octo.Services.Library.NoticeQueue? notices = null,
         Octo.Services.Library.DuplicateScanWorker? duplicates = null,
-        IOptionsMonitor<GeneratedPlaylistSettings>? generatedOpts = null)
+        IOptionsMonitor<GeneratedPlaylistSettings>? generatedOpts = null,
+        Octo.Services.Common.AcquisitionTracker? acquisitions = null)
     {
+        _acquisitions = acquisitions;
         _generatedOpts = generatedOpts;
         _notices = notices;
         _duplicates = duplicates;
@@ -405,6 +408,26 @@ public class AdminController : ControllerBase
     public IActionResult Downloads()
     {
         return Ok(new { downloads = _history.GetRecent(200) });
+    }
+
+    /// <summary>
+    /// Every hearted download in flight or ended in the last half hour, everyone's, newest
+    /// first. The rows the app reads through getAcquisitions, plus the provider key, and who
+    /// asked only while Record who asked is on, the rule the fetched-songs log follows too.
+    /// </summary>
+    [HttpGet("acquisitions")]
+    public IActionResult Acquisitions()
+    {
+        var showAskers = _subsonicOpts.CurrentValue.RecordRequestedBy;
+        var rows = (_acquisitions?.All() ?? []).Select(row =>
+        {
+            var json = SubsonicResponseBuilder.AcquisitionJson(row);
+            json["provider"] = row.Provider;
+            json["externalId"] = row.ExternalId;
+            if (showAskers && row.RequestedBy.Count > 0) json["requestedBy"] = row.RequestedBy;
+            return json;
+        }).ToList();
+        return Ok(new { acquisitions = rows });
     }
 
     /// <summary>

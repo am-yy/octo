@@ -2147,7 +2147,69 @@ function fmtSize(bytes) {
   const mb = bytes / 1048576;
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
-async function loadFetched() {
+// Hearted downloads still running, or failed in the last half hour. Finished ones are left to
+// the log below, which gets them the moment they land. Polled while the pane is open and
+// something is still moving, and not otherwise.
+const ACQ_LABELS = {
+  queued: 'Queued', searching: 'Searching', downloading: 'Downloading',
+  verifying: 'Checking', importing: 'Adding to library', failed: 'Failed',
+};
+let acqTimer = null;
+let acqMoving = new Set();
+async function loadAcquisitions() {
+  const wrap = document.getElementById('acq-wrap');
+  const list = document.getElementById('acq-list');
+  if (!wrap || !list) return;
+  clearTimeout(acqTimer);
+  let rows = [];
+  try {
+    const r = await api('/api/admin/acquisitions', { cache: 'no-store' });
+    if (r.ok) rows = ((await r.json()).acquisitions || []).filter(a => a.state !== 'done');
+  } catch { /* the log below still loads */ }
+
+  const moving = new Set(rows.filter(a => a.state !== 'failed').map(a => a.id));
+  // Something that was moving and no longer is has most likely just landed in the log.
+  const landed = [...acqMoving].some(id => !moving.has(id));
+  acqMoving = moving;
+
+  wrap.hidden = rows.length === 0;
+  list.innerHTML = rows.map(a => {
+    const pct = typeof a.progress === 'number' ? Math.round(a.progress * 100) : null;
+    const failed = a.state === 'failed';
+    const label = a.state === 'downloading' && pct !== null
+      ? `Downloading ${pct}%` : (ACQ_LABELS[a.state] || a.state);
+    const askers = Array.isArray(a.requestedBy) ? a.requestedBy.filter(Boolean) : [];
+    const size = fmtSize(a.bytesTotal);
+    const sub = [
+      escapeHtml(relTime(a.startedAt)),
+      size,
+      askers.length ? `<span class="dl-asker">${escapeHtml(askers.join(', '))}</span>` : '',
+    ].filter(Boolean).join(' · ');
+    const detail = failed && a.error
+      ? `<div class="acq-error">${escapeHtml(a.error)}</div>`
+      : pct !== null && a.state === 'downloading'
+        ? `<div class="acq-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>`
+        : '';
+    return `<div class="dl-item">
+      <div class="dl-art dl-art-ph"></div>
+      <div class="dl-main">
+        <div class="dl-title">${escapeHtml(a.artist || '?')} <span class="dl-dash">·</span> ${escapeHtml(a.title || '?')}</div>
+        ${detail}
+      </div>
+      <div class="dl-side">
+        <div class="dl-tags"><span class="dl-badge ${failed ? 'failed' : 'state'}">${escapeHtml(label)}</span>${a.source ? `<span class="dl-source">${escapeHtml(a.source)}</span>` : ''}</div>
+        <div class="dl-sub">${sub}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const open = document.querySelector('section[data-pane="fetched"]')?.classList.contains('active');
+  if (moving.size && open) acqTimer = setTimeout(loadAcquisitions, 3000);
+  if (landed) loadFetched({ withAcquisitions: false });
+}
+
+async function loadFetched({ withAcquisitions = true } = {}) {
+  if (withAcquisitions) loadAcquisitions();
   const list = document.getElementById('fetched-list');
   if (!list) return;
   try {

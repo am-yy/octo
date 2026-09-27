@@ -382,7 +382,7 @@ public static class SongIdentity
         new(Rx(@"\b(?:explicit|dirty)(?:\s+version)?\b"), "explicit"),
         new(Rx(@"\bmono(?:\s+(?:version|mix))?\b"), "mono"),
         new(Rx(@"\bstereo(?:\s+(?:version|mix))?\b"), "stereo"),
-        new(Rx(@"\bkaraoke(?:\s+version)?\b|\boriginally performed by\b|\bin the style of\b"), "karaoke"),
+        new(Rx(@"\bkaraoke(?:\s+version)?\b|\boriginally performed by\b|\bin the style of\b|\bmade (?:popular|famous) by\b|\bbacking (?:version|track)\b"), "karaoke"),
         new(Rx(@"\bcover(?:\s+version)?\b"), "cover"),
         new(Rx(@"\breprise\b"), "reprise"),
         new(Rx(@"\bsessions?\b"), "session"),

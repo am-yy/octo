@@ -24,6 +24,12 @@ public class DownloadHistoryEntry
 
     public long SizeBytes { get; set; }
 
+    /// <summary>
+    /// For a file that claims to be lossless and whose spectrum says it was made from a lossy
+    /// one, what it was likely made from ("about 128 kbps MP3"). Null otherwise.
+    /// </summary>
+    public string? TranscodedFrom { get; set; }
+
     /// <summary>When it was saved (ISO 8601, UTC).</summary>
     public string DownloadedAt { get; set; } = string.Empty;
 

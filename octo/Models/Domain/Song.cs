@@ -38,6 +38,13 @@ public class Song
     /// </summary>
     public string? SourcePeer { get; set; }
     public string? SourceFile { get; set; }
+
+    /// <summary>
+    /// For a download kept although its spectrum says it was made from a lossy file, what it
+    /// was likely made from ("about 128 kbps MP3"). Written down beside SourcePeer, so a file that
+    /// claims to be lossless and is not can be found again. Null for everything else.
+    /// </summary>
+    public string? TranscodedFrom { get; set; }
     public string? CoverArtUrl { get; set; }
     
     /// <summary>

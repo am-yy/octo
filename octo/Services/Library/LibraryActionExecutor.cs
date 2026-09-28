@@ -39,6 +39,7 @@ public sealed class LibraryActionExecutor
     private readonly IOptionsMonitor<SubsonicSettings> _subsonicSettings;
     private readonly ILogger<LibraryActionExecutor> _logger;
     private readonly NoticeQueue? _notices;
+    private readonly Octo.Services.Fingerprint.SpectrumAnalyzer? _spectrum;
     private int _reconciled;
 
     public LibraryActionExecutor(NavidromeSongPathResolver resolver, LibraryActionQuarantine quarantine,
@@ -47,9 +48,11 @@ public sealed class LibraryActionExecutor
         IOptionsMonitor<LibraryActionSettings> settings, IOptionsMonitor<SoulseekSettings> soulseek,
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
         ILogger<LibraryActionExecutor> logger,
-        NoticeQueue? notices = null)
+        NoticeQueue? notices = null,
+        Octo.Services.Fingerprint.SpectrumAnalyzer? spectrum = null)
     {
         _notices = notices;
+        _spectrum = spectrum;
         _resolver = resolver;
         _quarantine = quarantine;
         _journal = journal;
@@ -212,6 +215,8 @@ public sealed class LibraryActionExecutor
                     ? request.Username : null);
 
             var problem = Unacceptable(request.Action, replacement, original);
+            if (problem is null && request.Action == LibraryAction.BetterQuality)
+                problem = NotReallyLossless(await SpectrumOfAsync(replacement!));
             if (problem is null)
             {
                 if (!_settings.CurrentValue.KeepReplacedOriginals) TryDelete(quarantinePath);
@@ -248,6 +253,22 @@ public sealed class LibraryActionExecutor
         if (info.Length <= original.SizeBytes) return "is no larger than the original";
 
         return null;
+    }
+
+    /// <summary>
+    /// Better quality means genuinely lossless: a FLAC made from an MP3 is no upgrade over the MP3
+    /// it replaces, and over a real FLAC it is a downgrade. Null when the spectrum says nothing
+    /// against it, which includes the check being off or unable to run.
+    /// </summary>
+    internal static string? NotReallyLossless(Octo.Services.Fingerprint.SpectrumReport report) =>
+        report.IsLikelyLossy ? $"is {report.Describe()}" : null;
+
+    private async Task<Octo.Services.Fingerprint.SpectrumReport> SpectrumOfAsync(string path)
+    {
+        var settings = _soulseek.CurrentValue;
+        if (_spectrum is null || !settings.DetectTranscodes)
+            return Octo.Services.Fingerprint.SpectrumReport.Unknown("not checked");
+        return await _spectrum.AnalyzeAsync(path, settings.EffectiveTranscodeCheckTimeoutSeconds);
     }
 
     private LibraryActionOutcome RestoreOriginal(string quarantinePath, string detail)

@@ -96,6 +96,7 @@ public class LocalLibraryService : ILocalLibraryService
                 DownloadedAt = DateTime.UtcNow,
                 SourcePeer = song.SourcePeer,
                 SourceFile = song.SourceFile,
+                TranscodedFrom = song.TranscodedFrom,
                 MusicBrainzRecordingId = song.MusicBrainzRecordingId,
             };
             
@@ -370,4 +371,9 @@ public class LocalSongMapping
     /// SourcePeer; it is what lets a later download of the same recording replace this file
     /// rather than sit beside it.</summary>
     public string? MusicBrainzRecordingId { get; set; }
+
+    /// <summary>What the file was likely made from when its spectrum said it is a lossy file
+    /// converted to lossless ("about 128 kbps MP3"). Optional, like SourcePeer; null for a
+    /// genuine file and for every mapping written before the check existed.</summary>
+    public string? TranscodedFrom { get; set; }
 }

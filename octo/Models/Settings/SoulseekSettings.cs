@@ -151,6 +151,23 @@ public class SoulseekSettings
     public int AcoustIdTimeoutSeconds { get; set; } = 10;
 
     /// <summary>
+    /// Check a download that claims to be lossless (FLAC, WAV, AIFF and the like) for a lossy
+    /// file converted to it, by the cutoff in its spectrum. A likely transcode is passed over
+    /// for another lossless copy when there is one, and kept, marked as transcoded, when there
+    /// is not: it is still the right song. Needs no API key and never fails a download; a
+    /// missing ffmpeg or a file it cannot read is no opinion. On by default, since it costs a
+    /// second or so of decoding per lossless download and only ever changes which copy is kept.
+    /// Also used by the better-quality library action and the duplicate scan.
+    /// </summary>
+    public bool DetectTranscodes { get; set; } = true;
+
+    /// <summary>
+    /// How long the transcode check may decode for, every window included. A FLAC takes well
+    /// under a second, so twenty is a hang rather than a slow disk.
+    /// </summary>
+    public int TranscodeCheckTimeoutSeconds { get; set; } = 20;
+
+    /// <summary>
     /// Send AcoustID the fingerprints a person confirmed with Keep, so the next person who
     /// downloads that recording gets Confirmed instead of Inconclusive (#47). Only a fingerprint
     /// whose MusicBrainz recording is unambiguous, only after a human kept it, and never one
@@ -175,6 +192,7 @@ public class SoulseekSettings
     public int EffectiveFingerprintSeconds => Math.Clamp(FingerprintSeconds, 15, 600);
     public int EffectiveFingerprintTimeoutSeconds => Math.Clamp(FingerprintTimeoutSeconds, 5, 300);
     public int EffectiveAcoustIdTimeoutSeconds => Math.Clamp(AcoustIdTimeoutSeconds, 2, 120);
+    public int EffectiveTranscodeCheckTimeoutSeconds => Math.Clamp(TranscodeCheckTimeoutSeconds, 5, 300);
 
     /// <summary>
     /// Below 50 an AcoustID score is noise and acting on it manufactures false rejections;

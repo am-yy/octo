@@ -328,7 +328,8 @@ public sealed class NoticeQueue : IDisposable
     }
 
     private static string Describe(LibraryTrack track) =>
-        track.BitRate > 0 ? $"{track.Suffix.ToUpperInvariant()}, {track.BitRate} kbps" : track.Suffix.ToUpperInvariant();
+        (track.BitRate > 0 ? $"{track.Suffix.ToUpperInvariant()}, {track.BitRate} kbps" : track.Suffix.ToUpperInvariant())
+        + (track.TranscodedFrom is { } source ? $", likely transcoded from {source}" : "");
 
     /// <summary>Kept entries with a fingerprint that has not been sent or refused yet.</summary>
     public IReadOnlyList<NoticeEntry> AwaitingSubmission()

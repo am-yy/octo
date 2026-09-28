@@ -9,7 +9,12 @@ namespace Octo.Services.Library;
 
 /// <summary>One library row, as much of it as telling copies apart needs.</summary>
 public sealed record LibraryTrack(string Id, string Title, string Artist, string Album, string RecordingId,
-    string Suffix, int BitRate, int Duration);
+    string Suffix, int BitRate, int Duration)
+{
+    /// <summary>For a lossless file whose spectrum says it was made from a lossy one, what it was
+    /// likely made from ("about 128 kbps MP3"). Only ever set on a copy inside a duplicate group.</summary>
+    public string? TranscodedFrom { get; init; }
+}
 
 /// <summary>Copies of one recording, the one worth keeping first.</summary>
 public sealed record DuplicateGroup(string Key, IReadOnlyList<LibraryTrack> Tracks);
@@ -49,12 +54,26 @@ public sealed class DuplicateScanWorker : BackgroundService
     private readonly IOptionsMonitor<SubsonicSettings> _subsonic;
     private readonly IOptionsMonitor<LibraryActionSettings> _settings;
     private readonly ILogger<DuplicateScanWorker> _logger;
+    private readonly NavidromeSongPathResolver? _resolver;
+    private readonly SpectrumAnalyzer? _spectrum;
+    private readonly IOptionsMonitor<SoulseekSettings>? _soulseek;
     private readonly SemaphoreSlim _requested = new(0, 1);
     private DateTime _lastScanUtc = DateTime.MinValue;
 
+    /// <summary>
+    /// Spectrum verdicts by track id, size and modification time, so a file is decoded once and
+    /// not again on every scan. A replaced or re-tagged file has a new key and is looked at again.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpectrumReport> _spectra = new();
+
+    /// <summary>How many files one scan may decode. A second or so each, and only copies inside a
+    /// group with two or more lossless files are ever looked at; the rest wait for the next scan.</summary>
+    internal const int MaxSpectrumChecksPerScan = 200;
+
     public DuplicateScanWorker(NoticeQueue queue, NavidromeIdentityService identity, IHttpClientFactory http,
         IOptionsMonitor<SubsonicSettings> subsonic, IOptionsMonitor<LibraryActionSettings> settings,
-        ILogger<DuplicateScanWorker> logger)
+        ILogger<DuplicateScanWorker> logger, NavidromeSongPathResolver? resolver = null,
+        SpectrumAnalyzer? spectrum = null, IOptionsMonitor<SoulseekSettings>? soulseek = null)
     {
         _queue = queue;
         _identity = identity;
@@ -62,6 +81,9 @@ public sealed class DuplicateScanWorker : BackgroundService
         _subsonic = subsonic;
         _settings = settings;
         _logger = logger;
+        _resolver = resolver;
+        _spectrum = spectrum;
+        _soulseek = soulseek;
     }
 
     public DuplicateScanResult? LastResult { get; private set; }
@@ -102,6 +124,14 @@ public sealed class DuplicateScanWorker : BackgroundService
     {
         var (tracks, complete) = await WalkAsync(ct);
         var groups = FindGroups(tracks);
+        if (_resolver is not null && _spectrum is not null && _soulseek?.CurrentValue.DetectTranscodes == true)
+        {
+            var decoded = 0;
+            groups = await CheckTranscodesAsync(groups, track =>
+                decoded >= MaxSpectrumChecksPerScan
+                    ? Task.FromResult<SpectrumReport?>(null)
+                    : SpectrumOfAsync(track, () => decoded++, ct));
+        }
         var users = (settings.AllowedUsers ?? []).Where(user => !string.IsNullOrWhiteSpace(user)).ToList();
         var added = _queue.SyncDuplicates(groups, users, complete);
         _queue.Flush();
@@ -198,15 +228,69 @@ public sealed class DuplicateScanWorker : BackgroundService
     }
 
     /// <summary>
-    /// Lossless first, then the higher bitrate, then the length closest to the group's median (a
-    /// copy much longer or shorter than the rest is the likelier to be cut or padded), then id.
+    /// The groups again, with every lossless copy in a group that has two or more of them
+    /// checked for being a transcode, and each group ranked again. Only those copies: a lone
+    /// lossless file outranks the lossy ones either way, and the rest of the library is never
+    /// decoded. A copy the check could not judge counts as genuine.
+    /// </summary>
+    internal static async Task<IReadOnlyList<DuplicateGroup>> CheckTranscodesAsync(
+        IReadOnlyList<DuplicateGroup> groups, Func<LibraryTrack, Task<SpectrumReport?>> check)
+    {
+        var result = new List<DuplicateGroup>(groups.Count);
+        foreach (var group in groups)
+        {
+            if (group.Tracks.Count(IsLossless) < 2)
+            {
+                result.Add(group);
+                continue;
+            }
+            var tracks = new List<LibraryTrack>(group.Tracks.Count);
+            foreach (var track in group.Tracks)
+            {
+                var report = IsLossless(track) ? await check(track) : null;
+                tracks.Add(report is { IsLikelyLossy: true } ? track with { TranscodedFrom = report.Estimate } : track);
+            }
+            result.Add(group with { Tracks = RankForKeeping(tracks) });
+        }
+        return result;
+    }
+
+    private async Task<SpectrumReport?> SpectrumOfAsync(LibraryTrack track, Action decoded, CancellationToken ct)
+    {
+        try
+        {
+            if (await _resolver!.ResolveAsync(track.Id, ct) is not { } file) return null;
+            var key = $"{track.Id}|{file.SizeBytes}|{File.GetLastWriteTimeUtc(file.AbsolutePath).Ticks}";
+            if (_spectra.TryGetValue(key, out var known)) return known;
+
+            decoded();
+            var report = await _spectrum!.AnalyzeAsync(file.AbsolutePath, _soulseek!.CurrentValue.EffectiveTranscodeCheckTimeoutSeconds);
+            // Unknown from a timeout or a missing ffmpeg is not remembered, so it is asked again.
+            if (report.Verdict != SpectrumVerdict.Unknown) _spectra[key] = report;
+            if (report.IsLikelyLossy)
+                _logger.LogInformation("Duplicate scan: {Path} is {Spectrum}", file.AbsolutePath, report.Describe());
+            return report;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Duplicate scan: could not check {Id} for transcoding: {M}", track.Id, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Genuine lossless first, then a lossless file made from a lossy one, then the higher
+    /// bitrate, then the length closest to the group's median (a copy much longer or shorter
+    /// than the rest is the likelier to be cut or padded), then id.
     /// </summary>
     internal static IReadOnlyList<LibraryTrack> RankForKeeping(IReadOnlyList<LibraryTrack> group)
     {
         var lengths = group.Select(track => track.Duration).Order().ToList();
         var median = lengths[lengths.Count / 2];
         return group
-            .OrderByDescending(IsLossless)
+            .OrderByDescending(track => IsLossless(track) && track.TranscodedFrom is null)
+            .ThenByDescending(IsLossless)
             .ThenByDescending(track => track.BitRate)
             .ThenBy(track => Math.Abs(track.Duration - median))
             .ThenBy(track => track.Id, StringComparer.Ordinal)

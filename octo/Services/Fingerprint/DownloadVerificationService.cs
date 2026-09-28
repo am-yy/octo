@@ -165,16 +165,41 @@ public sealed class DownloadVerificationService
     private readonly IOptionsMonitor<SoulseekSettings> _options;
     private readonly ILogger<DownloadVerificationService> _logger;
     private readonly MusicBrainzClient? _musicBrainz;
+    private readonly SpectrumAnalyzer? _spectrum;
 
     public DownloadVerificationService(AudioFingerprinter fingerprinter, AcoustIdClient client,
         IOptionsMonitor<SoulseekSettings> options, ILogger<DownloadVerificationService> logger,
-        MusicBrainzClient? musicBrainz = null)
+        MusicBrainzClient? musicBrainz = null, SpectrumAnalyzer? spectrum = null)
     {
         _fingerprinter = fingerprinter;
         _client = client;
         _options = options;
         _logger = logger;
         _musicBrainz = musicBrainz;
+        _spectrum = spectrum;
+    }
+
+    /// <summary>
+    /// Whether a file that claims to be lossless really is, by its spectrum. Unknown, and no
+    /// work at all, when the check is off, the file does not claim to be lossless, or ffmpeg
+    /// cannot say. Separate from <see cref="VerifyAsync"/> because the answer never rejects a
+    /// file: it only decides which of two right songs is kept.
+    /// </summary>
+    public async Task<SpectrumReport> CheckLosslessAsync(string path, string? requestedArtist, string? requestedTitle)
+    {
+        var settings = _options.CurrentValue;
+        if (!settings.DetectTranscodes || _spectrum is null || !SpectrumAnalyzer.ClaimsLossless(path))
+            return SpectrumReport.Unknown("not checked");
+
+        var report = await _spectrum.AnalyzeAsync(path, settings.EffectiveTranscodeCheckTimeoutSeconds);
+        if (report.IsLikelyLossy)
+            _logger.LogWarning("the {Format} for '{Artist} - {Title}' is {Spectrum}",
+                Path.GetExtension(path).TrimStart('.').ToUpperInvariant(), requestedArtist, requestedTitle, report.Describe());
+        else
+            // Logged when it passes too, for the same reason a confirmation is: silence on
+            // success looks exactly like a check that never ran.
+            _logger.LogInformation("spectrum of '{Artist} - {Title}': {Spectrum}", requestedArtist, requestedTitle, report.Describe());
+        return report;
     }
 
     /// <summary>AcoustID can answer at all.</summary>

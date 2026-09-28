@@ -80,6 +80,85 @@ public class DuplicateScanTests
             ranked.Select(track => track.Id));
     }
 
+    // ---- fake lossless copies ---------------------------------------------------------------
+
+    private static SpectrumReport Fake(double cutoff) =>
+        new(SpectrumVerdict.LikelyLossy, 44100, cutoff, "a cliff", SpectrumAnalyzer.EstimateFor(cutoff));
+
+    private static readonly SpectrumReport Real = new(SpectrumVerdict.Genuine, 44100, null, "audio up to the top of the band");
+
+    [Fact]
+    public void RankForKeeping_ATranscodedFlacNeverOutranksAGenuineOne()
+    {
+        var ranked = DuplicateScanWorker.RankForKeeping(
+        [
+            Track("fake", bitRate: 1100) with { TranscodedFrom = "about 128 kbps MP3" },
+            Track("real", bitRate: 900),
+            Track("mp3", suffix: "mp3", bitRate: 320),
+        ]);
+
+        Assert.Equal(["real", "fake", "mp3"], ranked.Select(track => track.Id));
+    }
+
+    [Fact]
+    public async Task CheckTranscodes_ReranksAGroupWithTwoLosslessCopies()
+    {
+        var group = Assert.Single(DuplicateScanWorker.FindGroups(
+            [Track("fake", bitRate: 1100), Track("real", bitRate: 900), Track("mp3", suffix: "mp3", bitRate: 320)]));
+        Assert.Equal("fake", group.Tracks[0].Id);
+        var asked = new List<string>();
+
+        var checkedGroups = await DuplicateScanWorker.CheckTranscodesAsync([group], track =>
+        {
+            asked.Add(track.Id);
+            return Task.FromResult<SpectrumReport?>(track.Id == "fake" ? Fake(16900) : Real);
+        });
+
+        var ranked = Assert.Single(checkedGroups);
+        Assert.Equal(group.Key, ranked.Key);
+        Assert.Equal(["real", "fake", "mp3"], ranked.Tracks.Select(track => track.Id));
+        Assert.Equal("about 128 kbps MP3", ranked.Tracks[1].TranscodedFrom);
+        // Only the lossless copies are decoded.
+        Assert.Equal(["fake", "real"], asked.Order());
+    }
+
+    /// <summary>One lossless copy outranks the lossy ones whatever its spectrum says, so it is
+    /// never decoded: the check costs nothing outside groups where it can change the answer.</summary>
+    [Fact]
+    public async Task CheckTranscodes_LeavesAGroupWithOneLosslessCopyAlone()
+    {
+        var group = Assert.Single(DuplicateScanWorker.FindGroups([Track("flac"), Track("mp3", suffix: "mp3", bitRate: 320)]));
+
+        var checkedGroups = await DuplicateScanWorker.CheckTranscodesAsync([group],
+            _ => throw new InvalidOperationException("nothing should be decoded"));
+
+        Assert.Same(group, Assert.Single(checkedGroups));
+    }
+
+    [Fact]
+    public async Task CheckTranscodes_ACopyThatCouldNotBeJudgedCountsAsGenuine()
+    {
+        var group = Assert.Single(DuplicateScanWorker.FindGroups([Track("a", bitRate: 1100), Track("b", bitRate: 900)]));
+
+        var checkedGroups = await DuplicateScanWorker.CheckTranscodesAsync([group],
+            track => Task.FromResult<SpectrumReport?>(track.Id == "a" ? null : SpectrumReport.Unknown("no clear cutoff")));
+
+        Assert.Equal(["a", "b"], Assert.Single(checkedGroups).Tracks.Select(track => track.Id));
+        Assert.All(Assert.Single(checkedGroups).Tracks, track => Assert.Null(track.TranscodedFrom));
+    }
+
+    [Fact]
+    public void SyncDuplicates_SaysWhichCopyIsTranscoded()
+    {
+        var queue = new NoticeQueue();
+        var group = new DuplicateGroup("dup|a,b", [Track("a", bitRate: 900), Track("b", bitRate: 1100) with { TranscodedFrom = "about 192 kbps" }]);
+
+        queue.SyncDuplicates([group], ["alice"], complete: true);
+
+        var entries = queue.ForUser("alice", NoticeKind.Duplicates).OrderBy(entry => entry.Order).ToList();
+        Assert.Equal("FLAC, 1100 kbps, likely transcoded from about 192 kbps, also in the library as FLAC, 900 kbps", entries[1].Reason);
+    }
+
     [Fact]
     public void ParsePage_CountsEveryRowButKeepsOnlyTracksWithARecordingId()
     {

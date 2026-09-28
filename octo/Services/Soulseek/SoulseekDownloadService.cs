@@ -370,6 +370,32 @@ public class SoulseekDownloadService : BaseDownloadService
 
         Exception? lastError = null;
         var startAnnounced = false;
+
+        // A file that claims to be lossless and whose spectrum says it was made from a lossy
+        // one. It is still the right song, so it is held back rather than thrown away: a later
+        // peer's genuine copy replaces it, and when no peer has one it is what this download
+        // delivers, never a reason to fail the song or fall back to YouTube.
+        TranscodedReserve? reserve = null;
+
+        // Records the ids of a confirmed match, and its name too when tagging from MusicBrainz
+        // is on. Reads and writes the Song, never the routing. It reaches the tagger and
+        // PlaceInLibraryAsync because DownloadSongInternalAsync passes ONE Song instance through
+        // the download, EnrichAsync, placement and WriteMetadataAsync. A refactor that clones
+        // the song between those turns this into a silent no-op.
+        //
+        // Also writes down who delivered the file. It is the only chance: after the transfer
+        // ends nothing else in Octo remembers, and "Wrong song" needs it to blacklist the peer
+        // rather than re-rolling the same search.
+        string Accept(string path, SoulseekFileHit source, Octo.Services.Fingerprint.VerificationResult verdict,
+            string? transcodedFrom)
+        {
+            verdict.ApplyTagsTo(song);
+            song.Verification = verdict;
+            song.SourcePeer = source.Username;
+            song.SourceFile = source.Filename;
+            song.TranscodedFrom = transcodedFrom;
+            return path;
+        }
         foreach (var (hit, attemptIdx) in ranked.Select((h, i) => (h, i + 1)))
         {
             Logger.LogInformation("Soulseek attempt {N}/{Total}: {User} -> {File} (queue={Q}, speed={S})",
@@ -467,6 +493,18 @@ public class SoulseekDownloadService : BaseDownloadService
                     ? TimeSpan.FromSeconds(15)
                     : TimeSpan.FromSeconds(5),
                 cancellationToken);
+            if (!string.IsNullOrEmpty(localPath) && reserve is not null && SamePath(reserve.Path, localPath))
+            {
+                // The resolver matches on leaf name and size, so a peer offering the same rip as
+                // the copy held back can resolve to that very file. It is not a new copy, and
+                // every check below would either repeat itself or, worse, delete the only one.
+                Logger.LogInformation("Soulseek attempt {N} resolved to the copy already held back, not a new file; advancing",
+                    attemptIdx);
+                lastError = new Exception("the file found is the copy already held back");
+                if (callerGaveUp) break;
+                continue;
+            }
+
             if (!string.IsNullOrEmpty(localPath))
             {
                 Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Verifying));
@@ -513,34 +551,60 @@ public class SoulseekDownloadService : BaseDownloadService
                     continue;
                 }
 
-                // Records the ids of a confirmed match, and its name too when tagging from
-                // MusicBrainz is on. Reads and writes the Song, never the routing. It reaches the
-                // tagger and PlaceInLibraryAsync because DownloadSongInternalAsync passes ONE
-                // Song instance through the download, EnrichAsync, placement and
-                // WriteMetadataAsync. A refactor that clones the song between those turns this
-                // into a silent no-op.
-                verdict.ApplyTagsTo(song);
-                song.Verification = verdict;
+                // Last, and the only check that never rejects: the right song made from an MP3 is
+                // still the right song. It decides only whether another peer's copy is worth a
+                // try, which is why it runs after the checks that can throw a file away.
+                var spectrum = await _verification.CheckLosslessAsync(localPath, routing.Artist, routing.Title);
+                if (spectrum.IsLikelyLossy)
+                {
+                    switch (WeighTranscode(reserve?.Path, reserve?.Spectrum.CutoffHz, localPath, spectrum.CutoffHz))
+                    {
+                        case ReserveChoice.AlreadyHeld:
+                            Logger.LogInformation("Soulseek attempt {N} resolved to the copy already held back; advancing", attemptIdx);
+                            break;
+                        case ReserveChoice.Hold:
+                            if (reserve is not null) DiscardRejectedDownload(reserve.Path, reserve.StartedUtc);
+                            reserve = new TranscodedReserve(localPath, hit, attemptIdx, verdict, spectrum, attemptStartedUtc);
+                            break;
+                        default:
+                            DiscardRejectedDownload(localPath, attemptStartedUtc);
+                            break;
+                    }
 
-                // Write down who delivered this. It is the only chance: after the transfer
-                // ends nothing else in Octo remembers, and "Wrong song" needs it to blacklist
-                // the peer rather than re-rolling the same search.
-                song.SourcePeer = hit.Username;
-                song.SourceFile = hit.Filename;
+                    Logger.LogWarning(
+                        "Soulseek attempt {N} for '{Artist} - {Title}' is {Spectrum}; {Plan}",
+                        attemptIdx, routing.Artist, routing.Title, spectrum.Describe(),
+                        callerGaveUp ? "the caller has left, so no other copy is tried"
+                            : "holding it back and trying the next lossless copy");
+                    lastError = new Exception($"the file is {spectrum.Describe()}");
+                    if (callerGaveUp) break;
+                    continue;
+                }
+
+                if (reserve is not null && !SamePath(reserve.Path, localPath))
+                {
+                    Logger.LogInformation("Soulseek attempt {N} is a genuine copy; it replaces the transcoded one from attempt {Reserve}",
+                        attemptIdx, reserve.Attempt);
+                    DiscardRejectedDownload(reserve.Path, reserve.StartedUtc);
+                }
 
                 // The file stays where slskd put it; PlaceInLibraryAsync moves it once it knows
                 // the album and the credit it will be filed under.
                 Logger.LogInformation("Soulseek download complete (attempt {N}, slskd state={State}{Aborted}): {Path}",
                     attemptIdx, state?.ToString() ?? "interrupted", callerGaveUp ? ", caller had already left" : "", localPath);
-                return localPath;
+                return Accept(localPath, hit, verdict, transcodedFrom: null);
             }
 
             if (waitError is not null)
             {
                 // Nothing on disk and the caller is gone: no later peer attempt
                 // has anywhere to be delivered, so stop instead of burning the
-                // rest of the list.
-                if (callerGaveUp) throw waitError;
+                // rest of the list. A copy held back is still delivered.
+                if (callerGaveUp)
+                {
+                    if (reserve is not null) break;
+                    throw waitError;
+                }
                 Logger.LogWarning("Soulseek attempt {N} wait failed ({Msg}); advancing", attemptIdx, waitError.Message);
                 lastError = waitError;
                 continue;
@@ -550,11 +614,45 @@ public class SoulseekDownloadService : BaseDownloadService
             lastError = new Exception($"transfer ended in state {state} with no resulting file");
         }
 
+        if (reserve is { } kept)
+        {
+            // Kept, not failed: the song asked for is on disk, only not in the quality its
+            // extension claims. Written down so it can be found and upgraded later.
+            Logger.LogWarning(
+                "Soulseek: no genuine lossless copy of '{Artist} - {Title}' among {Count} candidates; keeping attempt {N} "
+                + "from {User}, which is {Spectrum}: {Path}",
+                routing.Artist, routing.Title, ranked.Count, kept.Attempt, kept.Hit.Username, kept.Spectrum.Describe(), kept.Path);
+            return Accept(kept.Path, kept.Hit, kept.Verdict, kept.Spectrum.Estimate);
+        }
+
         throw new Exception(
             $"All {ranked.Count} Soulseek peer attempts failed for '{routing.Artist} - {routing.Title}'. Last error: {lastError?.Message}. "
             + $"If slskd shows these transfers as Completed, slskd's downloads directory is not the directory Octo watches ({DownloadPath}); "
             + "set SLSKD_DOWNLOADS_DIR=/music on the slskd container (see issue #17).");
     }
+
+    /// <summary>A likely transcode held back while other peers are tried, and what it took to get it.</summary>
+    private sealed record TranscodedReserve(string Path, SoulseekFileHit Hit, int Attempt,
+        Octo.Services.Fingerprint.VerificationResult Verdict, Octo.Services.Fingerprint.SpectrumReport Spectrum,
+        DateTime StartedUtc);
+
+    internal enum ReserveChoice { Hold, AlreadyHeld, DiscardNew }
+
+    /// <summary>
+    /// What to do with a likely transcode, given the one already held back, if any. The first is
+    /// held. A later one replaces it only with a higher cutoff, which is the higher bitrate it
+    /// was made from. And the resolver matches on leaf name and size, so a later peer offering
+    /// the same rip can resolve to the very file already held back: that is not a new file, and
+    /// deleting it as one would lose the only copy.
+    /// </summary>
+    internal static ReserveChoice WeighTranscode(string? heldPath, double? heldCutoffHz, string path, double? cutoffHz) =>
+        heldPath is not null && SamePath(heldPath, path) ? ReserveChoice.AlreadyHeld
+        : heldPath is null || (cutoffHz ?? 0) > (heldCutoffHz ?? 0) ? ReserveChoice.Hold
+        : ReserveChoice.DiscardNew;
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.GetFullPath(a), Path.GetFullPath(b),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     /// <summary>
     /// The Soulseek searches for a song, in order, from <see cref="SongIdentity.QueryVariants"/>.
@@ -939,7 +1037,7 @@ public class SoulseekDownloadService : BaseDownloadService
             }
 
             IOFile.Delete(path);
-            Logger.LogInformation("Deleted mismatched download {Path}", path);
+            Logger.LogInformation("Deleted rejected download {Path}", path);
         }
         catch (Exception ex)
         {

@@ -1286,6 +1286,13 @@
             </div>
             <div class="set-row">
               <div class="set-info">
+                <div class="set-info-t">Catch fake lossless files</div>
+                <div class="set-info-d">Checks the spectrum of every download that claims to be lossless for the cutoff a lossy encoder leaves, the sign of an MP3 converted to FLAC. A likely transcode is passed over for another lossless copy when a peer has one, and kept, noted as transcoded, when none does. Works without verification or an AcoustID key. A recording that is simply quiet up high is never called fake. On by default.</div>
+              </div>
+              <label class="switch"><input type="checkbox" name="Soulseek.DetectTranscodes" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row">
+              <div class="set-info">
                 <div class="set-info-t">Rejected peers</div>
                 <div class="set-info-d">Files a download proved were the wrong recording. Entries lapse on their own after 30 days; clear them if a track has stopped being fetchable and you think this list is why.</div>
               </div>

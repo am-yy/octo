@@ -225,6 +225,7 @@ builder.Services.AddHttpClient(Octo.Services.Fingerprint.MusicBrainzClient.Clien
 builder.Services.AddSingleton<Octo.Services.Fingerprint.MusicBrainzClient>();
 
 builder.Services.AddSingleton<Octo.Services.Fingerprint.AudioFingerprinter>();
+builder.Services.AddSingleton<Octo.Services.Fingerprint.SpectrumAnalyzer>();
 
 // AcoustID allows 3 requests/second and, like Deezer, signals refusal with an error envelope
 // rather than reliably a 429. Here that parses as "no match", which this feature reads as

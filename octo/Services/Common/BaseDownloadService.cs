@@ -316,6 +316,7 @@ public abstract class BaseDownloadService : IDownloadService
                 Source = ext == "FLAC" ? "Soulseek" : "YouTube",
                 CoverArtUrl = cover,
                 SizeBytes = size,
+                TranscodedFrom = song.TranscodedFrom,
                 DownloadedAt = DateTime.UtcNow.ToString("o"),
                 RequestedBy = requestedBy is { Count: > 0 } ? [.. requestedBy] : null,
             });

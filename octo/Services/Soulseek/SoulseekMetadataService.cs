@@ -712,6 +712,9 @@ public class SoulseekMetadataService : IMusicMetadataService
         };
     }
 
+    /// <summary>How long an artist's page waits for its albums' track counts.</summary>
+    private static readonly TimeSpan TrackCountWait = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// An outside artist's releases, for their page and for filling out a library artist's
     /// page. Each album is registered the way album search registers one, so it opens, plays
@@ -729,9 +732,22 @@ public class SoulseekMetadataService : IMusicMetadataService
         if (artist is null) return new List<Album>();
 
         var releases = await _deezer.GetArtistAlbumsAsync(artist.DeezerId, name);
+
+        // The listing carries no track counts. Each album's own record has one: ask for them
+        // all at once and wait a moment. What arrives in time is shown; the rest stay cached
+        // for the next visit, so a page is never held up by a long career.
+        var counts = releases
+            .Select(release => release.TrackCount > 0
+                ? Task.FromResult<int?>(release.TrackCount)
+                : _deezer.AlbumTrackCountAsync(release.DeezerId))
+            .ToList();
+        await Task.WhenAny(Task.WhenAll(counts), Task.Delay(TrackCountWait));
+
         var albums = new List<Album>(releases.Count);
-        foreach (var release in releases)
+        for (var i = 0; i < releases.Count; i++)
         {
+            var release = releases[i];
+            var count = counts[i].IsCompletedSuccessfully ? counts[i].Result : null;
             var albumId = _idRegistry.Register(new SoulseekRouting
             {
                 Kind = RoutingKind.Album,
@@ -744,7 +760,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Id = albumId,
                 Title = release.Title,
                 Year = release.Year,
-                SongCount = release.TrackCount,
+                SongCount = count ?? release.TrackCount,
                 CoverArtUrl = release.CoverUrl,
                 IsLocal = false,
                 ExternalProvider = ProviderName,

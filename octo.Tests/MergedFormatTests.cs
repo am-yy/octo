@@ -45,6 +45,8 @@ public sealed class MergedFormatTests
                           {"title":"Four","duration":400,"track_position":4,"disk_number":1,"isrc":"GBAAA0000004","artist":{"name":"Test Artist"}}
                         ]}
                         """);
+                if (path == "/album/2")
+                    return Json("""{"id":2,"title":"Other Album","nb_tracks":9,"release_date":"2005-05-05","artist":{"name":"Test Artist"}}""");
                 if (path == "/album/1")
                     return Json("""{"id":1,"title":"Test Album","release_date":"2001-01-01","artist":{"name":"Test Artist"}}""");
                 if (path.StartsWith("/search/artist", StringComparison.Ordinal))
@@ -190,6 +192,8 @@ public sealed class MergedFormatTests
         // It links back to the library artist, not to an outside copy of them.
         Assert.Equal("ar-1", outside.GetProperty("artistId").GetString());
         Assert.Equal(2005, outside.GetProperty("year").GetInt32());
+        // The listing has no track count; the album's own record fills it in.
+        Assert.Equal(9, outside.GetProperty("songCount").GetInt32());
 
         // And the outside album opens.
         using var opened = JsonDocument.Parse(await client.GetStringAsync(

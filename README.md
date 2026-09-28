@@ -394,7 +394,21 @@ one you file under, and it only ever names files Octo downloads and confirms. Yo
 downloads are identified too, but never rejected: YouTube has no second candidate, so a
 disagreement is kept and, with the Review playlist on, asked about. Verification needs
 `fpcalc` in the runtime image (`libchromaprint-tools`); without it the feature logs once and
-accepts everything.
+accepts everything. A song asked for with an ISRC (an album track Deezer listed) is also held
+to that code: a file whose own tags carry it is confirmed even with no AcoustID key or entry,
+and a fingerprint that names a recording spelled differently (a title in its own script, or
+translated) is confirmed when MusicBrainz lists the ISRC on it. A different ISRC never rejects
+a file, since re-releases are often given new codes.
+
+"Catch fake lossless files" on the Soulseek admin page (on by default) checks every download
+that claims to be lossless for a lossy file converted to it. Octo decodes a few seconds from
+several points in the track with ffmpeg and looks for the cutoff a lossy encoder leaves: about
+17 kHz for a 128 kbps MP3, 19 kHz for 192, 20 kHz for 256 and 320. It needs a steep drop that
+stays at the floor, so a recording that is simply quiet up high is never called fake. A likely
+transcode is held back while the next lossless copy is tried, and kept when no peer has a
+genuine one: it is still the right song, and the download record notes what it was likely
+made from. The better-quality library action refuses a transcode as a replacement, and the
+Duplicates playlist never suggests one over a genuine lossless copy.
 
 `ACOUSTID_SUBMIT` sends answers back. When someone Keeps a track from Review that AcoustID had
 never heard or was not sure of, Octo submits its fingerprint with the MusicBrainz recording it

@@ -351,6 +351,14 @@ Subsonic auth triplet per user in memory** for as long as it runs. And because n
 for confirmation before setting a star, a mis-tap is a request. The playlists carry no such
 risk, which is why they are the default.
 
+An app can also remove a song directly, without a playlist or a rating, through the
+`octoLibraryActions` extension, which is only listed while library actions are on.
+`getLibraryActions` tells the caller whether actions are on, whether they are on the allowlist,
+whether it is a dry run, and how many days a removed file is kept. `libraryAction` with an `id`
+and `action=remove` does exactly what the Delete playlist does, with the same allowlist, dry run
+and quarantine, as the user whose credentials it carries, and answers with what happened. The
+Delete action has to be on for it to do anything. Both always answer in JSON.
+
 `LIBRARY_ACTIONS_REVIEW` gives each allowed user a Review playlist, where Octo asks about the
 downloads a person can settle by listening: AcoustID had never heard the recording, was not
 sure of it, or heard a different one in a YouTube download. A download is asked about in the
@@ -529,7 +537,8 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `getTranscodeDecision` | OpenSubsonic — return direct-play for Octo IDs |
 | `getLyricsBySongId`, `getLyrics` | lyrics for outside songs and for library songs Navidrome has none for; chosen or hidden lyrics for every client; word cues with `enhanced=true` |
 | `getLyricsCandidates`, `setLyricsChoice` | the `octoLyrics` extension: every lyrics entry for a song, and pinning one, hiding lyrics, or going back to automatic |
-| `getOpenSubsonicExtensions` | Navidrome's list plus `octoAcquisitions`, `octoLyrics` (while lyrics lookups are on) and `songLyrics` 1 and 2 |
+| `getLibraryActions`, `libraryAction` | the `octoLibraryActions` extension: what the caller may do to library files, and removing one song the way the Delete playlist does |
+| `getOpenSubsonicExtensions` | Navidrome's list plus `octoAcquisitions`, `octoLyrics` (while lyrics lookups are on), `octoLibraryActions` (while library actions are on) and `songLyrics` 1 and 2 |
 
 ### Soulseek download details
 

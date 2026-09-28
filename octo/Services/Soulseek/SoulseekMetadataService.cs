@@ -715,6 +715,11 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// <summary>How long an artist's page waits for its albums' track counts.</summary>
     private static readonly TimeSpan TrackCountWait = TimeSpan.FromSeconds(2);
 
+    /// <summary>How many unknown track counts one visit to an artist's page asks for, and how
+    /// many at once: gentle on the catalog's quota, which search and playback share.</summary>
+    private const int TrackCountsPerVisit = 20;
+    private const int TrackCountsAtOnce = 4;
+
     /// <summary>
     /// An outside artist's releases, for their page and for filling out a library artist's
     /// page. Each album is registered the way album search registers one, so it opens, plays
@@ -733,21 +738,37 @@ public class SoulseekMetadataService : IMusicMetadataService
 
         var releases = await _deezer.GetArtistAlbumsAsync(artist.DeezerId, name);
 
-        // The listing carries no track counts. Each album's own record has one: ask for them
-        // all at once and wait a moment. What arrives in time is shown; the rest stay cached
-        // for the next visit, so a page is never held up by a long career.
-        var counts = releases
-            .Select(release => release.TrackCount > 0
-                ? Task.FromResult<int?>(release.TrackCount)
-                : _deezer.AlbumTrackCountAsync(release.DeezerId))
-            .ToList();
-        await Task.WhenAny(Task.WhenAll(counts), Task.Delay(TrackCountWait));
+        // The listing carries no track counts. Each album's own record has one. Counts already
+        // known cost nothing; of the rest, the newest few are asked a few at a time, and the
+        // page waits a moment for them. What arrives in time is shown and the rest are kept for
+        // the next visit, so a long career fills in over a visit or two without flooding the
+        // catalog's quota.
+        var counts = new int?[releases.Count];
+        var lookups = new List<Task>();
+        // Not disposed: lookups still waiting when the page answers keep using it.
+        var gate = new SemaphoreSlim(TrackCountsAtOnce);
+        for (var i = 0; i < releases.Count; i++)
+        {
+            var release = releases[i];
+            if (release.TrackCount > 0) counts[i] = release.TrackCount;
+            else if (_deezer.TryKnownTrackCount(release.DeezerId, out var known)) counts[i] = known;
+            else if (lookups.Count < TrackCountsPerVisit) lookups.Add(FillCount(i, release.DeezerId));
+        }
+        if (lookups.Count > 0) await Task.WhenAny(Task.WhenAll(lookups), Task.Delay(TrackCountWait));
+        var shown = (int?[])counts.Clone();
+
+        async Task FillCount(int index, string deezerId)
+        {
+            await gate.WaitAsync();
+            try { counts[index] = await _deezer.AlbumTrackCountAsync(deezerId); }
+            finally { gate.Release(); }
+        }
 
         var albums = new List<Album>(releases.Count);
         for (var i = 0; i < releases.Count; i++)
         {
             var release = releases[i];
-            var count = counts[i].IsCompletedSuccessfully ? counts[i].Result : null;
+            var count = shown[i];
             var albumId = _idRegistry.Register(new SoulseekRouting
             {
                 Kind = RoutingKind.Album,

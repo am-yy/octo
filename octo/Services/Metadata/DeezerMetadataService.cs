@@ -510,6 +510,9 @@ public class DeezerMetadataService : IDisposable
         return hits;
     }
 
+    /// <summary>A track count already known for an album, without asking the catalog.</summary>
+    public bool TryKnownTrackCount(string deezerId, out int? count) => TryGetCached($"tc|{deezerId}", out count);
+
     /// <summary>How many releases an artist's page asks for: the catalog's page size, enough for
     /// all but the longest careers.</summary>
     private const int ArtistAlbumsLimit = 100;
@@ -517,8 +520,9 @@ public class DeezerMetadataService : IDisposable
     /// <summary>
     /// How many tracks a catalog album has, from the album's own record, or null when it cannot
     /// be told. An artist's listing leaves the count out, and a page showing "0 songs" on every
-    /// album reads as empty albums (some clients hide them). Asked in the limiter's background
-    /// lane, so a page of forty albums never holds up a lookup a listener is waiting on.
+    /// album reads as empty albums (some clients hide them). Asked in the interactive lane:
+    /// someone is looking at the page, and the background lane is kept full by cache warming,
+    /// which turned every one of these away. The caller keeps the number asked small.
     /// </summary>
     public async Task<int?> AlbumTrackCountAsync(string deezerId, CancellationToken ct = default)
     {
@@ -526,7 +530,7 @@ public class DeezerMetadataService : IDisposable
         if (TryGetCached<int?>(key, out var cached)) return cached;
         try
         {
-            using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", ct, background: true);
+            using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", ct);
             if (r.Transient) return null;
             var count = r.Doc is null ? null : Int(r.Doc.RootElement, "nb_tracks");
             Put(key, count, count is null ? NegativeTtl : PositiveTtl);

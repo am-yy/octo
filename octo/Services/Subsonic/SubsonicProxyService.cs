@@ -1,6 +1,9 @@
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using Octo.Models.Settings;
+using System.Text;
 
 namespace Octo.Services.Subsonic;
 
@@ -51,8 +54,7 @@ public class SubsonicProxyService
                 "from the Octo container, not localhost.");
         }
 
-        var query = string.Join("&", parameters.Select(kv =>
-            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+        var query = await BuildQueryAsync(parameters, bodyForwarded: false);
         var url = $"{_subsonicSettings.Url.TrimEnd('/')}/{endpoint}?{query}";
 
         HttpResponseMessage response = await _httpClient.GetAsync(url);
@@ -106,21 +108,21 @@ public class SubsonicProxyService
                 "from the Octo container, not localhost.");
         }
 
-        var query = string.Join("&", parameters.Select(kv =>
-            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
-        var url = $"{_subsonicSettings.Url.TrimEnd('/')}/{endpoint}?{query}";
-
         var ctx = _httpContextAccessor.HttpContext;
         var incoming = ctx?.Request;
         var method = incoming?.Method ?? "GET";
+        var rawBody = ctx?.Items.TryGetValue("Octo.RawBody", out var rb) == true
+            && rb is byte[] bytes && bytes.Length > 0 ? bytes : null;
+
+        var query = await BuildQueryAsync(parameters, bodyForwarded: rawBody != null);
+        var url = $"{_subsonicSettings.Url.TrimEnd('/')}/{endpoint}?{query}";
         using var req = new HttpRequestMessage(new HttpMethod(method), url);
 
         // Forward the raw request body captured by the middleware (the live body
         // stream is already closed by parameter extraction at this point).
-        if (ctx?.Items.TryGetValue("Octo.RawBody", out var rb) == true
-            && rb is byte[] bytes && bytes.Length > 0)
+        if (rawBody != null)
         {
-            req.Content = new ByteArrayContent(bytes);
+            req.Content = new ByteArrayContent(rawBody);
             if (!string.IsNullOrEmpty(incoming?.ContentType))
                 req.Content.Headers.TryAddWithoutValidation("Content-Type", incoming.ContentType);
         }
@@ -146,6 +148,89 @@ public class SubsonicProxyService
 
         return new RawRelayResult((int)response.StatusCode, body,
             response.Content.Headers.ContentType?.ToString(), respHeaders);
+    }
+
+    /// <summary>Builds the upstream query string from the lookup dictionary and the
+    /// client's own request.</summary>
+    private async Task<string> BuildQueryAsync(
+        IEnumerable<KeyValuePair<string, string>> parameters, bool bodyForwarded)
+    {
+        var incoming = _httpContextAccessor.HttpContext?.Request;
+        var form = incoming is null ? null : await ReadFormAsync(incoming);
+        // Navidrome reads a url-encoded body, not a multipart one, so only the first can
+        // carry the fields for the query.
+        var urlEncoded = incoming?.ContentType?.StartsWith("application/x-www-form-urlencoded",
+            StringComparison.OrdinalIgnoreCase) == true;
+        var pairs = RestoreRepeatedParameters(parameters, incoming?.Query, form,
+            formInBody: bodyForwarded && urlEncoded && form is not null);
+        return string.Join("&", pairs.Select(kv =>
+            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+    }
+
+    /// <summary>
+    /// The parameter dictionary holds a repeated key as one comma-joined string
+    /// (<c>id=A&amp;id=B</c> reads "A,B"), and Navidrome takes that as ONE id. A value
+    /// that is still exactly what the client sent goes out as the client's separate
+    /// values again, in order; a value a handler changed or added goes out as it is.
+    /// With <paramref name="formInBody"/>, an unchanged form field is left out of the
+    /// query, because the forwarded body already carries it and Navidrome reads both.
+    /// </summary>
+    internal static List<KeyValuePair<string, string>> RestoreRepeatedParameters(
+        IEnumerable<KeyValuePair<string, string>> parameters,
+        IEnumerable<KeyValuePair<string, StringValues>>? query,
+        IEnumerable<KeyValuePair<string, StringValues>>? form,
+        bool formInBody)
+    {
+        var queryValues = ToLookup(query);
+        var formValues = ToLookup(form);
+        var result = new List<KeyValuePair<string, string>>();
+        foreach (var (key, value) in parameters)
+        {
+            if (formValues.TryGetValue(key, out var sent) && Unchanged(value, sent))
+            {
+                if (!formInBody) result.AddRange(sent.Select(v => new KeyValuePair<string, string>(key, v ?? "")));
+                continue;
+            }
+            if (queryValues.TryGetValue(key, out sent) && Unchanged(value, sent))
+            {
+                result.AddRange(sent.Select(v => new KeyValuePair<string, string>(key, v ?? "")));
+                continue;
+            }
+            result.Add(new(key, value));
+        }
+        return result;
+
+        static bool Unchanged(string value, StringValues sent) =>
+            sent.Count > 0 && string.Equals(value, sent.ToString(), StringComparison.Ordinal);
+
+        static Dictionary<string, StringValues> ToLookup(
+            IEnumerable<KeyValuePair<string, StringValues>>? source)
+        {
+            var lookup = new Dictionary<string, StringValues>();
+            if (source is null) return lookup;
+            foreach (var (key, values) in source) lookup[key] = values;
+            return lookup;
+        }
+    }
+
+    /// <summary>The client's form fields, or null when the request carries none.</summary>
+    private static async Task<IEnumerable<KeyValuePair<string, StringValues>>?> ReadFormAsync(
+        HttpRequest request)
+    {
+        if (!request.HasFormContentType) return null;
+        try
+        {
+            // Parameter extraction already read the form, so this returns the cached copy.
+            return await request.ReadFormAsync();
+        }
+        catch
+        {
+            // Same fallback as the request parser: read the captured body by hand.
+            if (request.HttpContext.Items.TryGetValue("Octo.RawBody", out var rb)
+                && rb is byte[] bytes && bytes.Length > 0)
+                return QueryHelpers.ParseQuery(Encoding.UTF8.GetString(bytes));
+            return null;
+        }
     }
 
     /// <summary>
@@ -197,8 +282,7 @@ public class SubsonicProxyService
             var incomingRequest = httpContext.Request;
             var outgoingResponse = httpContext.Response;
 
-            var query = string.Join("&", parameters.Select(kv => 
-                $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+            var query = await BuildQueryAsync(parameters, bodyForwarded: false);
             var url = $"{_subsonicSettings.Url}/rest/stream?{query}";
             
             using var request = new HttpRequestMessage(HttpMethod.Get, url);

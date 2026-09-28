@@ -9,8 +9,9 @@ namespace Octo.Services.Subsonic;
 /// </summary>
 public class SubsonicRequestParser
 {
-    /// <summary>Reads every occurrence of a parameter without changing the legacy
-    /// dictionary parser, whose comma-joined behavior is relied on by relays.</summary>
+    /// <summary>Reads every occurrence of a parameter. The dictionary parser below joins a
+    /// repeated key into one comma-separated value for lookups; the relay sends the
+    /// separate values upstream again (SubsonicProxyService.RestoreRepeatedParameters).</summary>
     public async Task<IReadOnlyList<string>> ExtractParameterValuesAsync(HttpRequest request,
         string name, CancellationToken cancellationToken = default)
     {

@@ -252,4 +252,58 @@ public class SongIdentityTests
         Assert.Equal(SongIdentity.MatchKey("Kanye West", "Stronger"), SongIdentity.MatchKey("Ye (侃爷)", "Stronger (Explicit)"));
         Assert.NotEqual(SongIdentity.MatchKey("Radiohead", "Creep"), SongIdentity.MatchKey("Radiohead", "Creep (Live)"));
     }
+
+    // ---- ISRCs ------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("USRC17607839", "USRC17607839")]
+    [InlineData("us-rc1-76-07839", "USRC17607839")]
+    [InlineData(" US RC1 76 07839 ", "USRC17607839")]
+    [InlineData("US.RC1.76.07839", "USRC17607839")]
+    [InlineData("ＵＳＲＣ１７６０７８３９", "USRC17607839")]
+    [InlineData("GBAHT1600302", "GBAHT1600302")]
+    [InlineData("USRC1760783", null)]
+    [InlineData("USRC176078390", null)]
+    [InlineData("1SRC17607839", null)]
+    [InlineData("USRC1760783X", null)]
+    [InlineData("US_RC17607839", null)]
+    [InlineData("ISRC: USRC17607839", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void NormalizeIsrc_OneSpellingOrAbsent(string? value, string? expected) =>
+        Assert.Equal(expected, SongIdentity.NormalizeIsrc(value));
+
+    [Fact]
+    public void SharesIsrc_NeedsAValidCodeOnBothSides()
+    {
+        Assert.True(SongIdentity.SharesIsrc(["USRC17607839"], ["us-rc1-76-07839"]));
+        Assert.True(SongIdentity.SharesIsrc(["GBAHT1600302", "USRC17607839"], ["USRC17607839"]));
+        Assert.False(SongIdentity.SharesIsrc(["USRC17607839"], ["GBAHT1600302"]));
+        Assert.False(SongIdentity.SharesIsrc(["USRC17607839"], []));
+        Assert.False(SongIdentity.SharesIsrc(null, ["USRC17607839"]));
+        Assert.False(SongIdentity.SharesIsrc(["junk"], ["junk"]));
+    }
+
+    [Fact]
+    public void Same_OneIsrc_IsTheSameRecordingAtFullConfidence()
+    {
+        var match = SongIdentity.Same(
+            new SongRef("紅蓮華", "LiSA") { Isrcs = ["JPU901901234"] },
+            new SongRef("Gurenge", "LiSA") { Isrcs = ["JP-U90-19-01234"] });
+
+        Assert.Equal(SongVerdict.Same, match.Verdict);
+        Assert.Equal(1.0, match.Confidence);
+        Assert.Equal("same ISRC", match.Reason);
+    }
+
+    [Fact]
+    public void Same_DifferentIsrcs_FallBackToTheTextUnchanged()
+    {
+        var withCodes = SongIdentity.Same(
+            new SongRef("Song (Remastered 2011)", "Artist", 200) { Isrcs = ["GBAAA0100001"] },
+            new SongRef("Song", "Artist", 201) { Isrcs = ["GBAAA1100002"] });
+        var without = SongIdentity.Same(new SongRef("Song (Remastered 2011)", "Artist", 200), new SongRef("Song", "Artist", 201));
+
+        Assert.Equal(without, withCodes);
+    }
 }

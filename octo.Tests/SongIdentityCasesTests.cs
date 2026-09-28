@@ -93,7 +93,13 @@ public class SongIdentityCasesTests
 
     private static SongRef Ref(JsonElement side) => new(
         side.GetProperty("title").GetString(), side.GetProperty("artist").GetString(),
-        side.TryGetProperty("seconds", out var seconds) && seconds.ValueKind == JsonValueKind.Number ? seconds.GetDouble() : null);
+        side.TryGetProperty("seconds", out var seconds) && seconds.ValueKind == JsonValueKind.Number ? seconds.GetDouble() : null)
+    {
+        // One ISRC as a string, or several as a list. Absent in every case written before it.
+        Isrcs = side.TryGetProperty("isrc", out var isrc)
+            ? isrc.ValueKind == JsonValueKind.Array ? Strings(isrc) : [isrc.GetString()!]
+            : [],
+    };
 
     private static SongMatchOptions Options(JsonElement item)
     {

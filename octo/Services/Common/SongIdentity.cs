@@ -43,7 +43,12 @@ public sealed record SongMatchOptions
 }
 
 /// <summary>One side of a comparison. Seconds is the length when it is known.</summary>
-public sealed record SongRef(string? Title, string? Artist, double? Seconds = null);
+public sealed record SongRef(string? Title, string? Artist, double? Seconds = null)
+{
+    /// <summary>The ISRCs this side is known by, as a source wrote them: a Deezer track, a
+    /// file's tags, a MusicBrainz recording. Anything that is not a valid ISRC is ignored.</summary>
+    public IReadOnlyList<string?> Isrcs { get; init; } = [];
+}
 
 /// <summary>One query to try against a search API, in the order <see cref="SongIdentity.QueryVariants"/>
 /// gives them. Artist is empty for the title-only query.</summary>
@@ -133,6 +138,10 @@ public enum ArtistAgreement
 /// is kept as a candidate beside its parts, so "Simon &amp; Garfunkel" and "Earth, Wind &amp; Fire"
 /// match themselves however they are split. A small alias table covers renamed artists ("Ye"
 /// for Kanye West), and a bracketed alias in another script ("Ye (侃爷)") is ignored.
+///
+/// An ISRC on both sides settles it before any of that: one ISRC is one recording, whatever
+/// script or language its title is written in. Two different ISRCs settle nothing, because a
+/// re-release or a remaster is often given a new code for the same audio.
 ///
 /// The same rules, and a shared list of cases, live in the Octo app; docs/song-identity-cases.json
 /// is the contract both run.
@@ -799,6 +808,42 @@ public static class SongIdentity
             || Keys([candidate.Display], true).Overlaps(Keys(credit.All, true));
     }
 
+    // ---- ISRCs --------------------------------------------------------------------------
+
+    /// <summary>Two letters of country, three of registrant, two digits of year, five of designation.</summary>
+    private static readonly Regex IsrcShape = new(@"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// An ISRC in its one canonical spelling, or null when the value is not one. Sources write
+    /// them "USRC17607839", "US-RC1-76-07839", "us rc1 76 07839" and with dots; all of those are
+    /// one code. Anything that is still not twelve characters of the right shape once the
+    /// separators are gone is treated as absent, never as a code that matches nothing.
+    /// </summary>
+    public static string? NormalizeIsrc(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var text = value.Normalize(NormalizationForm.FormKC);
+        var sb = new StringBuilder(12);
+        foreach (var ch in text)
+        {
+            if (ch is '-' or '.' || char.IsWhiteSpace(ch)) continue;
+            sb.Append(char.ToUpperInvariant(ch));
+        }
+        var isrc = sb.ToString();
+        return IsrcShape.IsMatch(isrc) ? isrc : null;
+    }
+
+    /// <summary>Every valid ISRC among the values, normalised.</summary>
+    public static IReadOnlySet<string> Isrcs(IEnumerable<string?>? values) =>
+        (values ?? []).Select(NormalizeIsrc).OfType<string>().ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>Both sides carry a valid ISRC and at least one is on both.</summary>
+    public static bool SharesIsrc(IEnumerable<string?>? a, IEnumerable<string?>? b)
+    {
+        var left = Isrcs(a);
+        return left.Count > 0 && Isrcs(b).Overlaps(left);
+    }
+
     // ---- comparing ----------------------------------------------------------------------
 
     private static readonly Regex Digits = new(@"\d+", RegexOptions.Compiled);
@@ -889,9 +934,14 @@ public static class SongIdentity
         versions.Count == 0 ? "the original" : string.Join(" + ", versions.Order(StringComparer.Ordinal));
 
     /// <summary>Whether two songs are the same recording. Both artists must be known: a title
-    /// alone is not an identity.</summary>
+    /// alone is not an identity, unless both sides share an ISRC, which is.</summary>
     public static SongMatch Same(SongRef a, SongRef b, SongMatchOptions? options = null)
     {
+        // First, and above the text: a romanised title and the same title in its own script
+        // share no letter, and one ISRC still says they are one recording. Different ISRCs fall
+        // through to the text, since a re-release can carry a new code for the same audio.
+        if (SharesIsrc(a.Isrcs, b.Isrcs)) return new(SongVerdict.Same, 1.0, "same ISRC");
+
         options ??= SongMatchOptions.Default;
         var titleA = ParseTitle(a.Title, a.Artist ?? "");
         var titleB = ParseTitle(b.Title, b.Artist ?? "");

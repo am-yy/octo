@@ -19,7 +19,7 @@ namespace Octo.Tests;
 /// </summary>
 public sealed class LogRedactionTests
 {
-    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "T", "APIKEY", "Token", "sk", "api_sig" };
+    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "api_key", "client", "sk", "api_sig", "T", "APIKEY", "Token", "API_KEY", "Client" };
 
     /// <summary>Everything a sink would be handed: the message, every structured value and every
     /// scope, with the scope's own values too, since the JSON formatter writes all of them.</summary>
@@ -232,10 +232,12 @@ public sealed class LogRedactionTests
     [InlineData("/rest/ping?u=a&t=abc&s=def", "/rest/ping?u=a&t=***&s=***")]
     [InlineData("?p=enc:6162&u=a", "?p=***&u=a")]
     [InlineData("?apikey=K1&Token=K2#top", "?apikey=***&Token=***#top")]
+    [InlineData("/2.0/?method=track.search&api_key=K1&format=json", "/2.0/?method=track.search&api_key=***&format=json")]
+    [InlineData("v2/lookup?client=K1&meta=recordings", "v2/lookup?client=***&meta=recordings")]
     [InlineData("GET /rest/x?t=abc - 200", "GET /rest/x?t=*** - 200")]
     [InlineData("<a href='/rest/x?u=a&amp;t=abc'>", "<a href='/rest/x?u=a&amp;t=***'>")]
     // Names that only start or end like a secret, and empty values, are left alone.
-    [InlineData("?ts=1&st=2&sort=3&apiKeyId=4&tokens=5", "?ts=1&st=2&sort=3&apiKeyId=4&tokens=5")]
+    [InlineData("?ts=1&st=2&sort=3&apiKeyId=4&tokens=5&clientId=6&api_keys=7&c=Octo", "?ts=1&st=2&sort=3&apiKeyId=4&tokens=5&clientId=6&api_keys=7&c=Octo")]
     [InlineData("?t=&s=", "?t=&s=")]
     [InlineData("no query here, t=abc", "no query here, t=abc")]
     public void Redact_MasksOnlySecretValues(string text, string expected) =>

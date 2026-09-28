@@ -14,7 +14,8 @@ using Octo.Middleware;
 var builder = WebApplication.CreateBuilder(args);
 
 // Subsonic clients sign in through the query string, and ASP.NET writes every request URL
-// to the log. This masks t, s, p, apiKey and token in every line, whatever the log level.
+// to the log. This masks t, s, p, apiKey, token, api_key and client in every line, whatever
+// the log level.
 builder.Logging.AddCredentialRedaction();
 
 // Editable settings file: anything users change in the admin UI is persisted

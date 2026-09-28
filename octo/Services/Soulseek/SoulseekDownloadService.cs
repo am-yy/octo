@@ -89,6 +89,7 @@ public class SoulseekDownloadService : BaseDownloadService
             Track = track.Track,
             DiscNumber = track.DiscNumber,
             TotalTracks = track.TotalTracks,
+            Isrc = track.Isrc,
         });
     }
 
@@ -262,7 +263,7 @@ public class SoulseekDownloadService : BaseDownloadService
         // disagreement is something to ask a person about (the Review playlist), never a reason
         // to throw the song away.
         Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Verifying));
-        var verdict = await _verification.VerifyAsync(path, routing.Artist, routing.Title);
+        var verdict = await _verification.VerifyAsync(path, routing.Artist, routing.Title, song.Isrc ?? routing.Isrc);
         if (verdict.Verdict == Octo.Services.Fingerprint.VerificationVerdict.Mismatch)
         {
             if (verdict.Match is null && string.IsNullOrEmpty(verdict.MatchedTitle))
@@ -499,7 +500,7 @@ public class SoulseekDownloadService : BaseDownloadService
                 // Second on purpose. The check above reads a TagLib header; this one spawns a
                 // process and makes a network call, and neither is worth spending on a file
                 // already known to be wrong.
-                var verdict = await _verification.VerifyAsync(localPath, routing.Artist, routing.Title);
+                var verdict = await _verification.VerifyAsync(localPath, routing.Artist, routing.Title, song.Isrc ?? routing.Isrc);
                 if (verdict.Verdict == Octo.Services.Fingerprint.VerificationVerdict.Mismatch)
                 {
                     Logger.LogWarning(

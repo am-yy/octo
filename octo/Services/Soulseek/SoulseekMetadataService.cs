@@ -573,6 +573,7 @@ public class SoulseekMetadataService : IMusicMetadataService
             DiscNumber = routing.DiscNumber,
             TotalTracks = routing.TotalTracks,
             Duration = routing.Duration,
+            Isrc = routing.Isrc,
             IsLocal = false,
             ExternalProvider = ProviderName,
             ExternalId = externalId
@@ -663,6 +664,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Track = track.TrackPosition,
                 DiscNumber = track.DiscNumber,
                 TotalTracks = detail.Tracks.Count,
+                Isrc = track.Isrc,
             });
 
             album.Songs.Add(new Song
@@ -814,6 +816,12 @@ public class SoulseekRouting
     /// "x of y" denominator from a per-track Deezer search that can match a different
     /// release, producing nonsense like 5/10 on an 8-track album.</summary>
     public int? TotalTracks { get; set; }
+
+    /// <summary>The track's ISRC, when the album listing that minted this routing named one.
+    /// Carried for the same reason as <see cref="Track"/>, and because it is the strongest
+    /// evidence download verification can be given about which recording was asked for.
+    /// Not part of the id, so routings minted before it existed keep their ids.</summary>
+    public string? Isrc { get; set; }
 
     /// <summary>The length shown for this song once a lookup found one, kept here so every
     /// later response carries it, across restarts too. Display only: see

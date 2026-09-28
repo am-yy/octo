@@ -49,6 +49,9 @@ public class ExternalIdRegistry : IDisposable
                 routing.ShownDuration = seconds;
                 routing.ShownDurationSource = source;
             }
+            // The same for the ISRC an album listing found: a search row for the same song
+            // names none, and must not forget it.
+            routing.Isrc ??= previous.Isrc;
         }
 
         _byId[id] = routing;

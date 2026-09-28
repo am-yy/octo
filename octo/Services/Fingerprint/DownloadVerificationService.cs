@@ -7,7 +7,8 @@ namespace Octo.Services.Fingerprint;
 
 public enum VerificationVerdict
 {
-    /// <summary>AcoustID identified the file as the track that was asked for.</summary>
+    /// <summary>AcoustID identified the file as the track that was asked for, or the ISRC that
+    /// was asked for is on the file's tags or on the recording AcoustID named.</summary>
     Confirmed,
 
     /// <summary>
@@ -70,6 +71,13 @@ public sealed record VerificationResult
     /// when there were none or more than one.
     /// </summary>
     public string? CandidateRecordingId { get; init; }
+
+    /// <summary>
+    /// What confirmed or kept the file when it was not the fingerprint's title and artist alone,
+    /// in words for the log: an ISRC in the file's tags, or one on the MusicBrainz recording the
+    /// fingerprint named. Null otherwise.
+    /// </summary>
+    public string? Evidence { get; init; }
 
     public bool NeedsReview => Verdict == VerificationVerdict.Inconclusive
         && Reason is InconclusiveReason.NoEntry or InconclusiveReason.BelowThreshold
@@ -147,18 +155,26 @@ public sealed record VerificationResult
 /// </summary>
 public sealed class DownloadVerificationService
 {
+    /// <summary>How many of the recordings a fingerprint named are asked for their ISRCs. Each is
+    /// a MusicBrainz call a second apart, spent only when the request carried an ISRC and the
+    /// recordings' names disagreed with it.</summary>
+    internal const int MaxIsrcLookups = 3;
+
     private readonly AudioFingerprinter _fingerprinter;
     private readonly AcoustIdClient _client;
     private readonly IOptionsMonitor<SoulseekSettings> _options;
     private readonly ILogger<DownloadVerificationService> _logger;
+    private readonly MusicBrainzClient? _musicBrainz;
 
     public DownloadVerificationService(AudioFingerprinter fingerprinter, AcoustIdClient client,
-        IOptionsMonitor<SoulseekSettings> options, ILogger<DownloadVerificationService> logger)
+        IOptionsMonitor<SoulseekSettings> options, ILogger<DownloadVerificationService> logger,
+        MusicBrainzClient? musicBrainz = null)
     {
         _fingerprinter = fingerprinter;
         _client = client;
         _options = options;
         _logger = logger;
+        _musicBrainz = musicBrainz;
     }
 
     /// <summary>AcoustID can answer at all.</summary>
@@ -182,10 +198,58 @@ public sealed class DownloadVerificationService
     /// No CancellationToken parameter, deliberately. There must be no way for a caller who
     /// has already given up to skip verification on a file that is about to enter the library.
     /// </summary>
-    public async Task<VerificationResult> VerifyAsync(string path, string? requestedArtist, string? requestedTitle)
+    public async Task<VerificationResult> VerifyAsync(string path, string? requestedArtist, string? requestedTitle,
+        string? requestedIsrc = null)
     {
-        if (!IsFingerprintingEnabled) return VerificationResult.Inconclusive;
+        if (!RemembersRejections) return VerificationResult.Inconclusive;
 
+        // What the file's own tags say it is, when the request named an ISRC to hold them to.
+        // A header read, and it needs no API key: with no key it is the only question asked.
+        var isrc = SongIdentity.NormalizeIsrc(requestedIsrc);
+        var tagged = isrc is null ? [] : ReadIsrcs(path);
+        var taggedMatch = isrc is not null && tagged.Contains(isrc);
+
+        var verdict = HasApiKey
+            ? await IdentifyAsync(path, requestedArtist, requestedTitle, isrc, taggedMatch)
+            : VerificationResult.Inconclusive;
+
+        verdict = WithTaggedIsrc(verdict, isrc, taggedMatch);
+        if (verdict.Verdict == VerificationVerdict.Confirmed && verdict.Evidence is { } evidence)
+            _logger.LogInformation("confirmed '{Artist} - {Title}' by ISRC {Isrc}: {Evidence}",
+                requestedArtist, requestedTitle, isrc, evidence);
+        else if (isrc is not null && tagged.Count > 0 && !taggedMatch)
+            // Not a rejection: a re-release or a remaster is often given a new code.
+            _logger.LogInformation("the file for '{Artist} - {Title}' is tagged ISRC {Tagged}, not the {Isrc} asked for; "
+                + "that alone decides nothing", requestedArtist, requestedTitle, string.Join(", ", tagged), isrc);
+        return verdict;
+    }
+
+    /// <summary>
+    /// A file whose own tags carry the ISRC that was asked for is that recording, when nothing
+    /// better could be established: AcoustID off, down, without an entry or below the
+    /// threshold. A confident fingerprint of something else is not overruled by a tag, since
+    /// tags are copied and audio is not, and neither is a fingerprint that named a recording
+    /// whose ISRCs were not found (that one goes to a person).
+    /// </summary>
+    internal static VerificationResult WithTaggedIsrc(VerificationResult verdict, string? isrc, bool taggedMatch)
+    {
+        if (!taggedMatch || verdict.Verdict != VerificationVerdict.Inconclusive
+            || verdict.Reason == InconclusiveReason.SourceDisagreed) return verdict;
+        return verdict with
+        {
+            Verdict = VerificationVerdict.Confirmed,
+            Reason = InconclusiveReason.None,
+            Evidence = $"the file's own tags carry the requested ISRC {isrc}",
+        };
+    }
+
+    /// <summary>
+    /// The fingerprint and the AcoustID lookup, and the ISRC check of the recordings it named.
+    /// The question VerifyAsync asked alone before ISRCs were evidence.
+    /// </summary>
+    private async Task<VerificationResult> IdentifyAsync(string path, string? requestedArtist, string? requestedTitle,
+        string? isrc, bool taggedMatch)
+    {
         var settings = _options.CurrentValue;
         var fingerprint = await _fingerprinter.FingerprintAsync(path,
             settings.EffectiveFingerprintSeconds, settings.EffectiveFingerprintTimeoutSeconds);
@@ -241,21 +305,104 @@ public sealed class DownloadVerificationService
             DurationSeconds = seconds,
         };
 
+        // A recording whose name reads differently from the request may still be it: a title in
+        // its own script, or translated. Its ISRCs settle that when the request carried one.
+        if (verdict.Verdict == VerificationVerdict.Mismatch && isrc is not null && _musicBrainz is not null)
+        {
+            var recordingIsrcs = await RecordingIsrcsAsync(lookup, settings.EffectiveMinScoreFraction,
+                settings.EffectiveAcoustIdTimeoutSeconds);
+            verdict = SettleByIsrc(verdict, lookup, settings.EffectiveMinScoreFraction,
+                settings.TagFromMusicBrainz || settings.NameFromMatch, isrc, recordingIsrcs, taggedMatch);
+        }
+
         // A confirmation is logged too, not just a refusal. The dominant risk in this feature is
         // that a broken key, a missing binary or a mangled request makes it accept everything
         // while looking healthy, and silence on success is indistinguishable from never running.
-        if (verdict.Verdict == VerificationVerdict.Confirmed)
+        if (verdict.Verdict == VerificationVerdict.Confirmed && verdict.Evidence is null)
             _logger.LogInformation(
                 "acoustid confirmed '{Artist} - {Title}' at {Score:P0}{Album}",
                 requestedArtist, requestedTitle, verdict.Score,
                 string.IsNullOrEmpty(verdict.MatchedAlbum) ? "" : $" from '{verdict.MatchedAlbum}'");
 
-        if (verdict.Verdict == VerificationVerdict.Inconclusive)
+        if (verdict.Verdict == VerificationVerdict.Inconclusive && verdict.Reason == InconclusiveReason.SourceDisagreed)
+            _logger.LogInformation(
+                "acoustid names {Actual} for '{Artist} - {Title}', but {Evidence}; keeping the file and asking about it",
+                verdict.Describe(), requestedArtist, requestedTitle, verdict.Evidence);
+        else if (verdict.Verdict == VerificationVerdict.Inconclusive)
             _logger.LogInformation(
                 "acoustid's best match for '{Artist} - {Title}' scored {Best:P0} against a {Threshold:P0} "
                 + "threshold, so it decides nothing and the file is kept",
                 requestedArtist, requestedTitle,
                 lookup.Results.Max(result => result.Score), settings.EffectiveMinScoreFraction);
+
+        return verdict;
+    }
+
+    /// <summary>
+    /// The ISRCs MusicBrainz lists for the first few recordings of the best qualifying result, by
+    /// recording id. A recording that could not be asked is left out; one asked that lists none
+    /// is present with an empty list. Bounded by one timeout for all of them.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> RecordingIsrcsAsync(
+        AcoustIdLookup lookup, double threshold, int timeoutSeconds)
+    {
+        var found = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        if (BestQualifying(lookup, threshold) is not { } best) return found;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds + 2 * MaxIsrcLookups));
+        try
+        {
+            foreach (var recording in best.Recordings.Where(recording => recording.RecordingId.Length > 0)
+                         .DistinctBy(recording => recording.RecordingId).Take(MaxIsrcLookups))
+                if (await _musicBrainz!.FetchIsrcsAsync(recording.RecordingId, cts.Token) is { } isrcs)
+                    found[recording.RecordingId] = isrcs;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("musicbrainz took too long to list ISRCs; deciding on what it answered");
+        }
+        return found;
+    }
+
+    private static AcoustIdResult? BestQualifying(AcoustIdLookup lookup, double threshold) =>
+        lookup.Results
+            .Where(result => result.Score >= threshold && result.Recordings.Count > 0)
+            .OrderByDescending(result => result.Score)
+            .FirstOrDefault();
+
+    /// <summary>
+    /// A fingerprint named recordings whose titles and artists read differently from the
+    /// request, and the request carried an ISRC. One of those recordings listing that ISRC makes
+    /// it the recording asked for, whatever its name. None of them listing any ISRC at all,
+    /// while the file's own tags carry the requested one, is a disagreement between two
+    /// sources a person can settle, so the file is kept and asked about rather than deleted.
+    /// Recordings that list other ISRCs change nothing: the verdict stays as it was.
+    /// </summary>
+    internal static VerificationResult SettleByIsrc(VerificationResult verdict, AcoustIdLookup lookup,
+        double threshold, bool tagsAuthoritative, string isrc,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> recordingIsrcs, bool taggedMatch)
+    {
+        if (verdict.Verdict != VerificationVerdict.Mismatch || BestQualifying(lookup, threshold) is not { } best)
+            return verdict;
+
+        var agreed = best.Recordings.FirstOrDefault(recording =>
+            recordingIsrcs.TryGetValue(recording.RecordingId, out var isrcs) && isrcs.Contains(isrc));
+        if (agreed is not null)
+            return Confirm(best.Score, agreed, tagsAuthoritative) with
+            {
+                Fingerprint = verdict.Fingerprint,
+                DurationSeconds = verdict.DurationSeconds,
+                Evidence = $"MusicBrainz lists the requested ISRC {isrc} on '{agreed.ArtistCredit} - {agreed.Title}'",
+            };
+
+        if (taggedMatch && recordingIsrcs.Count > 0 && recordingIsrcs.Values.All(isrcs => isrcs.Count == 0))
+            return verdict with
+            {
+                Verdict = VerificationVerdict.Inconclusive,
+                Reason = InconclusiveReason.SourceDisagreed,
+                DenyReason = "",
+                Evidence = $"the file's own tags carry the requested ISRC {isrc} and MusicBrainz lists none to contradict it",
+            };
 
         return verdict;
     }
@@ -296,19 +443,7 @@ public sealed class DownloadVerificationService
             TrackMatchComparer.TitleMatches(requestedTitle, recording.Title)
             && TrackMatchComparer.ArtistMatches(requestedArtist, recording.ArtistCredit, recording.Artists));
 
-        if (agreed is not null)
-            return new VerificationResult
-            {
-                Verdict = VerificationVerdict.Confirmed,
-                Score = best.Score,
-                MatchedTitle = agreed.Title,
-                MatchedArtist = agreed.ArtistCredit,
-                MatchedAlbum = agreed.AlbumTitle,
-                MatchedYear = agreed.Year,
-                RecordingId = agreed.RecordingId,
-                TagsAuthoritative = tagsAuthoritative,
-                Match = agreed,
-            };
+        if (agreed is not null) return Confirm(best.Score, agreed, tagsAuthoritative);
 
         var actual = best.Recordings[0];
         return new VerificationResult
@@ -322,6 +457,45 @@ public sealed class DownloadVerificationService
             RecordingId = actual.RecordingId,
             DenyReason = $"is '{actual.ArtistCredit} - {actual.Title}'",
         };
+    }
+
+    private static VerificationResult Confirm(double score, AcoustIdRecording recording, bool tagsAuthoritative) => new()
+    {
+        Verdict = VerificationVerdict.Confirmed,
+        Score = score,
+        MatchedTitle = recording.Title,
+        MatchedArtist = recording.ArtistCredit,
+        MatchedAlbum = recording.AlbumTitle,
+        MatchedYear = recording.Year,
+        RecordingId = recording.RecordingId,
+        TagsAuthoritative = tagsAuthoritative,
+        Match = recording,
+    };
+
+    /// <summary>
+    /// Every valid ISRC the file's tags carry: ID3's TSRC, a Vorbis comment's ISRC and the MP4
+    /// iTunes ISRC atom all come through one TagLib property. ffmpeg, and whatever converted a
+    /// file with it, writes an MP3's ISRC as a user text frame named ISRC instead, so that is
+    /// read too. A tag that holds several joins them, so it is split. Empty when there is none
+    /// or the tags cannot be read.
+    /// </summary>
+    internal static IReadOnlyList<string> ReadIsrcs(string path)
+    {
+        try
+        {
+            using var file = TagLib.File.Create(path);
+            var raw = new List<string?> { file.Tag.ISRC };
+            if (file.GetTag(TagLib.TagTypes.Id3v2) is TagLib.Id3v2.Tag id3
+                && TagLib.Id3v2.UserTextInformationFrame.Get(id3, "ISRC", false) is { } frame)
+                raw.AddRange(frame.Text);
+            return raw.Where(value => !string.IsNullOrWhiteSpace(value))
+                .SelectMany(value => value!.Split([';', ',', '/', '\0'], StringSplitOptions.RemoveEmptyEntries))
+                .Select(SongIdentity.NormalizeIsrc).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     /// <summary>

@@ -71,6 +71,7 @@ public class SubsonicController : ControllerBase
     private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedSettings;
     private readonly AcquisitionTracker? _acquisitionTracker;
     private readonly Octo.Services.Lyrics.LyricsChoiceService? _lyricsChoices;
+    private readonly Octo.Services.Library.LibraryActionExecutor? _libraryActions;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -109,8 +110,10 @@ public class SubsonicController : ControllerBase
         Octo.Services.Library.GeneratedPlaylistService? generatedPlaylists = null,
         IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null,
         AcquisitionTracker? acquisitionTracker = null,
-        Octo.Services.Lyrics.LyricsChoiceService? lyricsChoices = null)
+        Octo.Services.Lyrics.LyricsChoiceService? lyricsChoices = null,
+        Octo.Services.Library.LibraryActionExecutor? libraryActions = null)
     {
+        _libraryActions = libraryActions;
         _acquisitionTracker = acquisitionTracker;
         _lyricsChoices = lyricsChoices;
         _generatedPlaylists = generatedPlaylists;
@@ -2311,6 +2314,66 @@ public class SubsonicController : ControllerBase
         return _responseBuilder.MergeOpenSubsonicExtensions(format,
             relay.Success ? relay.Body : null, relay.ContentType,
             lyricsChoices: _lyricsChoices is not null && _metadataSettings?.CurrentValue.FetchLyrics == true);
+    }
+
+    /// <summary>
+    /// octoLibraryActions v1: what the caller may do to library files from the app, read from the
+    /// settings as they are now. Always JSON. Credentials are checked with a ping to Navidrome, as
+    /// getAcquisitions checks them.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/getLibraryActions")]
+    [Route("rest/getLibraryActions.view")]
+    public async Task<IActionResult> GetLibraryActions()
+    {
+        var parameters = await ExtractAllParameters();
+        if (await CheckCallerAsync(parameters) is { } refused) return refused;
+        return _responseBuilder.CreateLibraryActionsResponse(_libraryActionSettings.CurrentValue,
+            parameters.GetValueOrDefault("u"));
+    }
+
+    /// <summary>
+    /// octoLibraryActions v1: remove one song, exactly as putting it in the Delete action playlist
+    /// does. The executor applies every gate: the master switch, the allowlist, Delete being on,
+    /// the dry run, and a file it can prove is this song, which goes to quarantine.
+    ///
+    /// Never through a rating: where rating actions are on, one star can remove a song, and this
+    /// is how an app removes one without giving it a rating.
+    /// </summary>
+    [HttpGet, HttpPost]
+    [Route("rest/libraryAction")]
+    [Route("rest/libraryAction.view")]
+    public async Task<IActionResult> ApplyLibraryAction()
+    {
+        var parameters = await ExtractAllParameters();
+        const string format = "json";
+        if (await CheckCallerAsync(parameters) is { } refused) return refused;
+
+        var id = parameters.GetValueOrDefault("id", "").Trim();
+        var action = parameters.GetValueOrDefault("action", "").Trim();
+        if (id.Length == 0 || action.Length == 0)
+            return _responseBuilder.CreateError(format, 10, "Required parameter is missing: id and action");
+        if (!action.Equals(SubsonicResponseBuilder.RemoveAction, StringComparison.OrdinalIgnoreCase))
+            return _responseBuilder.CreateError(format, 0, $"Unknown action \"{action}\"; this server knows remove");
+
+        // The name the ping just checked. An API key alone names nobody here, so it cannot be on
+        // the allowlist, and the executor is not asked at all.
+        var username = parameters.GetValueOrDefault("u");
+        if (string.IsNullOrWhiteSpace(username))
+            return _responseBuilder.CreateLibraryActionResponse(id, new Octo.Services.Library.LibraryActionOutcome(
+                Octo.Services.Library.LibraryActionState.Skipped,
+                "Sign in with a username to remove songs; an API key alone does not say who is asking."));
+        if (_libraryActions is null)
+            return _responseBuilder.CreateLibraryActionResponse(id, new Octo.Services.Library.LibraryActionOutcome(
+                Octo.Services.Library.LibraryActionState.Skipped, "Library actions are off."));
+
+        // Not tied to the request: a client that hangs up must not stop a move halfway.
+        var outcome = await _libraryActions.ApplyAsync(
+            new Octo.Services.Library.LibraryActionRequest(LibraryAction.Delete, id, username),
+            CancellationToken.None);
+        _logger.LogInformation("Library action Delete for {Id} by {User} from the app: {State} - {Detail}",
+            id, username, outcome.State, outcome.Detail);
+        return _responseBuilder.CreateLibraryActionResponse(id, outcome);
     }
 
     /// <summary>

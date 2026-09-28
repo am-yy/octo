@@ -181,6 +181,45 @@ public sealed class LibraryActionEndpointTests
         Assert.Empty(factory.Journal.Recent());
     }
 
+    // getOpenSubsonicExtensions
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    public async Task Extensions_ListOctoLibraryActionsOnlyWhileTheyAreOn(string enabled, bool listed)
+    {
+        await using var factory = new LibraryActionWebFactory(new() { ["LibraryActions:Enabled"] = enabled });
+        using var client = factory.CreateClient();
+
+        using var doc = JsonDocument.Parse(await client.GetStringAsync("/rest/getOpenSubsonicExtensions.view?f=json&v=1.16.1&c=octo-android"));
+
+        var extensions = Envelope(doc).GetProperty("openSubsonicExtensions").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("name").GetString()!,
+                e => e.GetProperty("versions").EnumerateArray().Select(v => v.GetInt32()).ToList());
+        Assert.Contains("formPost", extensions.Keys);
+        Assert.Contains("octoAcquisitions", extensions.Keys);
+        if (listed) Assert.Equal([1], extensions["octoLibraryActions"]);
+        else Assert.DoesNotContain("octoLibraryActions", extensions.Keys);
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    public async Task Extensions_ListOctoLibraryActionsOnlyWhileTheyAreOn_InXmlToo(string enabled, bool listed)
+    {
+        await using var factory = new LibraryActionWebFactory(new() { ["LibraryActions:Enabled"] = enabled });
+        using var client = factory.CreateClient();
+
+        var xml = System.Xml.Linq.XDocument.Parse(await client.GetStringAsync("/rest/getOpenSubsonicExtensions?v=1.16.1&c=test"));
+
+        System.Xml.Linq.XNamespace ns = "http://subsonic.org/restapi";
+        var ours = xml.Root!.Elements(ns + "openSubsonicExtensions")
+            .Where(e => (string?)e.Attribute("name") == "octoLibraryActions").ToList();
+        Assert.Contains(xml.Root.Elements(ns + "openSubsonicExtensions"), e => (string?)e.Attribute("name") == "formPost");
+        if (listed) Assert.Equal("1", Assert.Single(ours).Element(ns + "versions")?.Value);
+        else Assert.Empty(ours);
+    }
+
     // getLibraryActions
 
     [Fact]

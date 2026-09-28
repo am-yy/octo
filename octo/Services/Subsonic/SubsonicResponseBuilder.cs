@@ -548,6 +548,7 @@ public partial class SubsonicResponseBuilder
     [
         (AcquisitionsExtension, [AcquisitionsExtensionVersion]),
         (LyricsExtension, [LyricsExtensionVersion]),
+        (LibraryActionsExtension, [LibraryActionsExtensionVersion]),
         ("songLyrics", [1, 2]),
     ];
 
@@ -556,12 +557,16 @@ public partial class SubsonicResponseBuilder
     /// A failed answer passes through untouched; with no answer at all, Octo lists its own.
     /// </summary>
     public IActionResult MergeOpenSubsonicExtensions(string format, byte[]? upstream, string? contentType,
-        bool lyricsChoices = true)
+        bool lyricsChoices = true, bool libraryActions = false)
     {
         var json = format.Equals("json", StringComparison.OrdinalIgnoreCase);
         // octoLyrics is only listed while its lookups can run, so a client never offers a
-        // "choose lyrics" that can only answer that lookups are off.
-        var own = OwnExtensions.Where(extension => lyricsChoices || extension.Name != LyricsExtension).ToArray();
+        // "choose lyrics" that can only answer that lookups are off. octoLibraryActions is only
+        // listed while library actions are on, for the same reason.
+        var own = OwnExtensions
+            .Where(extension => lyricsChoices || extension.Name != LyricsExtension)
+            .Where(extension => libraryActions || extension.Name != LibraryActionsExtension)
+            .ToArray();
         try
         {
             if (upstream is { Length: > 0 })

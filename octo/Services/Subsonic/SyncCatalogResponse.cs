@@ -49,7 +49,8 @@ public static class SyncCatalogResponse
     /// <summary>
     /// The page with catalog rows appended after the library's, each kind after its own. The
     /// builder renders the rows, so they are the same shape every other injected row has;
-    /// <c>created</c> is then replaced with when the row joined the catalog.
+    /// <c>created</c> is then set to when the row joined the catalog. An outside song has no
+    /// date of its own (it is not a file), so it gets this one, which is true of the catalog.
     /// </summary>
     public static byte[] Append(byte[] body, string? contentType, string envelope,
         SubsonicResponseBuilder builder, SyncCatalog catalog,
@@ -72,16 +73,16 @@ public static class SyncCatalogResponse
                 return rows;
             }
 
-            void Add(JsonArray rows, object fields, string id)
+            void Add(JsonArray rows, object fields, string id, bool dated = false)
             {
                 var node = JsonSerializer.SerializeToNode(fields)!.AsObject();
-                if (Created(id) is { } created && node.ContainsKey("created")) node["created"] = created;
+                if (Created(id) is { } created && (dated || node.ContainsKey("created"))) node["created"] = created;
                 rows.Add(node);
             }
 
             if (artists.Count > 0) { var rows = Rows("artist"); foreach (var artist in artists) Add(rows, builder.ConvertArtistToJson(artist), artist.Id); }
             if (albums.Count > 0) { var rows = Rows("album"); foreach (var album in albums) Add(rows, builder.ConvertAlbumToJson(album), album.Id); }
-            if (songs.Count > 0) { var rows = Rows("song"); foreach (var song in songs) Add(rows, builder.ConvertSongToJson(song), song.Id); }
+            if (songs.Count > 0) { var rows = Rows("song"); foreach (var song in songs) Add(rows, builder.ConvertSongToJson(song), song.Id, dated: true); }
             return Encoding.UTF8.GetBytes(root.ToJsonString());
         }
 
@@ -91,9 +92,9 @@ public static class SyncCatalogResponse
         var container = responseElement.Elements().FirstOrDefault(child => child.Name.LocalName == envelope);
         if (container is null) { container = new XElement(ns + envelope); responseElement.Add(container); }
 
-        XElement Stamp(XElement element, string id)
+        XElement Stamp(XElement element, string id, bool dated = false)
         {
-            if (Created(id) is { } created && element.Attribute("created") is not null)
+            if (Created(id) is { } created && (dated || element.Attribute("created") is not null))
                 element.SetAttributeValue("created", created);
             return element;
         }
@@ -111,7 +112,7 @@ public static class SyncCatalogResponse
 
         Insert("artist", artists.Select(artist => Stamp(builder.ConvertArtistToXml(artist, ns), artist.Id)));
         Insert("album", albums.Select(album => Stamp(builder.ConvertAlbumToXml(album, ns), album.Id)), "artist");
-        Insert("song", songs.Select(song => Stamp(builder.ConvertSongToXml(song, ns), song.Id)), "artist", "album");
+        Insert("song", songs.Select(song => Stamp(builder.ConvertSongToXml(song, ns), song.Id, dated: true)), "artist", "album");
         return Encoding.UTF8.GetBytes(document.ToString());
     }
 

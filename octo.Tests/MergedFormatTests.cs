@@ -69,7 +69,7 @@ public sealed class MergedFormatTests
                           "id":"al-1","name":"Test Album","artist":"Test Artist","songCount":2,"duration":400,
                           "genres":[{"name":"Rock"}],
                           "song":[
-                            {"id":"s-1","title":"One","album":"Test Album","artist":"Test Artist","track":1,"duration":100,"isrc":["GBAAA0000001"],"replayGain":{"trackGain":-6.5}},
+                            {"id":"s-1","title":"One","album":"Test Album","artist":"Test Artist","track":1,"duration":100,"isrc":["GBAAA0000001"],"replayGain":{"trackGain":-6.5},"path":"Test Artist/Test Album/01 One.flac","size":34684600,"created":"2026-08-14T23:11:28Z","suffix":"flac","bitRate":867},
                             {"id":"s-3","title":"Three","album":"Test Album","artist":"Test Artist","track":3,"duration":300,"isrc":[]}
                           ]}}}
                         """)
@@ -149,6 +149,54 @@ public sealed class MergedFormatTests
         Assert.Equal("ok", (string?)xml.Root.Attribute("status"));
         // Navidrome was asked for JSON both times: the merge reads JSON.
         Assert.All(factory.Servers.NavidromeFormats, f => Assert.Equal("json", f));
+    }
+
+    [Fact]
+    public async Task GetAlbum_MarksTheSongsTheLibraryDoesNotHold()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+
+        using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getAlbum.view?{Auth}&f=json&id=al-1"));
+        var songs = json.RootElement.GetProperty("subsonic-response").GetProperty("album").GetProperty("song")
+            .EnumerateArray().ToDictionary(s => s.GetProperty("title").GetString()!, s => s.Clone());
+
+        // The library's songs go out as Navidrome described them.
+        var one = songs["One"];
+        Assert.False(one.GetProperty("isExternal").GetBoolean());
+        Assert.Equal("s-1", one.GetProperty("id").GetString());
+        Assert.Equal("Test Artist/Test Album/01 One.flac", one.GetProperty("path").GetString());
+        Assert.Equal(34684600, one.GetProperty("size").GetInt64());
+        Assert.Equal("2026-08-14T23:11:28Z", one.GetProperty("created").GetString());
+        Assert.Equal(867, one.GetProperty("bitRate").GetInt32());
+        Assert.False(songs["Three"].GetProperty("isExternal").GetBoolean());
+
+        // The outside ones say so, and claim no file.
+        foreach (var title in new[] { "Two", "Four" })
+        {
+            var song = songs[title];
+            Assert.True(song.GetProperty("isExternal").GetBoolean(), title);
+            foreach (var key in new[] { "path", "size", "created", "bitDepth", "samplingRate", "channelCount" })
+                Assert.False(song.TryGetProperty(key, out _), $"{title} has {key}");
+            Assert.Equal("m4a", song.GetProperty("suffix").GetString());
+        }
+
+        // XML says the same.
+        var xml = XDocument.Parse(await client.GetStringAsync($"/rest/getAlbum.view?{Auth}&id=al-1"));
+        var rows = xml.Root!.Element(Ns + "album")!.Elements(Ns + "song").ToDictionary(s => (string)s.Attribute("title")!);
+        Assert.Equal("false", (string?)rows["One"].Attribute("isExternal"));
+        Assert.Equal("Test Artist/Test Album/01 One.flac", (string?)rows["One"].Attribute("path"));
+        Assert.Equal("true", (string?)rows["Two"].Attribute("isExternal"));
+        Assert.Null(rows["Two"].Attribute("path"));
+        Assert.Null(rows["Two"].Attribute("created"));
+
+        // The outside song opens by its id, marked the same way, without asking Navidrome.
+        var twoId = songs["Two"].GetProperty("id").GetString();
+        using var opened = JsonDocument.Parse(await client.GetStringAsync($"/rest/getSong.view?{Auth}&f=json&id={twoId}"));
+        var song2 = opened.RootElement.GetProperty("subsonic-response").GetProperty("song");
+        Assert.Equal("Two", song2.GetProperty("title").GetString());
+        Assert.True(song2.GetProperty("isExternal").GetBoolean());
+        Assert.False(song2.TryGetProperty("path", out _));
     }
 
     [Fact]

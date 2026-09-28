@@ -389,9 +389,8 @@ public class SubsonicResponseBuilderTests
 
         Assert.Equal("flac", row["suffix"]);
         Assert.Equal("audio/flac", row["contentType"]);
-        // Estimated. Well below the 1411 of uncompressed PCM, which would overstate a
-        // real FLAC's size by roughly 70%.
-        Assert.Equal(950, row["bitRate"]);
+        // A FLAC's rate is unknown until it is fetched, so none is claimed.
+        Assert.False(row.ContainsKey("bitRate"));
     }
 
     [Fact]

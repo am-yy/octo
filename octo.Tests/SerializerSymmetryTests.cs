@@ -147,6 +147,12 @@ public class SerializerSymmetryTests
 
         Assert.Equal("261", xml.Attribute("duration")?.Value);
         Assert.Equal("1997", xml.Attribute("year")?.Value);
-        Assert.DoesNotContain(",", xml.Attribute("size")?.Value ?? "");
+
+        // Only a library song has a size.
+        var library = ExternalSong();
+        library.IsLocal = true;
+        var size = Builder().ConvertSongToXml(library, Ns).Attribute("size")?.Value;
+        Assert.NotNull(size);
+        Assert.DoesNotContain(",", size);
     }
 }

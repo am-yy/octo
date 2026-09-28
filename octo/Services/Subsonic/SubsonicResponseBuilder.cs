@@ -663,11 +663,12 @@ public partial class SubsonicResponseBuilder
 
     private Dictionary<string, object> ConvertSongFields(Song song)
     {
-        // External (Soulseek/YouTube) songs are presented as ordinary streamable
-        // tracks. Setting isExternal=true causes some Subsonic clients (Arpeggio,
-        // Narjo) to filter them out of play queues. We populate every field
-        // Navidrome normally returns so clients don't reject the entries on
-        // missing-metadata heuristics.
+        // A song outside the library says so: isExternal is true, and it carries no
+        // file facts (path, size, created, bit depth, sample rate, channels), because
+        // there is no file. It used to borrow a whole library song's shape, with a
+        // path, a size and "now" as the date added, so an album page showed songs the
+        // server does not hold as if they were in the library. What it keeps is how it
+        // streams: suffix and contentType, which a client picks its decoder from.
         // Generate Navidrome-shaped 22-char base62 ids for any external entity that
         // doesn't already have a real id. Registering here lets getCoverArt later
         // reverse-resolve the id to artist/album and look up artwork on iTunes.
@@ -685,8 +686,8 @@ public partial class SubsonicResponseBuilder
         // figure is uncompressed PCM and real FLAC compresses well below it: a measured
         // Mezzanine track came out at ~840kbps, where 1411 would have overstated its size
         // by about 70%. suffix and contentType are the contract a client picks its decoder
-        // from and are exact; size and bitRate are estimates either way, since a FLAC's
-        // true size cannot be known before it is fetched.
+        // from and are exact. For an outside song the 950 is only an estimate, so it is
+        // not sent (see the end of this method).
         //
         // A library song is declared as Navidrome described it when that is known, and as FLAC
         // only when it is not: radio and the Discovery blend put library MP3s here too.
@@ -728,11 +729,10 @@ public partial class SubsonicResponseBuilder
         var artistList = new[] { new Dictionary<string, object> { ["id"] = artistId, ["name"] = song.Artist ?? "" } };
         var albumArtistList = artistList;
 
-        // Plausible defaults so external entries don't read as "obviously fake"
-        // to client metadata heuristics. bitDepth/samplingRate/track of 0 were the
-        // giveaways the old version emitted.
+        // The path and the file defaults below (bit depth, sample rate, channels) are for
+        // library songs that reach here without them; an outside song drops them.
         //
-        // Year is the exception and is omitted entirely when unknown, rather than
+        // Year is omitted entirely when unknown, rather than
         // defaulted. It used to fall back to the current year, which is not a plausible
         // default but a wrong one: a 1995 track was published to the client as this year's
         // release, and unlike a missing field that is something the user can see and
@@ -786,8 +786,21 @@ public partial class SubsonicResponseBuilder
 
         if (song.Year is int knownYear) fields["year"] = knownYear;
 
+        if (!song.IsLocal)
+        {
+            // No file on the server, so nothing about one.
+            foreach (var key in FileOnlyFields) fields.Remove(key);
+            // A FLAC's rate is a guess until it is fetched; the 128 of the AAC stream is real.
+            if (losslessExternal) fields.Remove("bitRate");
+            fields["isExternal"] = true;
+        }
+
         return fields;
     }
+
+    /// <summary>Fields only a file in the library can truthfully have.</summary>
+    internal static readonly string[] FileOnlyFields =
+        ["path", "size", "created", "bitDepth", "samplingRate", "channelCount"];
 
     /// <summary>
     /// Converts an Album domain model to Subsonic JSON format.

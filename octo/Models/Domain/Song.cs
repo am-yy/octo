@@ -54,6 +54,22 @@ public class Song
     /// ISRC (International Standard Recording Code)
     /// </summary>
     public string? Isrc { get; set; }
+
+    /// <summary>
+    /// Every ISRC the library's own entry listed, exactly as Navidrome sent them, for a library
+    /// song Octo rebuilt from Navidrome's answer (radio, the Discovery blend). Carried whole so the
+    /// song goes back out to the client with the codes it came in with, not with none.
+    /// </summary>
+    public List<string> Isrcs { get; set; } = new();
+
+    /// <summary>
+    /// What a Subsonic response lists under OpenSubsonic's <c>isrc</c>: the library's own list
+    /// untouched when there is one, otherwise the song's ISRC when it is a valid one.
+    /// </summary>
+    public IReadOnlyList<string> IsrcsForClients() =>
+        Isrcs.Count > 0 ? Isrcs
+        : Octo.Services.Common.SongIdentity.NormalizeIsrc(Isrc) is { } isrc ? [isrc]
+        : [];
     
     /// <summary>
     /// Full release date (format: YYYY-MM-DD)

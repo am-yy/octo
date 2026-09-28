@@ -407,6 +407,54 @@ public class SubsonicResponseBuilderTests
             Assert.Equal(1411, row["bitRate"]);
         }
     }
+
+    // ---- ISRCs: OpenSubsonic's isrc is a list, in both formats ---------------------------
+
+    [Fact]
+    public void ExternalSong_WithAnIsrc_ListsIt()
+    {
+        var song = ExternalSong();
+        song.Isrc = "gb-a1b-98-00001";
+
+        Assert.Equal(new[] { "GBA1B9800001" }, BuilderWith(false).ConvertSongToJson(song)["isrc"]);
+    }
+
+    [Fact]
+    public void ExternalSong_WithNoValidIsrc_ListsNone()
+    {
+        var song = ExternalSong();
+        Assert.Equal(Array.Empty<string>(), BuilderWith(false).ConvertSongToJson(song)["isrc"]);
+        song.Isrc = "not an isrc";
+        Assert.Equal(Array.Empty<string>(), BuilderWith(false).ConvertSongToJson(song)["isrc"]);
+    }
+
+    /// <summary>A library song Octo rebuilt from Navidrome's answer goes back out with the
+    /// codes it came in with, untouched, not normalised and not dropped.</summary>
+    [Fact]
+    public void LibrarySong_KeepsNavidromesIsrcsUntouched()
+    {
+        var song = ExternalSong();
+        song.IsLocal = true;
+        song.Isrc = "USRC17600001";
+        song.Isrcs = ["GBA1B9800001", "us-rc1-76-07839"];
+
+        Assert.Equal(new[] { "GBA1B9800001", "us-rc1-76-07839" }, BuilderWith(false).ConvertSongToJson(song)["isrc"]);
+    }
+
+    [Fact]
+    public void XmlSong_ListsEachIsrcAsAChildElement()
+    {
+        var song = ExternalSong();
+        song.IsLocal = true;
+        song.Isrcs = ["GBA1B9800001", "USRC17607839"];
+        XNamespace ns = "http://subsonic.org/restapi";
+
+        var xml = BuilderWith(false).ConvertSongToXml(song, ns);
+
+        Assert.Equal(["GBA1B9800001", "USRC17607839"], xml.Elements(ns + "isrc").Select(element => element.Value));
+        Assert.Null(xml.Attribute("isrc"));
+    }
+
     // ---- Issue #35: the album DETAIL shape was missing `created` -----------------
     // Strict OpenSubsonic clients validate before playing: Music Assistant rejected every
     // external album with "Field created of type str is missing in AlbumID3WithSongs".

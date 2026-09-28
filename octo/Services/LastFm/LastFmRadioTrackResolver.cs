@@ -101,6 +101,7 @@ public sealed class LastFmRadioTrackResolver
                     Genre = NullableString(song, "genre"),
                     Suffix = NullableString(song, "suffix"),
                     BitRate = Integer(song, "bitRate"),
+                    Isrcs = Texts(song, "isrc"),
                     IsLocal = true,
                 };
             }
@@ -142,4 +143,11 @@ public sealed class LastFmRadioTrackResolver
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
             ? value.GetInt32()
             : null;
+
+    /// <summary>A list of text as Navidrome sent it, OpenSubsonic's <c>isrc</c>; empty when absent.</summary>
+    private static List<string> Texts(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array
+            ? value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!).ToList()
+            : [];
 }

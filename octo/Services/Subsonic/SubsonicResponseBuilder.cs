@@ -705,7 +705,9 @@ public partial class SubsonicResponseBuilder
             ["displayAlbumArtist"] = song.Artist ?? "",
             ["contributors"] = Array.Empty<object>(),
             ["explicitStatus"] = "",
-            ["isrc"] = Array.Empty<string>(),
+            // OpenSubsonic's isrc is a list. An album track Deezer described carries its code,
+            // and a library song keeps the ones Navidrome gave it.
+            ["isrc"] = song.IsrcsForClients().ToArray(),
             ["genres"] = Array.Empty<object>(),
             ["moods"] = Array.Empty<object>(),
             ["replayGain"] = new Dictionary<string, object>(),
@@ -784,7 +786,10 @@ public partial class SubsonicResponseBuilder
     /// Converts a Song domain model to Subsonic XML format.
     /// </summary>
     public XElement ConvertSongToXml(Song song, XNamespace ns)
-        => new(ns + "song", Attributes(ConvertSongFields(song)));
+    {
+        var fields = ConvertSongFields(song);
+        return new(ns + "song", Attributes(fields), TextLists(fields, ns));
+    }
 
     /// <summary>
     /// Converts an Album domain model to Subsonic XML format.
@@ -814,14 +819,21 @@ public partial class SubsonicResponseBuilder
         {
             if (value is null) continue;
 
-            // Subsonic carries collections as child elements, not attributes. Every
-            // collection in the shared shape is emitted empty, so skipping them keeps the
-            // two formats equivalent rather than merely similar.
+            // Subsonic carries collections as child elements, not attributes. The lists of
+            // plain text among them are written by TextLists; the rest are emitted empty.
             if (value is not string && value is System.Collections.IEnumerable) continue;
 
             yield return new XAttribute(name, Scalar(value));
         }
     }
+
+    /// <summary>
+    /// A list of plain text, such as OpenSubsonic's <c>isrc</c>, as one child element per value:
+    /// <c>&lt;isrc&gt;USRC17607839&lt;/isrc&gt;</c>, the shape the upstream server writes.
+    /// </summary>
+    private static IEnumerable<XElement> TextLists(IEnumerable<KeyValuePair<string, object>> fields, XNamespace ns) =>
+        fields.Where(field => field.Value is string[])
+            .SelectMany(field => ((string[])field.Value).Select(value => new XElement(ns + field.Key, value)));
 
     /// <summary>
     /// Invariant rendering. A comma decimal separator under a European locale would produce

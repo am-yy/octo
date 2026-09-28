@@ -427,6 +427,7 @@ public sealed class GeneratedPlaylistService
                 Genre = Str(candidate, "genre"),
                 Suffix = Str(candidate, "suffix"),
                 BitRate = NullableInt(candidate, "bitRate"),
+                Isrcs = Texts(candidate, "isrc"),
                 IsLocal = true,
             });
         }
@@ -497,6 +498,13 @@ public sealed class GeneratedPlaylistService
         node[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     private static int Int(JsonObject node, string name) => NullableInt(node, name) ?? 0;
+
+    /// <summary>A list of text as Navidrome sent it, OpenSubsonic's <c>isrc</c>; empty when absent.</summary>
+    private static List<string> Texts(JsonObject node, string name) =>
+        node[name] is JsonArray values
+            ? values.OfType<JsonValue>().Select(value => value.TryGetValue<string>(out var text) ? text : null)
+                .OfType<string>().ToList()
+            : [];
 
     private static int? NullableInt(JsonObject node, string name) =>
         node[name] is JsonValue value

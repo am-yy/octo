@@ -175,6 +175,7 @@ public class GeneratedPlaylistSelectTests
         candidates[0]["title"] = "Radio Song 3";
         candidates[1]["suffix"] = "mp3";
         candidates[1]["bitRate"] = 320;
+        candidates[1]["isrc"] = new JsonArray("USRC17607839", "us-rc1-76-07840");
 
         var blended = GeneratedPlaylistService.Blend(songs, candidates, 2, 30, Now);
 
@@ -184,6 +185,9 @@ public class GeneratedPlaylistSelectTests
         Assert.True(blended[9].IsLocal);
         Assert.Equal("mp3", blended[9].Suffix);
         Assert.Equal(320, blended[9].BitRate);
+        // The library's own ISRCs go back out exactly as Navidrome sent them.
+        Assert.Equal(["USRC17607839", "us-rc1-76-07840"], blended[9].IsrcsForClients());
+        Assert.Empty(blended[4].IsrcsForClients());
         Assert.Equal(8, blended.Count(song => song.Id.StartsWith("st", StringComparison.Ordinal)));
     }
 

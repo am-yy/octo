@@ -1598,7 +1598,9 @@ public class SubsonicController : ControllerBase
             var deezerArtist = deezerArtists[0];
             if (SongIdentity.SameArtistName(deezerArtist.Name, artistName))
             {
-                deezerAlbums = await _metadataService.GetArtistAlbumsAsync("deezer", deezerArtist.ExternalId!);
+                // The provider must come from the artist found, as for albums: a hardcoded
+                // "deezer" never matches the metadata service's name, so this was always empty.
+                deezerAlbums = await _metadataService.GetArtistAlbumsAsync(deezerArtist.ExternalProvider!, deezerArtist.ExternalId!);
                 
                 // Fill artist info for each album (Deezer API doesn't include it in artist/albums endpoint)
                 // Use local artist ID and name so albums link back to the local artist
@@ -1616,19 +1618,21 @@ public class SubsonicController : ControllerBase
             }
         }
 
-        var localAlbumNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // An owned album is one the library has by the matcher's key, so "Discovery" in the
+        // library hides the catalog's "Discovery" however either is spelled or punctuated.
+        var localAlbumNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var album in localAlbums)
         {
             if (album is Dictionary<string, object> dict && dict.TryGetValue("name", out var nameObj))
             {
-                localAlbumNames.Add(nameObj?.ToString() ?? "");
+                localAlbumNames.Add(SongIdentity.Key(nameObj?.ToString()));
             }
         }
 
         var mergedAlbums = localAlbums.ToList();
         foreach (var deezerAlbum in deezerAlbums)
         {
-            if (!localAlbumNames.Contains(deezerAlbum.Title))
+            if (!localAlbumNames.Contains(SongIdentity.Key(deezerAlbum.Title)))
             {
                 mergedAlbums.Add(_responseBuilder.ConvertAlbumToJson(deezerAlbum));
             }

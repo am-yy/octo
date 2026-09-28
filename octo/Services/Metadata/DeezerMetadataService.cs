@@ -451,6 +451,69 @@ public class DeezerMetadataService : IDisposable
         return hits;
     }
 
+    /// <summary>
+    /// An artist's own releases for their page, newest first: albums, EPs and their own
+    /// compilations, one copy of each title (the catalog lists a clean and an explicit copy of
+    /// many). This listing gives no track counts, so singles cannot be told from real records
+    /// the way album search does; they are shown only for an artist with nothing else, so a
+    /// page is never empty and never buried in singles. The artist's name is not on this
+    /// listing, so every hit carries the one given.
+    /// </summary>
+    public async Task<List<AlbumHit>> GetArtistAlbumsAsync(string deezerArtistId, string artistName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(deezerArtistId)) return new List<AlbumHit>();
+        var key = $"ara|{deezerArtistId}".ToLowerInvariant();
+        if (TryGetCached<List<AlbumHit>>(key, out var cached)) return cached!;
+
+        var records = new List<AlbumHit>();
+        var singles = new List<AlbumHit>();
+        try
+        {
+            var id = Uri.EscapeDataString(deezerArtistId);
+            using var r = await GetJsonAsync($"{Base}/artist/{id}/albums?limit={ArtistAlbumsLimit}", ct);
+            // Caching an empty list on a refusal would leave the artist's page empty for hours.
+            if (r.Transient) return new List<AlbumHit>();
+            if (r.Doc is not null
+                && r.Doc.RootElement.TryGetProperty("data", out var data)
+                && data.ValueKind == JsonValueKind.Array)
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                // Materialize everything before the JsonDocument is disposed.
+                foreach (var a in data.EnumerateArray())
+                {
+                    var albumId = a.TryGetProperty("id", out var aid) && aid.ValueKind == JsonValueKind.Number
+                        ? aid.GetInt64().ToString() : null;
+                    var title = Str(a, "title");
+                    if (albumId is null || string.IsNullOrWhiteSpace(title)) continue;
+
+                    var recordType = Str(a, "record_type");
+                    var released = Str(a, "release_date");
+                    int? year = released is { Length: >= 4 } && int.TryParse(released[..4], out var y) && y > 0 ? y : null;
+                    var hit = new AlbumHit(albumId, title, artistName,
+                        Str(a, "cover_xl") ?? Str(a, "cover_medium"), year, Int(a, "nb_tracks") ?? 0, recordType);
+
+                    if (!seen.Add(Octo.Services.Common.SongIdentity.Key(title) + "|" + recordType)) continue;
+                    if (string.Equals(recordType, "single", StringComparison.OrdinalIgnoreCase)) singles.Add(hit);
+                    else records.Add(hit);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("deezer artist albums '{Id}' failed: {M}", deezerArtistId, ex.Message);
+        }
+
+        var hits = (records.Count > 0 ? records : singles)
+            .OrderByDescending(h => h.Year ?? 0)
+            .ToList();
+        Put(key, hits, hits.Count == 0 ? NegativeTtl : PositiveTtl);
+        return hits;
+    }
+
+    /// <summary>How many releases an artist's page asks for: the catalog's page size, enough for
+    /// all but the longest careers.</summary>
+    private const int ArtistAlbumsLimit = 100;
+
     /// <summary>Resolve an artist + album name to a Deezer album id. Needed because album
     /// ids minted from a song row carry no Deezer id, so the name is all we have.</summary>
     public async Task<string?> FindAlbumIdAsync(string? artist, string? album, CancellationToken ct = default)

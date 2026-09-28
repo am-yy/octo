@@ -712,8 +712,47 @@ public class SoulseekMetadataService : IMusicMetadataService
         };
     }
 
-    public Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId)
-        => Task.FromResult(new List<Album>());
+    /// <summary>
+    /// An outside artist's releases, for their page and for filling out a library artist's
+    /// page. Each album is registered the way album search registers one, so it opens, plays
+    /// and stars like any other outside album. The artist name and id are left for the caller:
+    /// a library artist's page links its albums back to the library artist.
+    /// </summary>
+    public async Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId)
+    {
+        if (!string.Equals(externalProvider, ProviderName, StringComparison.OrdinalIgnoreCase)) return new List<Album>();
+        var routing = _idRegistry.Lookup(externalId);
+        if (routing?.Artist is not { Length: > 0 } name) return new List<Album>();
+
+        var artist = (await _deezer.SearchArtistsAsync(name, 5))
+            .FirstOrDefault(hit => Octo.Services.Common.SongIdentity.SameArtistName(hit.Name, name));
+        if (artist is null) return new List<Album>();
+
+        var releases = await _deezer.GetArtistAlbumsAsync(artist.DeezerId, name);
+        var albums = new List<Album>(releases.Count);
+        foreach (var release in releases)
+        {
+            var albumId = _idRegistry.Register(new SoulseekRouting
+            {
+                Kind = RoutingKind.Album,
+                Artist = name,
+                Album = release.Title,
+                ExternalAlbumId = release.DeezerId,
+            });
+            albums.Add(new Album
+            {
+                Id = albumId,
+                Title = release.Title,
+                Year = release.Year,
+                SongCount = release.TrackCount,
+                CoverArtUrl = release.CoverUrl,
+                IsLocal = false,
+                ExternalProvider = ProviderName,
+                ExternalId = albumId,
+            });
+        }
+        return albums;
+    }
 
     public Task<List<ExternalPlaylist>> SearchPlaylistsAsync(string query, int limit = 20)
         => Task.FromResult(new List<ExternalPlaylist>());

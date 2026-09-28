@@ -667,4 +667,42 @@ public class DeezerMetadataServiceTests
 
         Assert.DoesNotContain("artist:", Uri.UnescapeDataString(sent[0].RequestUri!.Query));
     }
+
+    [Fact]
+    public async Task GetArtistAlbumsAsync_ListsTheArtistsRecordsNewestFirst()
+    {
+        // The catalog's own shape for an artist's releases: no artist and no track counts,
+        // a clean and an explicit copy of one album, a single, and a compilation of theirs.
+        var json = @"{""data"":[
+            {""id"":1,""title"":""First"",""record_type"":""album"",""release_date"":""1997-01-20"",""cover_xl"":""https://cdn/1.jpg""},
+            {""id"":2,""title"":""Second"",""record_type"":""album"",""release_date"":""2001-03-12""},
+            {""id"":3,""title"":""Second"",""record_type"":""album"",""release_date"":""2001-03-12""},
+            {""id"":4,""title"":""A Single"",""record_type"":""single"",""release_date"":""2005-01-01""},
+            {""id"":5,""title"":""The Best Of"",""record_type"":""compile"",""release_date"":""2010-06-01""},
+            {""id"":6,""title"":""Live Set"",""record_type"":""ep"",""release_date"":""2003-09-09""}
+        ]}";
+        var svc = BuildService(new() { ["/artist/42/albums"] = json });
+
+        var hits = await svc.GetArtistAlbumsAsync("42", "Test Artist");
+
+        Assert.Equal(new[] { "The Best Of", "Live Set", "Second", "First" }, hits.Select(h => h.Title));
+        Assert.All(hits, h => Assert.Equal("Test Artist", h.Artist));
+        Assert.Equal("2", hits.Single(h => h.Title == "Second").DeezerId);
+        Assert.Equal(1997, hits.Single(h => h.Title == "First").Year);
+        Assert.Equal("https://cdn/1.jpg", hits.Single(h => h.Title == "First").CoverUrl);
+    }
+
+    [Fact]
+    public async Task GetArtistAlbumsAsync_ShowsSinglesOnlyForAnArtistWithNothingElse()
+    {
+        var json = @"{""data"":[
+            {""id"":1,""title"":""Song A"",""record_type"":""single"",""release_date"":""2020-01-01""},
+            {""id"":2,""title"":""Song B"",""record_type"":""single"",""release_date"":""2022-01-01""}
+        ]}";
+        var svc = BuildService(new() { ["/artist/9/albums"] = json });
+
+        var hits = await svc.GetArtistAlbumsAsync("9", "New Artist");
+
+        Assert.Equal(new[] { "Song B", "Song A" }, hits.Select(h => h.Title));
+    }
 }

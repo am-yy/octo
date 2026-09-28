@@ -49,8 +49,9 @@ public sealed class MergedFormatTests
                     return Json("""{"id":1,"title":"Test Album","release_date":"2001-01-01","artist":{"name":"Test Artist"}}""");
                 if (path.StartsWith("/search/artist", StringComparison.Ordinal))
                     return Json("""{"data":[{"id":7,"name":"Test Artist"}]}""");
+                // The catalog's own shape: no artist and no track counts on this listing.
                 if (path.StartsWith("/artist/7/albums", StringComparison.Ordinal))
-                    return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","nb_tracks":4},{"id":2,"title":"Other Album","record_type":"album","nb_tracks":9}]}""");
+                    return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","release_date":"2001-01-01"},{"id":2,"title":"Other Album","record_type":"album","release_date":"2005-05-05"},{"id":3,"title":"A Single","record_type":"single","release_date":"2006-01-01"}]}""");
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             }
 
@@ -169,6 +170,51 @@ public sealed class MergedFormatTests
         // Plain values are attributes, never child elements.
         Assert.Equal("1", (string?)one.Attribute("track"));
         Assert.Null(one.Element(Ns + "track"));
+    }
+
+    [Fact]
+    public async Task GetArtist_ALibraryArtistGainsTheAlbumsTheLibraryLacks()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+
+        using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&f=json&id=ar-1"));
+        var artist = json.RootElement.GetProperty("subsonic-response").GetProperty("artist");
+        var albums = artist.GetProperty("album").EnumerateArray().ToList();
+
+        // The owned album once, the outside one added, the single left out.
+        Assert.Equal(["Test Album", "Other Album"], albums.Select(a => a.GetProperty("name").GetString()));
+        Assert.Equal(2, artist.GetProperty("albumCount").GetInt32());
+        var outside = albums[1];
+        Assert.Equal("Test Artist", outside.GetProperty("artist").GetString());
+        // It links back to the library artist, not to an outside copy of them.
+        Assert.Equal("ar-1", outside.GetProperty("artistId").GetString());
+        Assert.Equal(2005, outside.GetProperty("year").GetInt32());
+
+        // And the outside album opens.
+        using var opened = JsonDocument.Parse(await client.GetStringAsync(
+            $"/rest/getAlbum.view?{Auth}&f=json&id={outside.GetProperty("id").GetString()}"));
+        Assert.Equal("Other Album", opened.RootElement.GetProperty("subsonic-response").GetProperty("album").GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task GetArtist_AnOutsideArtistsPageListsTheirAlbums()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+        var registry = factory.Services.GetRequiredService<Octo.Services.Soulseek.ExternalIdRegistry>();
+        var id = registry.Register(new Octo.Services.Soulseek.SoulseekRouting
+        {
+            Kind = Octo.Services.Soulseek.RoutingKind.Artist,
+            Artist = "Test Artist",
+        });
+
+        using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&f=json&id={id}"));
+        var artist = json.RootElement.GetProperty("subsonic-response").GetProperty("artist");
+
+        Assert.Equal(["Other Album", "Test Album"],
+            artist.GetProperty("album").EnumerateArray().Select(a => a.GetProperty("name").GetString()));
+        Assert.All(artist.GetProperty("album").EnumerateArray(), a => Assert.Equal(id, a.GetProperty("artistId").GetString()));
     }
 
     [Fact]

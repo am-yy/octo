@@ -117,10 +117,10 @@ public class ITunesCoverArtLookup : ICoverArtSource
 
     private async Task<byte[]?> DownloadHiResAsync(string artworkUrl100, CancellationToken ct)
     {
-        // iTunes CDN serves arbitrary sizes by URL substring substitution. 600x600
-        // is the sweet spot — most clients thumbnail to <=300, going higher would
-        // just waste bandwidth.
-        var hiRes = artworkUrl100.Replace("100x100bb", "600x600bb");
+        // iTunes CDN serves arbitrary sizes by URL substring substitution. 1200x1200, so a
+        // cover shown large (a phone's now playing screen, a desktop's full player) is
+        // sharp; 600 was visibly soft there. Smaller covers are scaled down by the client.
+        var hiRes = artworkUrl100.Replace("100x100bb", "1200x1200bb");
         try
         {
             using var resp = await _http.GetAsync(hiRes, ct);

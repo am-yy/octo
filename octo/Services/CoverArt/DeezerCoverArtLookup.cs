@@ -43,6 +43,11 @@ public class DeezerCoverArtLookup : ICoverArtSource
         {
             string? coverUrl = routing.Kind switch
             {
+                // An album whose catalog id is known has its cover fetched by that id: exact,
+                // and no search to miss it.
+                RoutingKind.Album when !string.IsNullOrWhiteSpace(routing.ExternalAlbumId)
+                                    => await AlbumCoverByIdAsync(routing.ExternalAlbumId!, background, ct)
+                                       ?? await ResolveAlbumCoverAsync(artist, (routing.Album ?? routing.Title ?? "").Trim(), background, ct),
                 RoutingKind.Album   => await ResolveAlbumCoverAsync(artist, (routing.Album ?? routing.Title ?? "").Trim(), background, ct),
                 RoutingKind.Artist  => await ResolveArtistCoverAsync(artist, background, ct),
                 _                   => await ResolveTrackCoverAsync(artist, (routing.Title ?? "").Trim(), background, ct),
@@ -64,22 +69,24 @@ public class DeezerCoverArtLookup : ICoverArtSource
     private async Task<string?> ResolveTrackCoverAsync(string artist, string title, bool background, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(artist) || string.IsNullOrEmpty(title)) return null;
-        // Deezer's q= supports field-qualified queries like `artist:"X" track:"Y"` for
-        // higher precision than a flat keyword query.
-        var q = $"artist:\"{artist}\" track:\"{title}\"";
-        var url = $"https://api.deezer.com/search?q={Uri.EscapeDataString(q)}&limit=5";
+        // A plain query: the catalog stopped answering field-qualified ones
+        // (`artist:"X" track:"Y"`), which left every lookup here empty and handed covers to
+        // a smaller source. The picking below does the matching instead.
+        var q = $"{artist} {title}";
+        var url = $"https://api.deezer.com/search?q={Uri.EscapeDataString(q)}&limit=10";
         var doc = await GetJsonAsync(url, background, ct);
         if (doc is null) return null;
         if (!doc.RootElement.TryGetProperty("data", out var data) || data.GetArrayLength() == 0)
             return null;
-        return PickBestAlbumCover(data, artist);
+        return PickBestAlbumCover(data, artist, title);
     }
 
     private async Task<string?> ResolveAlbumCoverAsync(string artist, string album, bool background, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(artist) || string.IsNullOrEmpty(album)) return null;
-        var q = $"artist:\"{artist}\" album:\"{album}\"";
-        var url = $"https://api.deezer.com/search/album?q={Uri.EscapeDataString(q)}&limit=5";
+        // Plain, for the same reason as a track's.
+        var q = $"{artist} {album}";
+        var url = $"https://api.deezer.com/search/album?q={Uri.EscapeDataString(q)}&limit=10";
         var doc = await GetJsonAsync(url, background, ct);
         if (doc is null) return null;
         if (!doc.RootElement.TryGetProperty("data", out var data) || data.GetArrayLength() == 0)
@@ -87,7 +94,17 @@ public class DeezerCoverArtLookup : ICoverArtSource
             // Fallback to a track-based search for "albums" that are really singles.
             return await ResolveTrackCoverAsync(artist, album, background, ct);
         }
-        return PickBestDirectCover(data, artist);
+        return PickBestDirectCover(data, artist, album);
+    }
+
+    /// <summary>An album's own cover by its catalog id, or null when the catalog has none.</summary>
+    private async Task<string?> AlbumCoverByIdAsync(string albumId, bool background, CancellationToken ct)
+    {
+        var doc = await GetJsonAsync($"https://api.deezer.com/album/{Uri.EscapeDataString(albumId.Trim())}", background, ct);
+        if (doc is null) return null;
+        return ReadString(doc.RootElement, "cover_xl")
+            ?? ReadString(doc.RootElement, "cover_big")
+            ?? ReadString(doc.RootElement, "cover_medium");
     }
 
     private async Task<string?> ResolveArtistCoverAsync(string artist, bool background, CancellationToken ct)
@@ -139,7 +156,7 @@ public class DeezerCoverArtLookup : ICoverArtSource
     }
 
     /// <summary>Pick best track-result cover by artist scoring; reads from <c>album.cover_xl</c>.</summary>
-    private static string? PickBestAlbumCover(JsonElement data, string expectedArtist)
+    private static string? PickBestAlbumCover(JsonElement data, string expectedArtist, string expectedTitle)
     {
         string? best = null;
         int bestScore = int.MinValue;
@@ -157,7 +174,10 @@ public class DeezerCoverArtLookup : ICoverArtSource
                      ?? ReadString(albumEl, "cover_medium");
             }
             if (string.IsNullOrEmpty(cover)) continue;
-            var score = ScoreNameMatch(expectedArtist, artist);
+            // The asked-for title can be the track's or, for a single, its album's.
+            var albumTitle = item.TryGetProperty("album", out var a) ? ReadString(a, "title") : null;
+            var score = ScoreNameMatch(expectedArtist, artist)
+                + Math.Max(TitleBonus(expectedTitle, ReadString(item, "title")), TitleBonus(expectedTitle, albumTitle));
             if (score > bestScore)
             {
                 bestScore = score;
@@ -168,7 +188,7 @@ public class DeezerCoverArtLookup : ICoverArtSource
     }
 
     /// <summary>Pick best album-result cover by artist scoring; reads from <c>cover_xl</c> directly on the result.</summary>
-    private static string? PickBestDirectCover(JsonElement data, string expectedArtist)
+    private static string? PickBestDirectCover(JsonElement data, string expectedArtist, string expectedTitle)
     {
         string? best = null;
         int bestScore = int.MinValue;
@@ -182,7 +202,7 @@ public class DeezerCoverArtLookup : ICoverArtSource
                      ?? ReadString(item, "cover_big")
                      ?? ReadString(item, "cover_medium");
             if (string.IsNullOrEmpty(cover)) continue;
-            var score = ScoreNameMatch(expectedArtist, artist);
+            var score = ScoreNameMatch(expectedArtist, artist) + TitleBonus(expectedTitle, ReadString(item, "title"));
             if (score > bestScore)
             {
                 bestScore = score;
@@ -191,6 +211,11 @@ public class DeezerCoverArtLookup : ICoverArtSource
         }
         return best;
     }
+
+    /// <summary>With plain queries a result can be another record by the same artist: the one
+    /// with the asked-for title wins.</summary>
+    private static int TitleBonus(string expected, string? actual) =>
+        !string.IsNullOrEmpty(actual) && Octo.Services.Common.SongIdentity.Key(actual) == Octo.Services.Common.SongIdentity.Key(expected) ? 50 : 0;
 
     private static string? ReadString(JsonElement obj, string prop)
         => obj.TryGetProperty(prop, out var p) && p.ValueKind == JsonValueKind.String

@@ -412,6 +412,75 @@ public partial class SubsonicResponseBuilder
     }
 
     /// <summary>
+    /// An ok response in the format the client asked for, from the JSON-shaped data Octo
+    /// merges (Navidrome's JSON with outside songs or albums added). The merge only reads
+    /// JSON, so a client asking for XML used to get Navidrome's own XML back, without the
+    /// outside songs: half an album. XML is written the way OpenSubsonic writes it, see
+    /// <see cref="JsonShapeToXml"/>.
+    /// </summary>
+    public IActionResult CreateMergedResponse(string format, string elementName, object data)
+    {
+        if (format == "json")
+        {
+            return CreateJsonResponse(new Dictionary<string, object>
+            {
+                ["status"] = "ok",
+                ["version"] = SubsonicVersion,
+                [elementName] = data,
+            });
+        }
+
+        var ns = XNamespace.Get(SubsonicNamespace);
+        var doc = new XDocument(
+            new XElement(ns + "subsonic-response",
+                new XAttribute("status", "ok"),
+                new XAttribute("version", SubsonicVersion),
+                JsonShapeToXml(ns, elementName, data)));
+        return new ContentResult { Content = doc.ToString(), ContentType = "application/xml" };
+    }
+
+    /// <summary>
+    /// JSON-shaped data as a Subsonic XML element, by OpenSubsonic's rules: a plain value is
+    /// an attribute, one object is a child element (replayGain), a list of objects is one child
+    /// element per object named for the list (song, genres, artists), and a list of plain
+    /// values is one text element per value (isrc). Missing values are left out.
+    /// </summary>
+    internal static XElement JsonShapeToXml(XNamespace ns, string name, object? value)
+    {
+        var element = new XElement(ns + name);
+        if (value is not IDictionary<string, object> fields)
+        {
+            if (value is not null) element.Value = Scalar(value);
+            return element;
+        }
+
+        foreach (var (key, field) in fields)
+        {
+            switch (field)
+            {
+                case null:
+                    break;
+                case string text:
+                    element.SetAttributeValue(key, text);
+                    break;
+                case IDictionary<string, object> nested:
+                    element.Add(JsonShapeToXml(ns, key, nested));
+                    break;
+                case System.Collections.IEnumerable list:
+                    foreach (var item in list)
+                    {
+                        if (item is not null) element.Add(JsonShapeToXml(ns, key, item));
+                    }
+                    break;
+                default:
+                    element.SetAttributeValue(key, Scalar(field));
+                    break;
+            }
+        }
+        return element;
+    }
+
+    /// <summary>
     /// Creates a JSON Subsonic response with "subsonic-response" key (with hyphen).
     /// </summary>
     public IActionResult CreateJsonResponse(object responseContent)

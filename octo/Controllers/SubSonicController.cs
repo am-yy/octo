@@ -1551,7 +1551,9 @@ public class SubsonicController : ControllerBase
             return _responseBuilder.CreateArtistResponse(format, artist, albums);
         }
 
-        var navidromeResult = await _proxyService.RelaySafeAsync("rest/getArtist", parameters);
+        // Merged from Navidrome's JSON whatever the client asked for, then answered in the
+        // client's format: see CreateMergedResponse.
+        var navidromeResult = await _proxyService.RelaySafeAsync("rest/getArtist", AsJson(parameters));
         
         if (!navidromeResult.Success || navidromeResult.Body == null)
         {
@@ -1564,7 +1566,7 @@ public class SubsonicController : ControllerBase
         var localAlbums = new List<object>();
         object? artistData = null;
 
-        if (format == "json" || navidromeResult.ContentType?.Contains("json") == true)
+        if (navidromeResult.ContentType?.Contains("json") == true)
         {
             var jsonDoc = JsonDocument.Parse(navidromeContent);
             if (jsonDoc.RootElement.TryGetProperty("subsonic-response", out var response) &&
@@ -1585,7 +1587,7 @@ public class SubsonicController : ControllerBase
 
         if (string.IsNullOrEmpty(artistName) || artistData == null)
         {
-            return File(navidromeResult.Body, navidromeResult.ContentType ?? "application/json");
+            return await RelayAsAskedAsync("rest/getArtist", parameters, format, navidromeResult.Body, navidromeResult.ContentType);
         }
 
         var deezerArtists = await _metadataService.SearchArtistsAsync(artistName, 1);
@@ -1638,12 +1640,7 @@ public class SubsonicController : ControllerBase
             artistDict["albumCount"] = mergedAlbums.Count;
         }
 
-        return _responseBuilder.CreateJsonResponse(new
-        {
-            status = "ok",
-            version = "1.16.1",
-            artist = artistData
-        });
+        return _responseBuilder.CreateMergedResponse(format, "artist", artistData);
     }
 
     /// <summary>
@@ -1719,7 +1716,9 @@ public class SubsonicController : ControllerBase
             return _responseBuilder.CreateAlbumResponse(format, album);
         }
 
-        var navidromeResult = await _proxyService.RelaySafeAsync("rest/getAlbum", parameters);
+        // Merged from Navidrome's JSON whatever the client asked for, then answered in the
+        // client's format: see CreateMergedResponse.
+        var navidromeResult = await _proxyService.RelaySafeAsync("rest/getAlbum", AsJson(parameters));
         
         if (!navidromeResult.Success || navidromeResult.Body == null)
         {
@@ -1732,7 +1731,7 @@ public class SubsonicController : ControllerBase
         var localSongs = new List<object>();
         object? albumData = null;
 
-        if (format == "json" || navidromeResult.ContentType?.Contains("json") == true)
+        if (navidromeResult.ContentType?.Contains("json") == true)
         {
             var jsonDoc = JsonDocument.Parse(navidromeContent);
             if (jsonDoc.RootElement.TryGetProperty("subsonic-response", out var response) &&
@@ -1754,7 +1753,7 @@ public class SubsonicController : ControllerBase
 
         if (string.IsNullOrEmpty(albumName) || string.IsNullOrEmpty(artistName) || albumData == null)
         {
-            return File(navidromeResult.Body, navidromeResult.ContentType ?? "application/json");
+            return await RelayAsAskedAsync("rest/getAlbum", parameters, format, navidromeResult.Body, navidromeResult.ContentType);
         }
 
         var searchQuery = $"{artistName} {albumName}";
@@ -1838,12 +1837,7 @@ public class SubsonicController : ControllerBase
             }
         }
 
-        return _responseBuilder.CreateJsonResponse(new
-        {
-            status = "ok",
-            version = "1.16.1",
-            album = albumData
-        });
+        return _responseBuilder.CreateMergedResponse(format, "album", albumData);
     }
 
     /// <summary>
@@ -2018,6 +2012,26 @@ public class SubsonicController : ControllerBase
     }
 
     #region Helper Methods
+
+    /// <summary>The same request, asking Navidrome for JSON, which is what the merges read.</summary>
+    private static Dictionary<string, string> AsJson(Dictionary<string, string> parameters) =>
+        new(parameters) { ["f"] = "json" };
+
+    /// <summary>
+    /// Navidrome's answer untouched, when there is nothing to merge: the JSON already in hand
+    /// for a JSON client, otherwise asked again in the client's own format so an XML client
+    /// never gets JSON.
+    /// </summary>
+    private async Task<IActionResult> RelayAsAskedAsync(
+        string endpoint, Dictionary<string, string> parameters, string format, byte[] jsonBody, string? jsonContentType)
+    {
+        if (format == "json")
+            return File(jsonBody, jsonContentType ?? "application/json");
+        var asked = await _proxyService.RelaySafeAsync(endpoint, parameters);
+        if (!asked.Success || asked.Body == null)
+            return _responseBuilder.CreateError(format, 70, "Not found");
+        return File(asked.Body, asked.ContentType ?? "application/xml");
+    }
 
     private IActionResult MergeSearchResults(
         (List<object> Songs, List<object> Albums, List<object> Artists) local,

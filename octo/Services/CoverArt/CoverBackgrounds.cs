@@ -28,6 +28,26 @@ internal static class CoverBackgrounds
     }
 
     /// <summary>
+    /// How a list's background is turned, so lists that share a background still look apart:
+    /// (coverHash(id) >>> 11) mod 8, a quarter turn clockwise for each of its lowest two bits'
+    /// worth (v mod 4), then mirrored left to right when v is 4 or more.
+    /// </summary>
+    public static int Orientation(string id) => (int)((CoverColours.CoverHash(id) >>> 11) % 8);
+
+    /// <summary>Turns a background in place: (v mod 4) quarter turns clockwise, then a mirror left to right when v >= 4.</summary>
+    public static void Turn(Image<Rgb24> image, int orientation)
+    {
+        var turns = orientation % 4;
+        var mirror = orientation >= 4;
+        if (turns == 0 && !mirror) return;
+        image.Mutate(ctx =>
+        {
+            if (turns != 0) ctx.Rotate(turns switch { 1 => RotateMode.Rotate90, 2 => RotateMode.Rotate180, _ => RotateMode.Rotate270 });
+            if (mirror) ctx.Flip(FlipMode.Horizontal);
+        });
+    }
+
+    /// <summary>
     /// How far a background is from the music's colour: the hue distance to its nearest strong
     /// hue (a later, weaker hue counts a little less, a near-grey one hardly at all) and how
     /// differently vivid that hue is, plus the difference in lightness.

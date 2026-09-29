@@ -6,12 +6,15 @@ using SixLabors.ImageSharp.Processing;
 
 namespace Octo.Services.CoverArt;
 
-/// <summary>A cover ready to paint: its side in pixels, its background (an index into the library) and its words.</summary>
-public sealed record CoverArt(int Side, int Background, IReadOnlyList<CoverWords> Words);
+/// <summary>
+/// A cover ready to paint: its side in pixels, its background (an index into the library), how
+/// that background is turned (0 to 7: quarter turns clockwise, then a mirror from 4 up), and its words.
+/// </summary>
+public sealed record CoverArt(int Side, int Background, int Orientation, IReadOnlyList<CoverWords> Words);
 
 /// <summary>
-/// Paints a composed cover: its painted background at the cover's size, the colour-keeping
-/// veil under the words, then the words in white at their lines' baselines.
+/// Paints a composed cover: its painted background at the cover's size, turned as the cover
+/// says, the colour-keeping veil under the words, then the words in white at their lines' baselines.
 /// </summary>
 internal static class CoverPainter
 {
@@ -30,6 +33,7 @@ internal static class CoverPainter
     public static Image<Rgb24> Paint(CoverBook book, CoverArt art, CoverTypesetter setter, bool drawWords = true)
     {
         var image = CoverBackgrounds.Load(book, art.Background, art.Side);
+        CoverBackgrounds.Turn(image, art.Orientation);
         CoverVeil.Apply(image, CoverVeil.Regions(book, art.Words, art.Side), book.Veil);
         if (!drawWords) return image;
 

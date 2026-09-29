@@ -319,9 +319,10 @@ public class CoverArtService
     internal Image<Rgb24> Paint(CoverSpec spec, int size, bool drawWords = true) =>
         CoverPainter.Paint(_book, Compose(spec, size), _setter, drawWords);
 
-    /// <summary>The cover's background and where its words go.</summary>
+    /// <summary>The cover's background, how it is turned, and where its words go.</summary>
     internal CoverArt Compose(CoverSpec spec, int size) =>
-        new(size, CoverBackgrounds.Choose(_book, spec.Music, spec.Id), CoverLayout.Words(spec, size, _setter, _book));
+        new(size, CoverBackgrounds.Choose(_book, spec.Music, spec.Id), CoverBackgrounds.Orientation(spec.Id),
+            CoverLayout.Words(spec, size, _setter, _book));
 
     /// <summary>
     /// Colours from the list's seed covers: fetched until two pictures are in hand, all within a

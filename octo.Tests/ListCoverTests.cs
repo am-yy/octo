@@ -125,6 +125,26 @@ public class CoverColourTests
         Assert.All(used.Values, count => Assert.True(count < 400 / Book.Backgrounds.Count * 4));
     }
 
+    /// <summary>A turned background is the same pixels, quarter turned clockwise and then mirrored.</summary>
+    [Fact]
+    public void Turn_QuarterTurnsClockwise_ThenMirrors()
+    {
+        using var plain = CoverBackgrounds.Load(Book, 0, 600);
+        foreach (var v in Enumerable.Range(0, 8))
+        {
+            using var turned = CoverBackgrounds.Load(Book, 0, 600);
+            CoverBackgrounds.Turn(turned, v);
+            foreach (var (x, y) in new[] { (0, 0), (17, 250), (599, 3), (321, 598) })
+            {
+                // Where (x, y) of the turned picture came from.
+                var (sx, sy) = (v >= 4 ? 599 - x : x, y);
+                for (var t = 0; t < v % 4; t++) (sx, sy) = (sy, 599 - sx);
+                Assert.Equal(plain[sx, sy], turned[x, y]);
+            }
+        }
+        Assert.Equal(Enumerable.Range(0, 8), Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Orientation($"pl-{i}")).Distinct().Order());
+    }
+
     /// <summary>Sizes other than the file's: halved while that leaves enough, then each pixel the mean of the area it covers.</summary>
     [Fact]
     public void Background_AtOtherSizes_IsTheAreaMean()
@@ -178,7 +198,7 @@ public class CoverGoldenTests(ITestOutputHelper output)
         var spec = new CoverSpec(golden.GetProperty("name").GetString()!, golden.GetProperty("name").GetString()!, Text("line"), Text("footer"), null);
         var file = golden.GetProperty("background").GetString();
         var index = Book.Backgrounds.Select((b, i) => (b, i)).Single(pair => pair.b.File == file).i;
-        return (new CoverArt(side, index, CoverLayout.Words(spec, side, new CoverTypesetter(), Book)), spec);
+        return (new CoverArt(side, index, 0, CoverLayout.Words(spec, side, new CoverTypesetter(), Book)), spec);
     }
 
     /// <summary>
@@ -644,7 +664,7 @@ public class ListCoverTests : IDisposable
         var spec = CoverArtService.Spec("Everything I Have Ever Loved Radio", ListKinds.Radio, 1234, null);
         foreach (var side in new[] { 600, 1200 })
         {
-            var art = service.Compose(spec, side) with { Background = background };
+            var art = service.Compose(spec, side) with { Background = background, Orientation = background % 8 };
             using var backdrop = CoverPainter.Paint(CoverBook.Default, art, new CoverTypesetter(), drawWords: false);
             foreach (var words in art.Words)
             {
@@ -672,7 +692,7 @@ public class ListCoverTests : IDisposable
         {
             var index = CoverBook.Default.Backgrounds.Select((b, i) => (b, i)).Single(pair => pair.b.File == background).i;
             var spec = CoverArtService.Spec("Sunday Morning Radio", ListKinds.Radio, 99, null);
-            var art = service.Compose(spec, 600) with { Background = index };
+            var art = service.Compose(spec, 600) with { Background = index, Orientation = 0 };
             using var painted = CoverPainter.Paint(CoverBook.Default, art, new CoverTypesetter(), drawWords: false);
             using var ms = new MemoryStream();
             painted.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 92, ColorType = SixLabors.ImageSharp.Formats.Jpeg.JpegEncodingColor.YCbCrRatio444 });

@@ -18,7 +18,7 @@ internal static class CoverBackgrounds
     /// </summary>
     public static int Choose(CoverBook book, CoverMusic? music, string id)
     {
-        var pick = CoverColours.CoverHash(id) >>> 7;
+        var pick = CoverColours.CoverPick(id) >>> 7;
         var all = book.Backgrounds;
         if (music is null || music.Chroma < book.BackgroundChoice.LowChromaAsGrey) return (int)(pick % all.Count);
         var near = Enumerable.Range(0, all.Count)
@@ -30,12 +30,12 @@ internal static class CoverBackgrounds
 
     /// <summary>
     /// How a list's background is turned, so lists that share a background still look apart:
-    /// v = (coverHash(id) >>> shift) mod count, from cover-design.json "orientation".
+    /// v = (coverPick(id) >>> shift) mod count, from cover-design.json "orientation".
     /// </summary>
     public static int Orientation(CoverBook book, string id)
     {
         var rule = book.BackgroundChoice.Orientation;
-        return (int)((CoverColours.CoverHash(id) >>> rule.Shift) % rule.Count);
+        return (int)((CoverColours.CoverPick(id) >>> rule.Shift) % rule.Count);
     }
 
     /// <summary>Turns a background in place: (v mod 4) quarter turns clockwise, then a mirror left to right when v >= 4.</summary>

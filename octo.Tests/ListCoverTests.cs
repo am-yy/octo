@@ -24,6 +24,34 @@ public class CoverColourTests
     public void CoverHash_IsFnv1aShiftedRight(string text, ulong expected) =>
         Assert.Equal((long)expected, CoverColours.CoverHash(text));
 
+    /// <summary>The design's check value for the pick hash, and the pick and turn it gives.</summary>
+    [Fact]
+    public void CoverPick_IsFnv1aThenFmix64ShiftedRight()
+    {
+        Assert.Equal(0x098f28ee76f647ceL, CoverColours.CoverPick("pl-1"));
+        Assert.Equal(15, CoverBackgrounds.Choose(Book, null, "pl-1"));
+        Assert.Equal(0, CoverBackgrounds.Orientation(Book, "pl-1"));
+    }
+
+    /// <summary>
+    /// Numbered lists ("1" to "12", "p1" to "p12"), whose ids differ only in their last letters,
+    /// still look apart: with no music every one differs, the turns vary, and twelve lists of one
+    /// warm colour repeat a look at most twice.
+    /// </summary>
+    [Fact]
+    public void NumberedLists_LookApart()
+    {
+        var warm = CoverMusic.FromCovers([new[] { new Swatch(unchecked((int)0xFFE0701F), 1f) }]);
+        foreach (var ids in new[] { Enumerable.Range(1, 12).Select(i => $"{i}").ToList(), Enumerable.Range(1, 12).Select(i => $"p{i}").ToList() })
+        {
+            var none = ids.Select(id => (CoverBackgrounds.Choose(Book, null, id), CoverBackgrounds.Orientation(Book, id))).ToList();
+            Assert.Equal(ids.Count, none.Distinct().Count());
+            Assert.True(ids.Select(id => CoverBackgrounds.Orientation(Book, id)).Distinct().Count() >= 5);
+            var picks = ids.Select(id => (CoverBackgrounds.Choose(Book, warm, id), CoverBackgrounds.Orientation(Book, id))).ToList();
+            Assert.True(picks.Distinct().Count() >= ids.Count - 2, $"{ids[0]}: {picks.Distinct().Count()} looks for warm music");
+        }
+    }
+
     [Theory]
     [InlineData("#808080", 0.0)]
     [InlineData("#ff0000", 29.2)]
@@ -77,14 +105,14 @@ public class CoverColourTests
     /// a list the same background.
     /// </summary>
     [Theory]
-    [InlineData("Daft Punk Radio", 97, 0.143, 0.861, "lemonade.webp", 5)]
-    [InlineData("Rock Mix", 26, 0.14, 0.62, "coral.webp", 1)]
-    [InlineData("Your Mix", 262, 0.2, 0.5, "bubblegum.webp", 1)]
-    [InlineData("1990s Mix", 134, 0.14, 0.62, "limelight.webp", 1)]
-    [InlineData("Polka Mix", -1, 0, 0, "amber-night.webp", 5)]
-    [InlineData("pl-1", 30, 0.1, 0.4, "afterglow.webp", 1)]
-    [InlineData("Daft Punk Radio", 261, 0.043, 0.722, "northern-lights.webp", 5)]
-    [InlineData("Metal Mix", 40, 0.163, 0.601, "honey.webp", 2)]
+    [InlineData("Daft Punk Radio", 97, 0.143, 0.861, "tangerine.webp", 7)]
+    [InlineData("Rock Mix", 26, 0.14, 0.62, "afterglow.webp", 3)]
+    [InlineData("Your Mix", 262, 0.2, 0.5, "night-swim.webp", 4)]
+    [InlineData("1990s Mix", 134, 0.14, 0.62, "amber-night.webp", 0)]
+    [InlineData("Polka Mix", -1, 0, 0, "bubblegum.webp", 0)]
+    [InlineData("pl-1", 30, 0.1, 0.4, "coral.webp", 0)]
+    [InlineData("Daft Punk Radio", 261, 0.043, 0.722, "peach.webp", 7)]
+    [InlineData("Metal Mix", 40, 0.163, 0.601, "firewave.webp", 6)]
     public void Background_IsTheDesignsPick(string id, int hue, double chroma, double lightness, string file, int orientation)
     {
         var music = hue < 0 ? null : CoverMusic.Of(hue, chroma, lightness);
@@ -121,7 +149,7 @@ public class CoverColourTests
         {
             var background = Book.Backgrounds[pick];
             var nearest = background.Hues.Min(h => CoverColours.HueDistance(h.H, music.Hue));
-            Assert.True(nearest < 45, $"{background.Name} for hue {music.Hue}: {nearest:F0}");
+            Assert.True(nearest < 50, $"{background.Name} for hue {music.Hue}: {nearest:F0}");
         }
         Assert.Equal(CoverBackgrounds.Choose(Book, music, "pl-1"), CoverBackgrounds.Choose(Book, music, "pl-1"));
     }

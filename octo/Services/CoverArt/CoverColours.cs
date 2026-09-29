@@ -114,6 +114,27 @@ public static class CoverColours
         return (long)(hash >> 1);
     }
 
+    /// <summary>
+    /// The number that picks a list's background and its turn, the same on every device: FNV-1a
+    /// 64 over the id's UTF-8, then MurmurHash3's fmix64 so ids that differ only in their last
+    /// letter still land far apart, then shifted right once (never negative).
+    /// </summary>
+    public static long CoverPick(string text)
+    {
+        var k = 0xcbf29ce484222325UL;
+        foreach (var b in Encoding.UTF8.GetBytes(text))
+        {
+            k ^= b;
+            k *= 0x100000001b3UL;
+        }
+        k ^= k >> 33;
+        k *= 0xff51afd7ed558ccdUL;
+        k ^= k >> 33;
+        k *= 0xc4ceb9fe1a85ec53UL;
+        k ^= k >> 33;
+        return (long)(k >> 1);
+    }
+
     private sealed class Bucket
     {
         public int Key;

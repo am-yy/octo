@@ -36,7 +36,7 @@ public sealed class CoverBook
     public sealed record BackgroundRule(int Nearest, double LowChromaAsGrey, double HueStep, double GreyBelow, double GreyPenalty,
         double ChromaWeight, double LightnessWeight, OrientationRule Orientation);
 
-    /// <summary>How a list turns its background: v = (coverHash(id) &gt;&gt;&gt; shift) mod count.</summary>
+    /// <summary>How a list turns its background: v = (coverPick(id) &gt;&gt;&gt; shift) mod count.</summary>
     public sealed record OrientationRule(int Shift, int Count);
 
     /// <summary>How the background is darkened under the words, keeping its colour.</summary>

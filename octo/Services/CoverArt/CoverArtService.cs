@@ -1,8 +1,6 @@
 using System.Collections.Concurrent;
-using System.Globalization;
-using SixLabors.Fonts;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Formats.Jpeg;
@@ -10,14 +8,11 @@ using SixLabors.ImageSharp.Formats.Jpeg;
 namespace Octo.Services.CoverArt;
 
 /// <summary>
-/// Composites the Octo logo onto cover art so radio-sourced tracks are visually
-/// distinguishable from local-library tracks in the Subsonic client UI. The
-/// previous Tidal-era version drew a procedural diamond; this version loads a
-/// real PNG asset shipped in the project's Assets/ directory.
-///
-/// Logo placement: bottom-right, ~15% of cover dimension, with a soft dark
-/// circle behind it so it stays legible on any background. If the asset is
-/// missing the badge call returns the original bytes unchanged — never fatal.
+/// Covers Octo draws itself: the small Octo badge on covers of songs found outside the library
+/// (for third-party clients), the placeholder when no cover can be had, and the covers of the
+/// lists Octo makes (radio stations and mixes), designed like the Octo apps' playlist covers:
+/// soft fields of colour from the list's own music with its name in white. A picture someone
+/// put in the covers folder replaces a list's cover.
 /// </summary>
 public class CoverArtService
 {
@@ -25,41 +20,31 @@ public class CoverArtService
     private Image? _octoLogo;
     private readonly object _logoLock = new();
     private volatile bool _logoLoadAttempted;
-    private readonly ConcurrentDictionary<string, NamedCover> _namedCovers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte[]> _namedCovers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (CoverPalette? Palette, DateTime Until)> _palettes = new(StringComparer.Ordinal);
     private readonly string? _coversDirectory;
-    private readonly string _kitDirectory;
-    private CoverKit? _kit;
+    private readonly CoverBook _book;
+    private readonly CoverTypesetter _setter = new();
 
-    private const int CoverSize = 600;
+    /// <summary>List covers are drawn at the size asked, within these bounds.</summary>
+    internal const int MinCoverSize = 600;
+    internal const int MaxCoverSize = 1200;
 
-    /// <summary>Where a named cover came from: someone's own picture in the covers folder, a
-    /// drawn design, or the last-resort render.</summary>
-    private enum CoverSource { Override, Drawn, Legacy }
-
-    private sealed record NamedCover(byte[] Bytes, CoverSource Source);
+    private static readonly TimeSpan SeedWait = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan PaletteHit = TimeSpan.FromHours(12);
+    private static readonly TimeSpan PaletteGrey = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan PaletteMiss = TimeSpan.FromMinutes(1);
+    private static readonly JpegEncoder Jpeg = new() { Quality = 92, ColorType = JpegEncodingColor.YCbCrRatio444 };
 
     /// <param name="coversDirectory">Pictures that replace a generated cover, named after the
     /// playlist (/app/config/covers).</param>
-    /// <param name="kitDirectory">The cover kit; Assets/cover-kit beside the app by default.</param>
-    public CoverArtService(ILogger<CoverArtService> logger, string? coversDirectory = null, string? kitDirectory = null)
+    /// <param name="book">The cover design; the one shipped in the app by default.</param>
+    public CoverArtService(ILogger<CoverArtService> logger, string? coversDirectory = null, CoverBook? book = null)
     {
         _logger = logger;
         _coversDirectory = string.IsNullOrWhiteSpace(coversDirectory) ? null : coversDirectory;
-        _kitDirectory = kitDirectory ?? KitDirectoryIn(AppContext.BaseDirectory);
+        _book = book ?? CoverBook.Default;
     }
-
-    /// <summary>
-    /// Where the build put the cover kit. A publish ships Assets only under wwwroot (the Content
-    /// link wins over the None copy), a plain build ships both, so look in both, as the logo does.
-    /// </summary>
-    internal static string KitDirectoryIn(string baseDirectory)
-    {
-        var beside = System.IO.Path.Combine(baseDirectory, "Assets", "cover-kit");
-        var served = System.IO.Path.Combine(baseDirectory, "wwwroot", "Assets", "cover-kit");
-        return Directory.Exists(beside) || !Directory.Exists(served) ? beside : served;
-    }
-
-    private CoverKit Kit => LazyInitializer.EnsureInitialized(ref _kit, () => new CoverKit(_kitDirectory, _logger));
 
     private Image? GetOctoLogo()
     {
@@ -214,81 +199,205 @@ public class CoverArtService
         }
     }
 
-    /// <summary>
-    /// A radio station's cover: its named cover, with no Octo mark. It's a playlist like any
-    /// other, so its cover is just its own design (or the picture someone put in the covers
-    /// folder).
-    /// </summary>
-    public byte[] GetRadioStationCover(string stationName)
-    {
-        var name = string.IsNullOrWhiteSpace(stationName) ? "Octo Radio" : stationName.Trim();
-        return Named(name, null).Cover.Bytes;
-    }
-
-    /// <summary>
-    /// A cover for something Octo names, such as a mix (#54), with no Octo mark: the logo says
-    /// where a result came from, and a mix is the listener's own library.
-    ///
-    /// In order: a picture in the covers folder named after it; the cover kit's design for
-    /// <paramref name="kitName"/> (the genre or decade, or the name itself); the kit's generic
-    /// design in a colour of this name's own; a plain gradient with the name; and last a plain
-    /// placeholder, never the logo. Replacing a picture in the covers folder shows without a restart.
-    /// </summary>
-    public byte[] GetNamedCover(string name, string? kitName = null) => Named(name, kitName).Cover.Bytes;
-
-    private (NamedCover Cover, string Key) Named(string name, string? kitName)
-    {
-        var display = string.IsNullOrWhiteSpace(name) ? "Octo" : name.Trim();
-        var lookup = string.IsNullOrWhiteSpace(kitName) ? display : kitName.Trim();
-        var custom = FindOverride(display, lookup);
-        var key = $"{display}\n{lookup}\n{(custom is null ? 0 : File.GetLastWriteTimeUtc(custom).Ticks)}";
-        if (_namedCovers.Count >= 256) _namedCovers.Clear();
-        var cover = _namedCovers.GetOrAdd(key, _ => RenderNamed(display, lookup, custom));
-        // Nothing could be drawn: a plain placeholder, never the logo. A playlist's cover is its
-        // own, whether Octo made the list or the listener did.
-        return (cover, key);
-    }
-
-    private NamedCover RenderNamed(string display, string lookup, string? custom)
+    /// <summary>Draws one cover and forgets it, so the fonts are loaded before anyone asks.</summary>
+    public void Warm()
     {
         try
         {
-            if (custom is not null && LoadOverride(custom) is { } picture) return new(picture, CoverSource.Override);
-            var kit = Kit;
-            if (kit.TryResolve(lookup, out var entry) && RenderTemplate(kit, entry) is { } designed)
-                return new(designed, CoverSource.Drawn);
-            if (kit.GenericEntry(lookup) is { } generic && RenderTemplate(kit, generic) is { } genericCover)
-                return new(genericCover, CoverSource.Drawn);
-            if (RenderGradientName(display, CoverKit.Generic(lookup)) is { } plain)
-                return new(plain, CoverSource.Drawn);
+            Render(Spec("Warm Radio", ListKinds.Radio, 1, CoverPalette.Seeded("warm")), MinCoverSize);
+            _ = CoverFonts.Fallbacks.Count;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "The cover fonts could not be loaded; list covers will be plain placeholders");
+        }
+    }
+
+    /// <summary>A radio station's cover from its name alone. It's a playlist like any other, with no Octo mark.</summary>
+    public byte[] GetRadioStationCover(string stationName, int? size = null)
+    {
+        var name = string.IsNullOrWhiteSpace(stationName) ? "Octo Radio" : stationName.Trim();
+        return GetNamedCover(name, null, size, ListKinds.Radio);
+    }
+
+    /// <summary>A list's cover from its name alone: its genre's or decade's colour, or its design's own.</summary>
+    public byte[] GetNamedCover(string name, string? label = null, int? size = null, string kind = ListKinds.Mix) =>
+        GetListCoverAsync(new ListCover(name, label, kind), size).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// A list's cover. In order: a picture in the covers folder named after the list or its genre
+    /// or decade; the design in colours from its seed songs' covers; the design turned to its
+    /// genre's or decade's colour; the design in its own colours; and last a plain placeholder,
+    /// never the logo. A replaced picture or a new seed cover shows without a restart.
+    /// </summary>
+    public async Task<byte[]> GetListCoverAsync(ListCover list, int? requestedSize = null, CancellationToken ct = default)
+    {
+        var size = CoverSize(requestedSize);
+        var display = string.IsNullOrWhiteSpace(list.Name) ? "Octo" : list.Name.Trim();
+        var lookup = string.IsNullOrWhiteSpace(list.Label) ? display : list.Label.Trim();
+        try
+        {
+            if (FindOverride(display, lookup) is { } custom)
+            {
+                var overrideKey = $"override\n{custom}\n{File.GetLastWriteTimeUtc(custom).Ticks}\n{size}";
+                if (_namedCovers.TryGetValue(overrideKey, out var cached)) return cached;
+                if (LoadOverride(custom, size) is { } picture) return Remember(overrideKey, picture);
+            }
+
+            var palette = await SeedPaletteAsync(list, display, ct) ?? FallbackPalette(display, lookup);
+            var spec = Spec(display, list.Kind, list.SongCount, palette);
+            var key = $"{_book.Version}\n{spec.Id}\n{spec.Name}\n{spec.Line}\n{spec.Footer}\n{palette.Key}\n{size}";
+            if (_namedCovers.TryGetValue(key, out var drawn)) return drawn;
+            return Remember(key, Render(spec, size));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not draw a cover for {Name}", display);
         }
-        return new(GetPlaceholderCover(branded: false), CoverSource.Legacy);
+        // Nothing could be drawn: a plain placeholder, never the logo. A playlist's cover is its
+        // own, whether Octo made the list or the listener did.
+        return GetPlaceholderCover(branded: false);
     }
 
-    private byte[]? RenderTemplate(CoverKit kit, CoverKit.Entry entry)
+    private byte[] Remember(string key, byte[] bytes)
     {
-        var svg = File.ReadAllText(entry.TemplatePath)
-            .Replace("__BG_FROM__", entry.From)
-            .Replace("__BG_TO__", entry.To)
-            .Replace("__STROKE__", kit.Stroke)
-            .Replace("__STROKE_WIDTH__", kit.StrokeWidth.ToString("0.00", CultureInfo.InvariantCulture));
-        return SvgTemplateRenderer.Render(svg, CoverSize, _logger);
+        if (_namedCovers.Count >= 256) _namedCovers.Clear();
+        return _namedCovers.GetOrAdd(key, bytes);
+    }
+
+    internal static int CoverSize(int? requested) =>
+        Math.Clamp(requested is > 0 ? requested.Value : MinCoverSize, MinCoverSize, MaxCoverSize);
+
+    /// <summary>The design's colours when the songs give none: the genre's or decade's hue, else the gradient's own.</summary>
+    internal CoverPalette FallbackPalette(string display, string lookup) =>
+        (_book.ListHue(lookup) ?? _book.ListHue(display)) is { } hue
+            ? CoverPalette.Of(hue.Hue, hue.Chroma, hue.Hue + 38, hue.Chroma, fromMusic: true)
+            : CoverPalette.Seeded(display);
+
+    /// <summary>
+    /// What goes on a list's cover. The name is the list's own, less a trailing "Radio" on a
+    /// station or "Mix" on a mix, since the light line under it says which it is; "Your Mix"
+    /// stays whole. The foot line is its song count when known. The design is picked by the
+    /// list's full name, which is the same on every request.
+    /// </summary>
+    internal static CoverSpec Spec(string display, string? kind, int? songCount, CoverPalette palette)
+    {
+        var (line, suffix) = kind == ListKinds.Radio ? ("Station", " Radio") : ("Mix", " Mix");
+        var title = display;
+        if (display.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            var head = display[..^suffix.Length].Trim();
+            if (head.Length > 1 && !Possessives.Contains(head)) title = head;
+        }
+        return new CoverSpec(display, title, line, Footer(songCount), palette);
+    }
+
+    private static readonly HashSet<string> Possessives = new(StringComparer.OrdinalIgnoreCase) { "Your", "My", "Our" };
+
+    internal static string? Footer(int? songs) => songs switch
+    {
+        1 => "1 song",
+        > 1 => songs.Value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " songs",
+        _ => null,
+    };
+
+    internal byte[] Render(CoverSpec spec, int size, bool drawWords = true)
+    {
+        using var image = Paint(spec, size, drawWords);
+        using var ms = new MemoryStream();
+        image.Save(ms, Jpeg);
+        return ms.ToArray();
+    }
+
+    internal Image<Rgba32> Paint(CoverSpec spec, int size, bool drawWords = true) =>
+        CoverPainter.Paint(Compose(spec, size), _setter, drawWords);
+
+    internal CoverArt Compose(CoverSpec spec, int size) => CoverLayout.Compose(spec, size, _setter, _book);
+
+    /// <summary>
+    /// Colours from the list's seed covers: fetched until two pictures are in hand, all within a
+    /// few seconds. Remembered by which seeds they were, so a new seed changes the cover and an
+    /// unchanged one costs nothing. Null when there are none, or they are grey.
+    /// </summary>
+    private async Task<CoverPalette?> SeedPaletteAsync(ListCover list, string display, CancellationToken ct)
+    {
+        if (list.Seeds is null) return null;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(SeedWait);
+        try
+        {
+            var seeds = await list.Seeds(budget.Token);
+            if (seeds.Count == 0) return null;
+            var memoKey = display + "\n" + string.Join("\n", seeds.Select(seed => seed.Identity));
+            if (_palettes.TryGetValue(memoKey, out var known) && known.Until > DateTime.UtcNow) return known.Palette;
+
+            var covers = new List<IReadOnlyList<Swatch>>();
+            foreach (var seed in seeds)
+            {
+                if (covers.Count >= 2) break;
+                try
+                {
+                    if (await seed.Fetch(budget.Token) is { Length: > 0 } bytes && SwatchesOf(bytes) is { } swatches)
+                        covers.Add(swatches);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogDebug(ex, "A seed cover for {Name} could not be fetched", display);
+                }
+            }
+            var palette = covers.Count == 0 ? null : CoverPalette.FromCovers(covers, display);
+            if (palette is { FromMusic: false }) palette = null;
+            var ttl = palette is not null ? PaletteHit : covers.Count > 0 ? PaletteGrey : PaletteMiss;
+            if (_palettes.Count >= 1024) _palettes.Clear();
+            _palettes[memoKey] = (palette, DateTime.UtcNow + ttl);
+            return palette;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Out of time: the fallback colours now, the seeds on a later request.
+            return null;
+        }
+    }
+
+    /// <summary>A picture's main colours, read from a small copy of it.</summary>
+    internal static IReadOnlyList<Swatch>? SwatchesOf(byte[] picture)
+    {
+        try
+        {
+            using var image = Image.Load<Rgba32>(new DecoderOptions { TargetSize = new Size(64, 64) }, picture);
+            if (image.Width > 64 || image.Height > 64) image.Mutate(ctx => ctx.Resize(64, 64));
+            var pixels = new int[image.Width * image.Height];
+            image.ProcessPixelRows(access =>
+            {
+                for (var y = 0; y < access.Height; y++)
+                {
+                    var row = access.GetRowSpan(y);
+                    for (var x = 0; x < row.Length; x++)
+                        pixels[y * image.Width + x] = unchecked((int)0xFF000000) | (row[x].R << 16) | (row[x].G << 8) | row[x].B;
+                }
+            });
+            return CoverColours.Swatches(pixels);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>
-    /// A picture in the covers folder named after the playlist, the genre or decade, or the kit's
-    /// file name for it. Only ever inside that folder, whatever the name contains.
+    /// A picture in the covers folder named after the playlist or its genre or decade. Only ever
+    /// inside that folder, whatever the name contains.
     /// </summary>
     private string? FindOverride(string display, string lookup)
     {
         if (_coversDirectory is null || !Directory.Exists(_coversDirectory)) return null;
         var root = System.IO.Path.GetFullPath(_coversDirectory).TrimEnd(System.IO.Path.DirectorySeparatorChar)
             + System.IO.Path.DirectorySeparatorChar;
-        foreach (var stem in new[] { SafeName(display), SafeName(lookup), SafeName(CoverKit.Slug(lookup)) }.Distinct())
+        foreach (var stem in new[] { SafeName(display), SafeName(lookup) }.Distinct())
         foreach (var extension in new[] { ".jpg", ".jpeg", ".png", ".webp" })
         {
             var path = System.IO.Path.GetFullPath(System.IO.Path.Combine(_coversDirectory, stem + extension));
@@ -304,7 +413,7 @@ public class CoverArtService
     }
 
     /// <summary>Someone's own picture, cropped to its centre square and sized like every cover.</summary>
-    private byte[]? LoadOverride(string path)
+    private byte[]? LoadOverride(string path, int size)
     {
         try
         {
@@ -312,9 +421,9 @@ public class CoverArtService
             var side = Math.Min(image.Width, image.Height);
             image.Mutate(ctx => ctx
                 .Crop(new Rectangle((image.Width - side) / 2, (image.Height - side) / 2, side, side))
-                .Resize(CoverSize, CoverSize));
+                .Resize(size, size));
             using var ms = new MemoryStream();
-            image.Save(ms, new JpegEncoder { Quality = 90 });
+            image.Save(ms, Jpeg);
             return ms.ToArray();
         }
         catch (Exception ex)
@@ -323,38 +432,19 @@ public class CoverArtService
             return null;
         }
     }
-
-    /// <summary>The kit's colours and the name in white, for when no template can be drawn.</summary>
-    private byte[]? RenderGradientName(string name, (string From, string To) colours)
-    {
-        if (!Color.TryParse(colours.From, out var from) || !Color.TryParse(colours.To, out var to)) return null;
-        using var image = new Image<Rgba32>(CoverSize, CoverSize);
-        image.Mutate(ctx => ctx.Fill(new LinearGradientBrush(new PointF(0, 0), new PointF(CoverSize, CoverSize),
-            GradientRepetitionMode.None, new ColorStop(0, from), new ColorStop(1, to))));
-
-        if (CoverFonts.Family() is { } family)
-        {
-            RichTextOptions options;
-            var size = 72f;
-            FontRectangle measured;
-            do
-            {
-                options = new RichTextOptions(family.CreateFont(size, FontStyle.Bold))
-                {
-                    Origin = new PointF(CoverSize / 2f, CoverSize / 2f),
-                    WrappingLength = 520,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextAlignment = TextAlignment.Center,
-                };
-                measured = TextMeasurer.MeasureSize(name, options);
-                size -= 4f;
-            } while ((measured.Width > 520f || measured.Height > 400f) && size >= 28f);
-            image.Mutate(ctx => ctx.DrawText(options, name, Color.White));
-        }
-
-        using var ms = new MemoryStream();
-        image.Save(ms, new JpegEncoder { Quality = 90 });
-        return ms.ToArray();
-    }
 }
+
+/// <summary>The kinds of list Octo makes.</summary>
+public static class ListKinds
+{
+    public const string Radio = "radio";
+    public const string Mix = "mix";
+}
+
+/// <summary>A list whose cover Octo draws: its name, its genre or decade, its kind, its song
+/// count if known, and the songs whose covers give it its colours.</summary>
+public sealed record ListCover(string Name, string? Label = null, string Kind = ListKinds.Mix,
+    Func<CancellationToken, Task<IReadOnlyList<CoverSeed>>>? Seeds = null, int? SongCount = null);
+
+/// <summary>One seed cover: what it is (so a palette can be remembered by it) and how to get it.</summary>
+public sealed record CoverSeed(string Identity, Func<CancellationToken, Task<byte[]?>> Fetch);

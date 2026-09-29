@@ -1876,18 +1876,27 @@ public class SubsonicController : ControllerBase
             parameters.GetValueOrDefault("u", ""), id);
         if (radioStation is not null)
         {
-            var bytes = _coverArtService?.GetRadioStationCover(radioStation.Name);
-            if (bytes is not null && bytes.Length > 0) return File(bytes, "image/jpeg");
-            return ServePlaceholder();
+            if (_coverArtService is null) return ServePlaceholder(branded: false);
+            var seeds = StationCoverSeeds(radioStation);
+            var bytes = await _coverArtService.GetListCoverAsync(
+                new ListCover(radioStation.Name, StationCoverLabel(radioStation), ListKinds.Radio,
+                    _ => Task.FromResult(seeds), radioStation.Tracks.Count),
+                RequestedCoverSize(parameters), HttpContext.RequestAborted);
+            return File(bytes, "image/jpeg");
         }
 
         // A mix is the listener's own library, so its cover carries no Octo mark: the logo says
         // where a result came from, and this came from them.
-        if (_generatedPlaylists?.Find(parameters.GetValueOrDefault("u", ""), id) is { } mixCover)
+        var coverUser = parameters.GetValueOrDefault("u", "");
+        if (_generatedPlaylists?.Find(coverUser, id) is { } mixCover)
         {
-            var bytes = _coverArtService?.GetNamedCover(mixCover.Name, mixCover.Label);
-            if (bytes is not null && bytes.Length > 0) return File(bytes, "image/jpeg");
-            return ServePlaceholder(branded: false);
+            if (_coverArtService is null) return ServePlaceholder(branded: false);
+            var bytes = await _coverArtService.GetListCoverAsync(
+                new ListCover(mixCover.Name, mixCover.Label, ListKinds.Mix,
+                    ct => MixCoverSeedsAsync(coverUser, mixCover, parameters, ct),
+                    _generatedPlaylists.Drawn(coverUser, mixCover)?.Count),
+                RequestedCoverSize(parameters), HttpContext.RequestAborted);
+            return File(bytes, "image/jpeg");
         }
 
         // Playlist covers haven't changed — keep the existing path.
@@ -1997,6 +2006,81 @@ public class SubsonicController : ControllerBase
             _logger.LogDebug("cover art relay failed for local id {Id}: {Msg}", id, ex.Message);
             return ServePlaceholder(branded: false);
         }
+    }
+
+    /// <summary>The size a client asked a cover at, if it asked.</summary>
+    private static int? RequestedCoverSize(IReadOnlyDictionary<string, string> parameters) =>
+        int.TryParse(parameters.GetValueOrDefault("size", ""), out var size) && size > 0 ? size : null;
+
+    /// <summary>A genre or pinned station's tag, which stands in for its colour when its songs give none.</summary>
+    private static string? StationCoverLabel(LastFmRadioStation station) =>
+        station.Kind is LastFmRadioStationKind.Genre or LastFmRadioStationKind.Pinned or LastFmRadioStationKind.Discovery
+            ? station.Seeds.FirstOrDefault()
+            : null;
+
+    /// <summary>
+    /// The songs whose covers colour a station's cover: its seed artists' songs first (the
+    /// artist of an artist station, the top seeds of Your Mix), then its first songs, one per
+    /// album, four at most. Looked up like any song's cover outside the library.
+    /// </summary>
+    internal IReadOnlyList<CoverSeed> StationCoverSeeds(LastFmRadioStation station)
+    {
+        if (_coverArtAggregator is not { } covers) return [];
+        var seedArtists = station.Kind is LastFmRadioStationKind.Artist or LastFmRadioStationKind.YourMix or LastFmRadioStationKind.Starter
+            ? station.Seeds.Take(3).Select(SongIdentity.Key).Where(key => key.Length > 0).ToList()
+            : [];
+        int Rank(LastFmRadioTrack track)
+        {
+            var index = seedArtists.IndexOf(SongIdentity.Key(track.Artist));
+            return index < 0 ? seedArtists.Count : index;
+        }
+        return station.Tracks
+            .Where(track => !string.IsNullOrWhiteSpace(track.Artist) && !string.IsNullOrWhiteSpace(track.Title))
+            .Select((track, order) => (track, order))
+            .OrderBy(pair => Rank(pair.track)).ThenBy(pair => pair.order)
+            .Select(pair => pair.track)
+            .DistinctBy(track => SongIdentity.Key(track.Artist) + "|" + SongIdentity.Key(track.Album ?? track.Title))
+            .Take(4)
+            .Select(track => new CoverSeed(
+                $"song|{SongIdentity.Key(track.Artist)}|{SongIdentity.Key(track.Title)}",
+                ct => covers.GetCoverAsync(new SoulseekRouting
+                {
+                    Kind = RoutingKind.Song, Artist = track.Artist, Title = track.Title, Album = track.Album,
+                }, false, ct)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The songs whose covers colour a mix's cover: the first of this period's draw, one per
+    /// album cover, four at most, read from Navidrome as the listener. A period's first draw is
+    /// made only for a caller Navidrome accepts, as opening the mix would.
+    /// </summary>
+    private async Task<IReadOnlyList<CoverSeed>> MixCoverSeedsAsync(string username,
+        Octo.Services.Library.GeneratedPlaylist mix, Dictionary<string, string> parameters, CancellationToken ct)
+    {
+        if (_generatedPlaylists is null) return [];
+        var auth = parameters.Where(pair => pair.Key is not ("id" or "size")).ToDictionary(pair => pair.Key, pair => pair.Value);
+        var songs = _generatedPlaylists.Drawn(username, mix);
+        if (songs is null)
+        {
+            var ping = await _proxyService.RelaySafeAsync("rest/ping", auth);
+            if (!ping.Success || ping.Body is null || !IsSuccessfulSubsonicResponse(ping.Body, auth.GetValueOrDefault("f", "xml")))
+                return [];
+            // Not cancelled with the cover: a draw that finishes late still serves the next request.
+            songs = await _generatedPlaylists.MaterializeAsync(username, mix, parameters, CancellationToken.None).WaitAsync(ct);
+        }
+        return songs
+            .Select(song => song["coverArt"]?.ToString())
+            .Where(cover => !string.IsNullOrEmpty(cover))
+            .Distinct(StringComparer.Ordinal)
+            .Take(4)
+            .Select(cover => new CoverSeed("navidrome|" + cover, async _ =>
+            {
+                var picture = await _proxyService.RelayAsync("rest/getCoverArt",
+                    new Dictionary<string, string>(auth) { ["id"] = cover!, ["size"] = "128" });
+                return picture.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true ? picture.Body : null;
+            }))
+            .ToList();
     }
 
     /// <summary>Whether the request comes from the Octo app, which shows on its own

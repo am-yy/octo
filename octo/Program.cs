@@ -376,6 +376,10 @@ var app = builder.Build();
 // dashboard or first-run automation can change anything.
 app.Services.GetRequiredService<Octo.Services.Admin.RestartTracker>();
 
+// The first list cover loads the fonts and finds the system's fallbacks, which takes a second
+// or two; done here in the background so no client waits for it.
+_ = Task.Run(() => app.Services.GetRequiredService<Octo.Services.CoverArt.CoverArtService>().Warm());
+
 // First-run automation (best-effort, background). Octo is an accessory to an
 // existing Navidrome, so it self-configures what it can: if no upstream URL is
 // set, scan the LAN and adopt the server when exactly one is found; then detect

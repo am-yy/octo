@@ -310,6 +310,12 @@ public sealed class GeneratedPlaylistService
         return Parse(drawn);
     }
 
+    /// <summary>The songs of one mix for this period if they have been drawn already, else null. Never fetches.</summary>
+    public IReadOnlyList<JsonObject>? Drawn(string username, GeneratedPlaylist playlist) =>
+        _drawn.TryGetValue($"{UserKey(username)}|{playlist.Id}|{playlist.PeriodStartUtc.Ticks}", out string[]? cached) && cached is not null
+            ? Parse(cached)
+            : null;
+
     private static IReadOnlyList<JsonObject> Parse(IEnumerable<string> songs) =>
         songs.Select(song => JsonNode.Parse(song)!.AsObject()).ToList();
 

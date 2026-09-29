@@ -17,12 +17,19 @@
         <!-- Mirror Assets/ into wwwroot/Assets/ at build so the admin UI and
              cover-art watermarking can both reach the logo via the same
              bytes. wwwroot/Assets is what MapStaticAssets serves to the
-             browser (cover art reads from /app/Assets via filesystem).
-             The Web SDK already takes every *.json as Content, so the cover kit's
-             palette.json is removed first or it would be included twice. -->
-        <Content Remove="Assets\**\*.json" />
+             browser (cover art reads from /app/Assets via filesystem). -->
         <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest"
                  Link="wwwroot/Assets/%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- The list cover design, shared with the Octo apps, and its fonts, inside the
+             assembly so no publish layout can lose them. The font licence ships beside
+             the app as the OFL asks. -->
+        <Content Remove="Services\CoverArt\Design\**\*.json" />
+        <EmbeddedResource Include="Services\CoverArt\Design\*.json" LogicalName="Octo.CoverDesign.%(Filename)%(Extension)" />
+        <EmbeddedResource Include="Services\CoverArt\Design\Fonts\*.ttf" LogicalName="Octo.CoverDesign.Fonts.%(Filename)%(Extension)" />
+        <None Include="Services\CoverArt\Design\Fonts\OFL.txt" Link="licenses/Inter-OFL.txt" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>

@@ -467,13 +467,16 @@ of each mix, and of the Discovery Mix station, for tracks new to the listener: n
 or added in the last `MIX_NEW_DAYS`. It is 0 by default, which changes nothing.
 `MIX_NAME_FORMAT` names them, `{0}` being the genre or decade ("{0} Mix" when empty).
 
-Mix and station covers come from [ncfer's cover kit](https://github.com/ncfer/octo-cover-kit),
-shipped in `Assets/cover-kit` with its licences in `NOTICE.md`: a design per genre, per
-decade from the 1990s, and for Your Mix and Discovery, and otherwise the kit's generic design
-in a colour of the name's own. A station cover also carries the small Octo badge, because a
-station is mostly music from outside the library; a mix is the listener's own and does not.
-A picture in `/app/config/covers` named after a mix or station (`Rock Mix.jpg`, `Rock.png`)
-replaces its cover, and replacing the picture shows without a restart.
+Mix and station covers are drawn by Octo in the same design as the Octo apps' playlist
+covers: the list's name in white on soft fields of colour taken from the covers of its first
+songs (a station's seed artist first), or its genre's or decade's colour when those give none.
+The design, one of sixteen gradients picked by the list's name, is the same every time for
+the same list, and the words always keep 4.5:1 contrast. Names are set in
+[Inter](https://github.com/rsms/inter) 4.1 (SIL Open Font License, shipped as
+`licenses/Inter-OFL.txt`); names in scripts Inter lacks use Noto CJK, DejaVu or Symbola from
+the image. No cover carries an Octo mark. A picture in `/app/config/covers` named after a mix
+or station (`Rock Mix.jpg`), or after its genre or decade (`Rock.png`), replaces its cover,
+and replacing the picture shows without a restart.
 
 ### Download path on Windows and manual installs
 

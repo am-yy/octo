@@ -23,7 +23,9 @@ WORKDIR /app
 # fpcalc (libchromaprint-tools) is the other half of download verification: it turns a
 # finished download into the Chromaprint fingerprint AcoustID is asked about. Absent, the
 # feature degrades to a no-op and logs once; it never fails a download.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core libchromaprint-tools \
+# Generated list covers set names in Inter (inside the app); Noto CJK and Symbola draw the
+# Chinese, Japanese, Korean and emoji names Inter has no letters for, DejaVu Arabic and Hebrew.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-cjk fonts-symbola libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/downloads
 

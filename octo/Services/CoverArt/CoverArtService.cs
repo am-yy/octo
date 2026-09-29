@@ -25,8 +25,6 @@ public class CoverArtService
     private Image? _octoLogo;
     private readonly object _logoLock = new();
     private volatile bool _logoLoadAttempted;
-    private readonly ConcurrentDictionary<string, byte[]> _radioStationCovers =
-        new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, NamedCover> _namedCovers = new(StringComparer.Ordinal);
     private readonly string? _coversDirectory;
     private readonly string _kitDirectory;
@@ -34,8 +32,8 @@ public class CoverArtService
 
     private const int CoverSize = 600;
 
-    /// <summary>Where a named cover came from. Only a drawn one may carry the Octo badge: an
-    /// override is someone's own picture, and the last-resort render already is the logo.</summary>
+    /// <summary>Where a named cover came from: someone's own picture in the covers folder, a
+    /// drawn design, or the last-resort render.</summary>
     private enum CoverSource { Override, Drawn, Legacy }
 
     private sealed record NamedCover(byte[] Bytes, CoverSource Source);
@@ -217,17 +215,14 @@ public class CoverArtService
     }
 
     /// <summary>
-    /// A radio station's cover: its named cover with the small Octo badge in the corner, the same
-    /// mark an external track carries, because a station is mostly music from outside the library.
-    /// A picture someone put in the covers folder is used as it is.
+    /// A radio station's cover: its named cover, with no Octo mark. It's a playlist like any
+    /// other, so its cover is just its own design (or the picture someone put in the covers
+    /// folder).
     /// </summary>
     public byte[] GetRadioStationCover(string stationName)
     {
         var name = string.IsNullOrWhiteSpace(stationName) ? "Octo Radio" : stationName.Trim();
-        var (cover, key) = Named(name, null, station: true);
-        if (cover.Source != CoverSource.Drawn) return cover.Bytes;
-        if (_radioStationCovers.Count >= 128) _radioStationCovers.Clear();
-        return _radioStationCovers.GetOrAdd(key, _ => AddOctoBadge(cover.Bytes));
+        return Named(name, null).Cover.Bytes;
     }
 
     /// <summary>
@@ -239,9 +234,9 @@ public class CoverArtService
     /// design in a colour of this name's own; a plain gradient with the name; and last a plain
     /// placeholder, never the logo. Replacing a picture in the covers folder shows without a restart.
     /// </summary>
-    public byte[] GetNamedCover(string name, string? kitName = null) => Named(name, kitName, station: false).Cover.Bytes;
+    public byte[] GetNamedCover(string name, string? kitName = null) => Named(name, kitName).Cover.Bytes;
 
-    private (NamedCover Cover, string Key) Named(string name, string? kitName, bool station)
+    private (NamedCover Cover, string Key) Named(string name, string? kitName)
     {
         var display = string.IsNullOrWhiteSpace(name) ? "Octo" : name.Trim();
         var lookup = string.IsNullOrWhiteSpace(kitName) ? display : kitName.Trim();
@@ -249,9 +244,8 @@ public class CoverArtService
         var key = $"{display}\n{lookup}\n{(custom is null ? 0 : File.GetLastWriteTimeUtc(custom).Ticks)}";
         if (_namedCovers.Count >= 256) _namedCovers.Clear();
         var cover = _namedCovers.GetOrAdd(key, _ => RenderNamed(display, lookup, custom));
-        // Nothing could be drawn. A station falls back to the old logo render, which is Octo's to
-        // mark; anything else to a plain placeholder, since the logo would claim the listener's music.
-        if (cover.Source == CoverSource.Legacy && !station) cover = new NamedCover(GetPlaceholderCover(branded: false), CoverSource.Legacy);
+        // Nothing could be drawn: a plain placeholder, never the logo. A playlist's cover is its
+        // own, whether Octo made the list or the listener did.
         return (cover, key);
     }
 
@@ -272,7 +266,7 @@ public class CoverArtService
         {
             _logger.LogWarning(ex, "Could not draw a cover for {Name}", display);
         }
-        return new(RenderLegacyStationCover(display), CoverSource.Legacy);
+        return new(GetPlaceholderCover(branded: false), CoverSource.Legacy);
     }
 
     private byte[]? RenderTemplate(CoverKit kit, CoverKit.Entry entry)
@@ -362,58 +356,5 @@ public class CoverArtService
         using var ms = new MemoryStream();
         image.Save(ms, new JpegEncoder { Quality = 90 });
         return ms.ToArray();
-    }
-
-    /// <summary>
-    /// The cover every station had before the kit: the Octo logo over the station's name. Now only
-    /// the last resort, when nothing else can be drawn.
-    /// </summary>
-    private byte[] RenderLegacyStationCover(string stationName)
-    {
-        const int size = 600;
-
-        try
-        {
-            using var image = new Image<Rgba32>(size, size, new Rgba32(0, 0, 0, 255));
-            const int logoSize = 300;
-            using (var sized = CloneOctoLogo(logoSize, logoSize))
-            {
-                if (sized is not null)
-                    image.Mutate(ctx => ctx.DrawImage(sized, new Point(150, 78), 1f));
-            }
-
-            var families = SystemFonts.Families.ToList();
-            if (families.Count > 0)
-            {
-                var family = families.FirstOrDefault(item =>
-                    item.Name.Equals("DejaVu Sans", StringComparison.OrdinalIgnoreCase));
-                if (string.IsNullOrEmpty(family.Name)) family = families[0];
-                var fontSize = 52f;
-                Font font;
-                FontRectangle measured;
-                do
-                {
-                    font = family.CreateFont(fontSize, FontStyle.Bold);
-                    measured = TextMeasurer.MeasureSize(stationName, new TextOptions(font));
-                    fontSize -= 2f;
-                } while (measured.Width > 520f && fontSize >= 22f);
-
-                // This is the dominant purple in octo_logo.png. Keeping the
-                // label here makes the station name read as part of the existing
-                // brand rather than as client-provided album metadata.
-                var purple = new Color(new Rgba32(147, 118, 255, 255));
-                var origin = new PointF((size - measured.Width) / 2f, 432f);
-                image.Mutate(ctx => ctx.DrawText(stationName, font, purple, origin));
-            }
-
-            using var ms = new MemoryStream();
-            image.Save(ms, new JpegEncoder { Quality = 88 });
-            return ms.ToArray();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to render radio station cover for {Station}", stationName);
-            return GetPlaceholderCover();
-        }
     }
 }

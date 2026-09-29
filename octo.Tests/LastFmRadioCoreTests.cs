@@ -20,8 +20,8 @@ namespace Octo.Tests;
 
 public class LastFmRadioCoreTests
 {
-    // RadioStationCovers_CarryTheOctoBadgeAcrossConcurrentFirstRequests (CoverKitTests.cs) replaces
-    // the old centred-logo check: a station's cover is now its kit design with the corner badge.
+    // RadioStationCovers_StayPlainAcrossConcurrentFirstRequests (CoverKitTests.cs) replaces the
+    // old centred-logo check: a station's cover is its kit design, with no Octo mark.
 
     [Theory]
     [InlineData("Beyoncé feat. Jay-Z", "Beyoncé")]

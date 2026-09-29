@@ -270,26 +270,26 @@ public class NamedCoverTests : IDisposable
         Assert.False(Near(Pixel(Service().GetNamedCover("../escape"), 300, 300), "#00FF00"));
     }
 
+    /// <summary>A station is a playlist like a mix: its cover is its own design, with no Octo
+    /// badge in the corner.</summary>
     [Fact]
-    public void MixCover_HasNoOctoBadge()
+    public void StationCover_IsThePlainDesignLikeAMix()
     {
         var service = Service();
 
         var mix = service.GetNamedCover("Rock Radio");
         var station = service.GetRadioStationCover("Rock Radio");
 
-        // The badge sits top left, 28% of the cover plus 3% padding; the rest is the same design.
-        // The logo has transparent margins, so it moves the corner's average by a few levels while
-        // everything outside the corner stays identical.
-        var inside = Changed(mix, station, 18, 18, 186, 186);
-        var outside = Changed(mix, station, 400, 400, 580, 580);
-        Assert.True(inside > 1_000, $"the station should carry the badge: {inside} pixels changed");
-        Assert.True(outside == 0, $"the rest should be the same design: {outside} pixels changed");
-        Assert.True(Near(Pixel(mix, 60, 60), "#B85851", 40), "the mix corner should be the plain design");
+        // The old badge sat top left, 28% of the cover plus 3% padding. It would show there:
+        var badged = service.AddOctoBadge(mix);
+        Assert.True(Changed(mix, badged, 18, 18, 186, 186) > 1_000, "the badge should be visible when applied");
+        Assert.Equal(0, Changed(mix, station, 18, 18, 186, 186));
+        Assert.Equal(0, Changed(mix, station, 400, 400, 580, 580));
+        Assert.True(Near(Pixel(station, 60, 60), "#B85851", 40), "the station corner should be the plain design");
     }
 
     [Fact]
-    public void RadioStationCovers_CarryTheOctoBadgeAcrossConcurrentFirstRequests()
+    public void RadioStationCovers_StayPlainAcrossConcurrentFirstRequests()
     {
         var service = Service();
         var covers = Enumerable.Range(0, 16).AsParallel().WithDegreeOfParallelism(8)
@@ -297,10 +297,7 @@ public class NamedCoverTests : IDisposable
             .ToList();
 
         Assert.All(covers, cover =>
-        {
-            var inside = Changed(service.GetNamedCover(cover.Name), cover.Bytes, 18, 18, 186, 186);
-            Assert.True(inside > 1_000, $"{cover.Name} has no badge: {inside} pixels changed");
-        });
+            Assert.Equal(0, Changed(service.GetNamedCover(cover.Name), cover.Bytes, 18, 18, 186, 186)));
     }
 
     /// <summary>A picture someone chose for a station is theirs, and is not stamped.</summary>

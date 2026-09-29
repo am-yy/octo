@@ -55,11 +55,13 @@ internal static class CoverFonts
 
     public static IReadOnlyList<FontFamily> Fallbacks => Installed.Value;
 
-    /// <summary>The design's file for a weight: 600 the name, 300 the light line, anything else the foot line.</summary>
+    /// <summary>The design's file for a weight: the name's, the light line's, or the foot line's.</summary>
     public static FontFamily ForWeight(int weight)
     {
-        var fonts = CoverBook.Default.Fonts;
-        var file = weight >= 500 ? fonts.Title : weight < 350 ? fonts.Line : fonts.Footer;
+        var book = CoverBook.Default;
+        var file = weight == book.Layout.Title.Weight ? book.Fonts.Title
+            : weight == book.Layout.Line.Weight ? book.Fonts.Line
+            : book.Fonts.Footer;
         return Shipped.Value[file];
     }
 
@@ -105,7 +107,7 @@ internal static class CoverFonts
         }
         if (best is not { } chosen) return (interFamily, FontStyle.Regular, Fallbacks);
 
-        var bold = weight >= 500 && chosen.GetAvailableStyles().Contains(FontStyle.Bold);
+        var bold = weight == CoverBook.Default.Layout.Title.Weight && chosen.GetAvailableStyles().Contains(FontStyle.Bold);
         var rest = new List<FontFamily> { interFamily };
         rest.AddRange(Fallbacks.Where(f => !f.Equals(chosen)));
         return (chosen, bold ? FontStyle.Bold : FontStyle.Regular, rest);
@@ -126,10 +128,10 @@ internal sealed class CoverTypesetter : ICoverTypesetter
     {
         var (lines, cut) = Lines(text, type, width);
         var widest = lines.Count == 0 ? 0f : lines.Max(line => line.Width);
-        return new Measured(lines.Count, widest, MathF.Ceiling(lines.Count * type.SizePx * type.LineHeight), cut);
+        return new Measured(lines.Count, widest, lines.Count * type.SizePx * type.LineHeight, cut);
     }
 
-    public float WidthOf(string text, CoverType type) => MathF.Ceiling(Advance(text, type));
+    public float WidthOf(string text, CoverType type) => Advance(text, type);
 
     private static TextOptions Options(Font font, IReadOnlyList<FontFamily> fallbacks) => new(font)
     {

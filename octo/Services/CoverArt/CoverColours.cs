@@ -33,8 +33,6 @@ public static class CoverColours
         return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
     }
 
-    private static double Encoded(double v) => v <= 0.0031308 ? 12.92 * v : 1.055 * Math.Pow(v, 1 / 2.4) - 0.055;
-
     public static Lch ToLch(int argb)
     {
         var r = Linear(R(argb));
@@ -49,41 +47,6 @@ public static class CoverColours
         var hue = Math.Atan2(bb, a) * 180 / Math.PI;
         if (hue < 0) hue += 360;
         return new Lch(lightness, Math.Sqrt(a * a + bb * bb), hue);
-    }
-
-    private static (double R, double G, double B) LinearRgb(double l, double c, double h)
-    {
-        var rad = h * Math.PI / 180;
-        var a = c * Math.Cos(rad);
-        var b = c * Math.Sin(rad);
-        var l1 = Math.Pow(l + 0.3963377774 * a + 0.2158037573 * b, 3);
-        var m1 = Math.Pow(l - 0.1055613458 * a - 0.0638541728 * b, 3);
-        var s1 = Math.Pow(l - 0.0894841775 * a - 1.2914855480 * b, 3);
-        return (4.0767416621 * l1 - 3.3077115913 * m1 + 0.2309699292 * s1,
-            -1.2684380046 * l1 + 2.6097574011 * m1 - 0.3413193965 * s1,
-            -0.0041960863 * l1 - 0.7034186147 * m1 + 1.7076147010 * s1);
-    }
-
-    private static bool Shown((double R, double G, double B) rgb) =>
-        rgb.R is >= -1e-4 and <= 1.0001 && rgb.G is >= -1e-4 and <= 1.0001 && rgb.B is >= -1e-4 and <= 1.0001;
-
-    /// <summary>The colour as ARGB; a chroma the screen cannot show is lowered, keeping lightness and hue.</summary>
-    public static int FromLch(double l, double c, double h)
-    {
-        var lightness = Math.Clamp(l, 0.0, 1.0);
-        var rgb = LinearRgb(lightness, c, h);
-        if (!Shown(rgb))
-        {
-            double low = 0, high = c;
-            for (var i = 0; i < 24; i++)
-            {
-                var mid = (low + high) / 2;
-                if (Shown(LinearRgb(lightness, mid, h))) low = mid; else high = mid;
-            }
-            rgb = LinearRgb(lightness, low, h);
-        }
-        static int Byte(double v) => Math.Clamp(Round(Encoded(Math.Clamp(v, 0.0, 1.0)) * 255), 0, 255);
-        return unchecked((int)0xFF000000) | (Byte(rgb.R) << 16) | (Byte(rgb.G) << 8) | Byte(rgb.B);
     }
 
     /// <summary>How far apart two hues are around the circle, 0 to 180 degrees.</summary>
@@ -101,20 +64,6 @@ public static class CoverColours
         var da = x.C * Math.Cos(ra) - y.C * Math.Cos(rb);
         var db = x.C * Math.Sin(ra) - y.C * Math.Sin(rb);
         return Math.Sqrt(Math.Pow(x.L - y.L, 2) + da * da + db * db);
-    }
-
-    /// <summary>
-    /// Yellow and orange turn to olive and brown in the dark, so a deep colour of those hues
-    /// moves to red, or to green for music that is green or blue.
-    /// </summary>
-    public static double NotOlive(double hue, double lightness, bool towardRed)
-    {
-        var h = (hue % 360 + 360) % 360;
-        if (lightness < 0.45 && towardRed && h is >= 40.0 and <= 170.0) return 20.0;
-        if (lightness < 0.45 && h is >= 40.0 and <= 125.0) return 145.0;
-        if (lightness < 0.62 && towardRed && h is >= 70.0 and <= 160.0) return 55.0;
-        if (lightness < 0.62 && h is >= 70.0 and <= 125.0) return 140.0;
-        return h;
     }
 
     /// <summary>The colour with this opacity.</summary>
@@ -219,58 +168,42 @@ public static class CoverColours
 }
 
 /// <summary>
-/// The colours a cover is designed from: two hues and how vivid each is, from its music, or
-/// from its name when it has none.
+/// The colours of a list's music: the strongest colour of its first covers, and the strongest of
+/// a clearly different hue if there is one. A cover's background is picked to match them.
 /// </summary>
-public sealed record CoverPalette(int Hue, double Chroma, int Hue2, double Chroma2, bool FromMusic)
+public sealed record CoverMusic(Lch First, Lch? Second)
 {
-    private const double FirstLow = 0.07, FirstHigh = 0.15, SecondLow = 0.09, SecondHigh = 0.19;
-
-    /// <summary>Colours under this chroma read as grey and give no hue to work from.</summary>
+    /// <summary>Colours under this chroma read as grey.</summary>
     private const double Colourless = 0.035;
 
-    /// <summary>Hues at least this far apart make a pair worth showing.</summary>
+    /// <summary>Hues at least this far apart make a pair worth matching.</summary>
     private const double PairApart = 28.0;
 
-    public string Key => $"{Hue}.{CoverColours.Round(Chroma * 1000)}.{Hue2}.{CoverColours.Round(Chroma2 * 1000)}{(FromMusic ? "m" : "s")}";
+    /// <summary>The colours, rounded, for cache keys: the same colours give the same key.</summary>
+    public string Key => Describe(First) + (Second is { } second ? "/" + Describe(second) : "");
 
-    public static CoverPalette Of(double hue, double chroma, double hue2, double chroma2, bool fromMusic) => new(
-        Wrap(hue), Round3(Math.Clamp(chroma, FirstLow, FirstHigh)), Wrap(hue2), Round3(Math.Clamp(chroma2, SecondLow, SecondHigh)), fromMusic);
+    private static string Describe(Lch c) =>
+        $"{CoverColours.Round(c.L * 100)}.{CoverColours.Round(c.C * 1000)}.{CoverColours.Round(c.H) % 360}";
 
-    private static int Wrap(double h) => (CoverColours.Round(h) % 360 + 360) % 360;
-    private static double Round3(double v) => CoverColours.Round(v * 1000) / 1000.0;
+    /// <summary>A stand-in for music of one hue, as a genre or decade gives.</summary>
+    public static CoverMusic OfHue(double hue, double chroma) => new(new Lch(0.62, chroma, hue), null);
 
     /// <summary>
-    /// A palette from the main colours of some covers (a list of swatches for each), weighed by
-    /// how much of its cover each colour fills and how vivid it is. The strongest gives the first
-    /// hue; the strongest of a clearly different hue the second, or a neighbour of the first.
-    /// With no covers, or only grey ones, a palette of its own from <paramref name="seed"/>.
+    /// The music's colours from the main colours of some covers (a list of swatches for each),
+    /// weighed as the apps weigh them: by how much of its cover each fills and how vivid it is.
+    /// Grey covers give their main grey. Null only when there is nothing to read.
     /// </summary>
-    public static CoverPalette FromCovers(IReadOnlyList<IReadOnlyList<Swatch>> covers, string seed)
+    public static CoverMusic? FromCovers(IReadOnlyList<IReadOnlyList<Swatch>> covers)
     {
         var withColour = covers.Where(c => c.Count > 0).ToList();
-        if (withColour.Count == 0) return Seeded(seed);
+        if (withColour.Count == 0) return null;
         var seen = withColour.SelectMany(swatches => swatches.Take(4)
             .Select(s => (Lch: CoverColours.ToLch(s.Argb), Weight: (double)s.Share / withColour.Count))).ToList();
         var colourful = seen.Where(s => s.Lch.C >= Colourless && s.Lch.L is >= 0.15 and <= 0.97).ToList();
-        if (colourful.Count == 0) return Seeded(seed);
+        if (colourful.Count == 0) return new CoverMusic(seen.MaxBy(s => s.Weight).Lch, null);
         static double Score((Lch Lch, double Weight) s) => Math.Sqrt(s.Weight) * (0.3 + s.Lch.C * 5);
         var first = colourful.MaxBy(Score);
         var others = colourful.Where(s => CoverColours.HueDistance(s.Lch.H, first.Lch.H) >= PairApart).ToList();
-        (Lch Lch, double Weight)? second = others.Count > 0 ? others.MaxBy(Score) : null;
-        var turn = (CoverColours.CoverHash(seed) & 1L) == 0L ? 38.0 : -38.0;
-        return Of(first.Lch.H, first.Lch.C * 1.15,
-            second?.Lch.H ?? first.Lch.H + turn,
-            (second?.Lch.C ?? first.Lch.C) * 1.2, fromMusic: true);
-    }
-
-    /// <summary>A palette from the name alone: a hue from its hash and a second a little way round.</summary>
-    public static CoverPalette Seeded(string seed)
-    {
-        var hash = CoverColours.CoverHash(seed);
-        var hue = (double)(hash % 360);
-        var step = 30 + (hash >>> 12) % 50;
-        var turn = ((hash >>> 20) & 1L) == 0L ? step : -step;
-        return Of(hue, 0.12, hue + turn, 0.16, fromMusic: false);
+        return new CoverMusic(first.Lch, others.Count > 0 ? others.MaxBy(Score).Lch : null);
     }
 }

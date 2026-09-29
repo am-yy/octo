@@ -6,10 +6,12 @@ using SixLabors.ImageSharp.Processing;
 
 namespace Octo.Services.CoverArt;
 
+/// <summary>A cover ready to paint: its side in pixels, its background (an index into the library) and its words.</summary>
+public sealed record CoverArt(int Side, int Background, IReadOnlyList<CoverWords> Words);
+
 /// <summary>
-/// Paints a composed cover: every pixel is the design's layers laid over each other at the
-/// pixel's centre, exactly as the design computes the colour under the words, then the words
-/// in white at their lines' baselines.
+/// Paints a composed cover: its painted background at the cover's size, the colour-keeping
+/// veil under the words, then the words in white at their lines' baselines.
 /// </summary>
 internal static class CoverPainter
 {
@@ -25,21 +27,10 @@ internal static class CoverPainter
         return Feet.GetOrAdd(key, _ => TextMeasurer.MeasureBounds("H", options).Bottom);
     }
 
-    public static Image<Rgba32> Paint(CoverArt art, CoverTypesetter setter, bool drawWords = true)
+    public static Image<Rgb24> Paint(CoverBook book, CoverArt art, CoverTypesetter setter, bool drawWords = true)
     {
-        var side = art.Side;
-        var pixels = new Rgba32[side * side];
-        var layers = CoverLayout.Compile(art.Layers);
-        Parallel.For(0, side, y =>
-        {
-            var row = y * side;
-            for (var x = 0; x < side; x++)
-            {
-                var c = layers.At(x + 0.5f, y + 0.5f);
-                pixels[row + x] = new Rgba32((byte)CoverColours.R(c), (byte)CoverColours.G(c), (byte)CoverColours.B(c), 255);
-            }
-        });
-        var image = Image.LoadPixelData<Rgba32>(pixels, side, side);
+        var image = CoverBackgrounds.Load(book, art.Background, art.Side);
+        CoverVeil.Apply(image, CoverVeil.Regions(book, art.Words, art.Side), book.Veil);
         if (!drawWords) return image;
 
         var draws = new List<(RichTextOptions Options, string Text, Color Ink)>();

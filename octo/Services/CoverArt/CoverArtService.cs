@@ -11,8 +11,8 @@ namespace Octo.Services.CoverArt;
 /// Covers Octo draws itself: the small Octo badge on covers of songs found outside the library
 /// (for third-party clients), the placeholder when no cover can be had, and the covers of the
 /// lists Octo makes (radio stations and mixes), designed like the Octo apps' playlist covers:
-/// soft fields of colour from the list's own music with its name in white. A picture someone
-/// put in the covers folder replaces a list's cover.
+/// a painted background picked to match the list's music, darkened only under the words, with
+/// its name in white. A picture someone put in the covers folder replaces a list's cover.
 /// </summary>
 public class CoverArtService
 {
@@ -21,7 +21,7 @@ public class CoverArtService
     private readonly object _logoLock = new();
     private volatile bool _logoLoadAttempted;
     private readonly ConcurrentDictionary<string, byte[]> _namedCovers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, (CoverPalette? Palette, DateTime Until)> _palettes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (CoverMusic? Music, DateTime Until)> _musicMemo = new(StringComparer.Ordinal);
     private readonly string? _coversDirectory;
     private readonly CoverBook _book;
     private readonly CoverTypesetter _setter = new();
@@ -31,9 +31,8 @@ public class CoverArtService
     internal const int MaxCoverSize = 1200;
 
     private static readonly TimeSpan SeedWait = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan PaletteHit = TimeSpan.FromHours(12);
-    private static readonly TimeSpan PaletteGrey = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan PaletteMiss = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan MusicHit = TimeSpan.FromHours(12);
+    private static readonly TimeSpan MusicMiss = TimeSpan.FromMinutes(1);
     private static readonly JpegEncoder Jpeg = new() { Quality = 92, ColorType = JpegEncodingColor.YCbCrRatio444 };
 
     /// <param name="coversDirectory">Pictures that replace a generated cover, named after the
@@ -204,7 +203,7 @@ public class CoverArtService
     {
         try
         {
-            Render(Spec("Warm Radio", ListKinds.Radio, 1, CoverPalette.Seeded("warm")), MinCoverSize);
+            Render(Spec("Warm Radio", ListKinds.Radio, 1, null), MinCoverSize);
             _ = CoverFonts.Fallbacks.Count;
         }
         catch (Exception ex)
@@ -226,8 +225,8 @@ public class CoverArtService
 
     /// <summary>
     /// A list's cover. In order: a picture in the covers folder named after the list or its genre
-    /// or decade; the design in colours from its seed songs' covers; the design turned to its
-    /// genre's or decade's colour; the design in its own colours; and last a plain placeholder,
+    /// or decade; a painted background matched to the colours of its seed songs' covers, else to
+    /// its genre's or decade's colour, else picked by its name; and last a plain placeholder,
     /// never the logo. A replaced picture or a new seed cover shows without a restart.
     /// </summary>
     public async Task<byte[]> GetListCoverAsync(ListCover list, int? requestedSize = null, CancellationToken ct = default)
@@ -244,9 +243,10 @@ public class CoverArtService
                 if (LoadOverride(custom, size) is { } picture) return Remember(overrideKey, picture);
             }
 
-            var palette = await SeedPaletteAsync(list, display, ct) ?? FallbackPalette(display, lookup);
-            var spec = Spec(display, list.Kind, list.SongCount, palette);
-            var key = $"{_book.Version}\n{spec.Id}\n{spec.Name}\n{spec.Line}\n{spec.Footer}\n{palette.Key}\n{size}";
+            var music = await SeedMusicAsync(list, display, ct) ?? FallbackMusic(display, lookup);
+            var spec = Spec(display, list.Kind, list.SongCount, music);
+            var background = CoverBackgrounds.Choose(_book, music, spec.Id);
+            var key = $"{_book.Version}\n{spec.Id}\n{spec.Name}\n{spec.Line}\n{spec.Footer}\n{background}\n{size}";
             if (_namedCovers.TryGetValue(key, out var drawn)) return drawn;
             return Remember(key, Render(spec, size));
         }
@@ -272,11 +272,9 @@ public class CoverArtService
     internal static int CoverSize(int? requested) =>
         Math.Clamp(requested is > 0 ? requested.Value : MinCoverSize, MinCoverSize, MaxCoverSize);
 
-    /// <summary>The design's colours when the songs give none: the genre's or decade's hue, else the gradient's own.</summary>
-    internal CoverPalette FallbackPalette(string display, string lookup) =>
-        (_book.ListHue(lookup) ?? _book.ListHue(display)) is { } hue
-            ? CoverPalette.Of(hue.Hue, hue.Chroma, hue.Hue + 38, hue.Chroma, fromMusic: true)
-            : CoverPalette.Seeded(display);
+    /// <summary>A stand-in for the music when the songs give none: the genre's or decade's hue, else nothing.</summary>
+    internal CoverMusic? FallbackMusic(string display, string lookup) =>
+        (_book.ListHue(lookup) ?? _book.ListHue(display)) is { } hue ? CoverMusic.OfHue(hue.Hue, hue.Chroma) : null;
 
     /// <summary>
     /// What goes on a list's cover. The name is the list's own, less a trailing "Radio" on a
@@ -285,7 +283,7 @@ public class CoverArtService
     /// Mix") has no light line, as the name already says it. The foot line is its song count
     /// when known. The design is picked by the list's full name, the same on every request.
     /// </summary>
-    internal static CoverSpec Spec(string display, string? kind, int? songCount, CoverPalette palette)
+    internal static CoverSpec Spec(string display, string? kind, int? songCount, CoverMusic? music)
     {
         var (line, suffix) = kind == ListKinds.Radio ? ("Station", " Radio") : ("Mix", " Mix");
         var title = display;
@@ -294,22 +292,10 @@ public class CoverArtService
             var head = display[..^suffix.Length].Trim();
             if (head.Length > 1 && !Possessives.Contains(head)) title = head;
         }
-        return new CoverSpec(display, title, SaysWhatItIs(title) ? null : line, Footer(songCount), palette);
+        return new CoverSpec(display, title, CoverLayout.SaysWhatItIs(title) ? null : line, Footer(songCount), music);
     }
 
     private static readonly HashSet<string> Possessives = new(StringComparer.OrdinalIgnoreCase) { "Your", "My", "Our" };
-
-    private static readonly HashSet<string> KindWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Mix", "Mixes", "Radio", "Radios", "Station", "Stations", "Playlist", "Playlists",
-    };
-
-    /// <summary>Whether the name's last word already says what kind of list it is.</summary>
-    internal static bool SaysWhatItIs(string name)
-    {
-        var words = name.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return words.Length > 0 && KindWords.Contains(words[^1].TrimEnd('.', '!', '?', ')'));
-    }
 
     internal static string? Footer(int? songs) => songs switch
     {
@@ -326,17 +312,19 @@ public class CoverArtService
         return ms.ToArray();
     }
 
-    internal Image<Rgba32> Paint(CoverSpec spec, int size, bool drawWords = true) =>
-        CoverPainter.Paint(Compose(spec, size), _setter, drawWords);
+    internal Image<Rgb24> Paint(CoverSpec spec, int size, bool drawWords = true) =>
+        CoverPainter.Paint(_book, Compose(spec, size), _setter, drawWords);
 
-    internal CoverArt Compose(CoverSpec spec, int size) => CoverLayout.Compose(spec, size, _setter, _book);
+    /// <summary>The cover's background and where its words go.</summary>
+    internal CoverArt Compose(CoverSpec spec, int size) =>
+        new(size, CoverBackgrounds.Choose(_book, spec.Music, spec.Id), CoverLayout.Words(spec, size, _setter, _book));
 
     /// <summary>
     /// Colours from the list's seed covers: fetched until two pictures are in hand, all within a
-    /// few seconds. Remembered by which seeds they were, so a new seed changes the cover and an
-    /// unchanged one costs nothing. Null when there are none, or they are grey.
+    /// few seconds. Remembered by which seeds they were, so a new seed can change the cover and an
+    /// unchanged one costs nothing. Null when there are none to read.
     /// </summary>
-    private async Task<CoverPalette?> SeedPaletteAsync(ListCover list, string display, CancellationToken ct)
+    private async Task<CoverMusic?> SeedMusicAsync(ListCover list, string display, CancellationToken ct)
     {
         if (list.Seeds is null) return null;
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -346,7 +334,7 @@ public class CoverArtService
             var seeds = await list.Seeds(budget.Token);
             if (seeds.Count == 0) return null;
             var memoKey = display + "\n" + string.Join("\n", seeds.Select(seed => seed.Identity));
-            if (_palettes.TryGetValue(memoKey, out var known) && known.Until > DateTime.UtcNow) return known.Palette;
+            if (_musicMemo.TryGetValue(memoKey, out var known) && known.Until > DateTime.UtcNow) return known.Music;
 
             var covers = new List<IReadOnlyList<Swatch>>();
             foreach (var seed in seeds)
@@ -362,12 +350,11 @@ public class CoverArtService
                     _logger.LogDebug(ex, "A seed cover for {Name} could not be fetched", display);
                 }
             }
-            var palette = covers.Count == 0 ? null : CoverPalette.FromCovers(covers, display);
-            if (palette is { FromMusic: false }) palette = null;
-            var ttl = palette is not null ? PaletteHit : covers.Count > 0 ? PaletteGrey : PaletteMiss;
-            if (_palettes.Count >= 1024) _palettes.Clear();
-            _palettes[memoKey] = (palette, DateTime.UtcNow + ttl);
-            return palette;
+            var music = covers.Count == 0 ? null : CoverMusic.FromCovers(covers);
+            var ttl = music is not null ? MusicHit : MusicMiss;
+            if (_musicMemo.Count >= 1024) _musicMemo.Clear();
+            _musicMemo[memoKey] = (music, DateTime.UtcNow + ttl);
+            return music;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -459,5 +446,5 @@ public static class ListKinds
 public sealed record ListCover(string Name, string? Label = null, string Kind = ListKinds.Mix,
     Func<CancellationToken, Task<IReadOnlyList<CoverSeed>>>? Seeds = null, int? SongCount = null);
 
-/// <summary>One seed cover: what it is (so a palette can be remembered by it) and how to get it.</summary>
+/// <summary>One seed cover: what it is (so its colours can be remembered by it) and how to get it.</summary>
 public sealed record CoverSeed(string Identity, Func<CancellationToken, Task<byte[]?>> Fetch);

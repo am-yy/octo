@@ -23,12 +23,13 @@
     </ItemGroup>
 
     <ItemGroup>
-        <!-- The list cover design, shared with the Octo apps, and its fonts, inside the
-             assembly so no publish layout can lose them. The font licence ships beside
-             the app as the OFL asks. -->
+        <!-- The list cover design, shared with the Octo apps, with its fonts and painted
+             backgrounds, inside the assembly so no publish layout can lose them. The font
+             licence ships beside the app as the OFL asks. -->
         <Content Remove="Services\CoverArt\Design\**\*.json" />
         <EmbeddedResource Include="Services\CoverArt\Design\*.json" LogicalName="Octo.CoverDesign.%(Filename)%(Extension)" />
         <EmbeddedResource Include="Services\CoverArt\Design\Fonts\*.ttf" LogicalName="Octo.CoverDesign.Fonts.%(Filename)%(Extension)" />
+        <EmbeddedResource Include="Services\CoverArt\Design\Backgrounds\*" LogicalName="Octo.CoverDesign.Backgrounds.%(Filename)%(Extension)" />
         <None Include="Services\CoverArt\Design\Fonts\OFL.txt" Link="licenses/Inter-OFL.txt" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 

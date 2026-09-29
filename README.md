@@ -468,15 +468,15 @@ or added in the last `MIX_NEW_DAYS`. It is 0 by default, which changes nothing.
 `MIX_NAME_FORMAT` names them, `{0}` being the genre or decade ("{0} Mix" when empty).
 
 Mix and station covers are drawn by Octo in the same design as the Octo apps' playlist
-covers: the list's name in white on soft fields of colour taken from the covers of its first
-songs (a station's seed artist first), or its genre's or decade's colour when those give none.
-The design, one of sixteen gradients picked by the list's name, is the same every time for
-the same list, and the words always keep 4.5:1 contrast. Names are set in
-[Inter](https://github.com/rsms/inter) 4.1 (SIL Open Font License, shipped as
-`licenses/Inter-OFL.txt`); names in scripts Inter lacks use Noto CJK, DejaVu or Symbola from
-the image. No cover carries an Octo mark. A picture in `/app/config/covers` named after a mix
-or station (`Rock Mix.jpg`), or after its genre or decade (`Rock.png`), replaces its cover,
-and replacing the picture shows without a restart.
+covers: the list's name in white over one of 48 painted backgrounds, picked to match the
+colours of the covers of its first songs (a station's seed artist first), or its genre's or
+decade's colour when those give none. The same list keeps the same background while its
+music does. Under the words the background is darkened only as far as white needs, keeping
+its colour. Names are set in [Inter](https://github.com/rsms/inter) 4.1 (SIL Open Font
+License, shipped as `licenses/Inter-OFL.txt`); names in scripts Inter lacks use Noto CJK,
+DejaVu or Symbola from the image. No cover carries an Octo mark. A picture in
+`/app/config/covers` named after a mix or station (`Rock Mix.jpg`), or after its genre or
+decade (`Rock.png`), replaces its cover, and replacing the picture shows without a restart.
 
 ### Download path on Windows and manual installs
 

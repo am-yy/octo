@@ -72,22 +72,34 @@ public class CoverColourTests
     }
 
     /// <summary>
-    /// The picks the design's rule gives, worked out apart from this code (by a short script
+    /// The picks and turns the design's rule gives, worked out apart from this code (by a short script
     /// following cover-design.json "background" word for word), so the server and the apps give
     /// a list the same background.
     /// </summary>
     [Theory]
-    [InlineData("Daft Punk Radio", 97, 0.143, 0.861, "lemonade.webp")]
-    [InlineData("Rock Mix", 26, 0.14, 0.62, "coral.webp")]
-    [InlineData("Your Mix", 262, 0.2, 0.5, "bubblegum.webp")]
-    [InlineData("1990s Mix", 134, 0.14, 0.62, "northern-lights.webp")]
-    [InlineData("Polka Mix", -1, 0, 0, "amber-night.webp")]
-    [InlineData("pl-1", 30, 0.1, 0.4, "afterglow.webp")]
-    public void Background_IsTheDesignsPick(string id, int hue, double chroma, double lightness, string file)
+    [InlineData("Daft Punk Radio", 97, 0.143, 0.861, "lemonade.webp", 5)]
+    [InlineData("Rock Mix", 26, 0.14, 0.62, "coral.webp", 1)]
+    [InlineData("Your Mix", 262, 0.2, 0.5, "bubblegum.webp", 1)]
+    [InlineData("1990s Mix", 134, 0.14, 0.62, "limelight.webp", 1)]
+    [InlineData("Polka Mix", -1, 0, 0, "amber-night.webp", 5)]
+    [InlineData("pl-1", 30, 0.1, 0.4, "afterglow.webp", 1)]
+    [InlineData("Daft Punk Radio", 261, 0.043, 0.722, "northern-lights.webp", 5)]
+    [InlineData("Metal Mix", 40, 0.163, 0.601, "honey.webp", 2)]
+    public void Background_IsTheDesignsPick(string id, int hue, double chroma, double lightness, string file, int orientation)
     {
         var music = hue < 0 ? null : CoverMusic.Of(hue, chroma, lightness);
 
         Assert.Equal(file, Book.Backgrounds[CoverBackgrounds.Choose(Book, music, id)].File);
+        Assert.Equal(orientation, CoverBackgrounds.Orientation(Book, id));
+    }
+
+    /// <summary>Music too dull to say much (chroma under lowChromaAsGrey) picks as a list with no covers does.</summary>
+    [Fact]
+    public void Background_ForDullMusic_IsTheNamesPick()
+    {
+        var dull = CoverMusic.Of(261, Book.BackgroundChoice.LowChromaAsGrey - 0.001, 0.72);
+
+        Assert.Equal(CoverBackgrounds.Choose(Book, null, "Daft Punk Radio"), CoverBackgrounds.Choose(Book, dull, "Daft Punk Radio"));
     }
 
     /// <summary>Music of a colour gets one of a few backgrounds of that colour, the same one for the same list.</summary>
@@ -104,7 +116,7 @@ public class CoverColourTests
 
         var picks = Enumerable.Range(0, 60).Select(i => CoverBackgrounds.Choose(Book, music, $"pl-{i}")).Distinct().ToList();
 
-        Assert.InRange(picks.Count, 2, 3);
+        Assert.InRange(picks.Count, 2, Book.BackgroundChoice.Nearest);
         foreach (var pick in picks)
         {
             var background = Book.Backgrounds[pick];
@@ -125,6 +137,37 @@ public class CoverColourTests
         Assert.All(used.Values, count => Assert.True(count < 400 / Book.Backgrounds.Count * 4));
     }
 
+    /// <summary>The music colours the contact sheet's 24 lists get from its seed covers, or their genre's; -1 for none.</summary>
+    private static readonly (string Name, int Hue, double Chroma, double Lightness)[] SheetLists =
+    [
+        ("Daft Punk Radio", 261, 0.043, 0.722), ("Billie Eilish Radio", 63, 0.061, 0.575),
+        ("Tame Impala Radio", 318, 0.041, 0.453), ("Radiohead Radio", 47, 0.159, 0.657),
+        ("Kendrick Lamar Radio", 4, 0.068, 0.41), ("Your Mix", 241, 0.039, 0.732),
+        ("Discovery Mix", 30, 0.225, 0.581), ("Bad Bunny Radio", 30, 0.225, 0.581),
+        ("Jazz & Blues Mix", 225, 0.14, 0.62), ("Metal Mix", 40, 0.163, 0.601),
+        ("1970s Mix", 75, 0.14, 0.62), ("Rock Mix", 26, 0.14, 0.62),
+        ("Hip-Hop Mix", 61, 0.14, 0.62), ("1990s Mix", 134, 0.14, 0.62),
+        ("2020s Mix", 168, 0.14, 0.62), ("Electronic Radio", 250, 0.14, 0.62),
+        ("Polka Mix", -1, 0, 0), ("Red Hot Chili Peppers Radio", -1, 0, 0),
+        ("The Most Unreasonably Long Playlist Name Anyone Ever Typed Into A Music Server Radio", -1, 0, 0),
+        ("宇多田ヒカル Radio", -1, 0, 0), ("블랙핑크 BLACKPINK Radio", 5, 0.041, 0.336),
+        ("فيروز Radio", 69, 0.065, 0.682), ("Late Night 🌙 Chill Mix", 206, 0.14, 0.62),
+        ("Ünïcödé Café Mix", -1, 0, 0),
+    ];
+
+    /// <summary>The contact sheet's 24 lists look apart: no background turned the same way twice, and none used more than three times.</summary>
+    [Fact]
+    public void SheetLists_LookApart()
+    {
+        var looks = SheetLists.Select(list => (
+            Background: CoverBackgrounds.Choose(Book, list.Hue < 0 ? null : CoverMusic.Of(list.Hue, list.Chroma, list.Lightness), list.Name),
+            Orientation: CoverBackgrounds.Orientation(Book, list.Name))).ToList();
+
+        Assert.Equal(looks.Count, looks.Distinct().Count());
+        var most = looks.GroupBy(look => look.Background).MaxBy(group => group.Count())!;
+        Assert.True(most.Count() <= 3, $"{Book.Backgrounds[most.Key].Name} is used {most.Count()} times");
+    }
+
     /// <summary>A turned background is the same pixels, quarter turned clockwise and then mirrored.</summary>
     [Fact]
     public void Turn_QuarterTurnsClockwise_ThenMirrors()
@@ -142,7 +185,7 @@ public class CoverColourTests
                 Assert.Equal(plain[sx, sy], turned[x, y]);
             }
         }
-        Assert.Equal(Enumerable.Range(0, 8), Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Orientation($"pl-{i}")).Distinct().Order());
+        Assert.Equal(Enumerable.Range(0, 8), Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Orientation(Book, $"pl-{i}")).Distinct().Order());
     }
 
     /// <summary>Sizes other than the file's: halved while that leaves enough, then each pixel the mean of the area it covers.</summary>

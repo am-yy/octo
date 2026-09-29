@@ -13,13 +13,14 @@ internal static class CoverBackgrounds
     /// <summary>
     /// The background for a list, by cover-design.json "background": with its music's colour,
     /// the nearest few (ties in file order) and among them the one the list's id picks; without,
-    /// any one, picked by the id alone. The same list with the same music always gets the same.
+    /// or with music too dull to say much (chroma under lowChromaAsGrey), any one, picked by the
+    /// id alone. The same list with the same music always gets the same.
     /// </summary>
     public static int Choose(CoverBook book, CoverMusic? music, string id)
     {
         var pick = CoverColours.CoverHash(id) >>> 7;
         var all = book.Backgrounds;
-        if (music is null) return (int)(pick % all.Count);
+        if (music is null || music.Chroma < book.BackgroundChoice.LowChromaAsGrey) return (int)(pick % all.Count);
         var near = Enumerable.Range(0, all.Count)
             .OrderBy(index => Distance(all[index], music, book.BackgroundChoice))
             .Take(book.BackgroundChoice.Nearest)
@@ -29,10 +30,13 @@ internal static class CoverBackgrounds
 
     /// <summary>
     /// How a list's background is turned, so lists that share a background still look apart:
-    /// (coverHash(id) >>> 11) mod 8, a quarter turn clockwise for each of its lowest two bits'
-    /// worth (v mod 4), then mirrored left to right when v is 4 or more.
+    /// v = (coverHash(id) >>> shift) mod count, from cover-design.json "orientation".
     /// </summary>
-    public static int Orientation(string id) => (int)((CoverColours.CoverHash(id) >>> 11) % 8);
+    public static int Orientation(CoverBook book, string id)
+    {
+        var rule = book.BackgroundChoice.Orientation;
+        return (int)((CoverColours.CoverHash(id) >>> rule.Shift) % rule.Count);
+    }
 
     /// <summary>Turns a background in place: (v mod 4) quarter turns clockwise, then a mirror left to right when v >= 4.</summary>
     public static void Turn(Image<Rgb24> image, int orientation)

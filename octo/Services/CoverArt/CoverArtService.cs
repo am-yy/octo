@@ -321,7 +321,7 @@ public class CoverArtService
 
     /// <summary>The cover's background, how it is turned, and where its words go.</summary>
     internal CoverArt Compose(CoverSpec spec, int size) =>
-        new(size, CoverBackgrounds.Choose(_book, spec.Music, spec.Id), CoverBackgrounds.Orientation(spec.Id),
+        new(size, CoverBackgrounds.Choose(_book, spec.Music, spec.Id), CoverBackgrounds.Orientation(_book, spec.Id),
             CoverLayout.Words(spec, size, _setter, _book));
 
     /// <summary>

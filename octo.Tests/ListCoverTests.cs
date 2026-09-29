@@ -347,10 +347,11 @@ public class ListCoverTests : IDisposable
 
     [Theory]
     [InlineData("Daft Punk Radio", ListKinds.Radio, "Daft Punk", "Station")]
-    [InlineData("Your Mix", ListKinds.Radio, "Your Mix", "Station")]
-    [InlineData("Discovery Mix", ListKinds.Radio, "Discovery Mix", "Station")]
-    [InlineData("Rock Mix", ListKinds.Mix, "Rock", "Mix")]
+    [InlineData("Rock Radio", ListKinds.Radio, "Rock", "Station")]
     [InlineData("Late Night Jazz", ListKinds.Radio, "Late Night Jazz", "Station")]
+    [InlineData("Rock Mix", ListKinds.Mix, "Rock", "Mix")]
+    [InlineData("1990s Mix", ListKinds.Mix, "1990s", "Mix")]
+    [InlineData("Late Night Jazz", ListKinds.Mix, "Late Night Jazz", "Mix")]
     public void Spec_NamesTheListAndSaysWhatItIs(string name, string kind, string title, string line)
     {
         var spec = CoverArtService.Spec(name, kind, 50, CoverPalette.Seeded(name));
@@ -360,6 +361,38 @@ public class ListCoverTests : IDisposable
         Assert.Equal("50 songs", spec.Footer);
         Assert.Equal(name, spec.Id);
     }
+
+    /// <summary>A name that already ends in what it is gets no second line saying it again.</summary>
+    [Theory]
+    [InlineData("Your Mix", ListKinds.Radio)]
+    [InlineData("Discovery Mix", ListKinds.Radio)]
+    [InlineData("Your Mix", ListKinds.Mix)]
+    [InlineData("Late Night Radio Station", ListKinds.Radio)]
+    [InlineData("Road Trip Playlist", ListKinds.Mix)]
+    [InlineData("Summer mixes", ListKinds.Mix)]
+    [InlineData("Pirate Radios", ListKinds.Radio)]
+    [InlineData("Other Stations", ListKinds.Radio)]
+    [InlineData("Old Playlists", ListKinds.Mix)]
+    public void Spec_NameThatSaysWhatItIs_HasNoSecondLine(string name, string kind)
+    {
+        var spec = CoverArtService.Spec(name, kind, 50, CoverPalette.Seeded(name));
+
+        Assert.Equal(name, spec.Name);
+        Assert.Null(spec.Line);
+        var art = new CoverArtService(NullLogger<CoverArtService>.Instance).Compose(spec, 600);
+        Assert.Equal(2, art.Words.Count);
+        Assert.DoesNotContain(art.Words, w => w.Text is "Station" or "Mix");
+    }
+
+    /// <summary>Only the last word counts, and only a whole word.</summary>
+    [Theory]
+    [InlineData("Mixtape Classics", false)]
+    [InlineData("Radiohead", false)]
+    [InlineData("Mix Masters", false)]
+    [InlineData("Your Mix", true)]
+    [InlineData("Discovery MIX", true)]
+    public void SaysWhatItIs_ReadsTheLastWholeWord(string name, bool expected) =>
+        Assert.Equal(expected, CoverArtService.SaysWhatItIs(name));
 
     public static TheoryData<string> Names => new()
     {

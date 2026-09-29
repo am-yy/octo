@@ -281,8 +281,9 @@ public class CoverArtService
     /// <summary>
     /// What goes on a list's cover. The name is the list's own, less a trailing "Radio" on a
     /// station or "Mix" on a mix, since the light line under it says which it is; "Your Mix"
-    /// stays whole. The foot line is its song count when known. The design is picked by the
-    /// list's full name, which is the same on every request.
+    /// stays whole. A name that still ends in a word saying what it is ("Your Mix", "Discovery
+    /// Mix") has no light line, as the name already says it. The foot line is its song count
+    /// when known. The design is picked by the list's full name, the same on every request.
     /// </summary>
     internal static CoverSpec Spec(string display, string? kind, int? songCount, CoverPalette palette)
     {
@@ -293,10 +294,22 @@ public class CoverArtService
             var head = display[..^suffix.Length].Trim();
             if (head.Length > 1 && !Possessives.Contains(head)) title = head;
         }
-        return new CoverSpec(display, title, line, Footer(songCount), palette);
+        return new CoverSpec(display, title, SaysWhatItIs(title) ? null : line, Footer(songCount), palette);
     }
 
     private static readonly HashSet<string> Possessives = new(StringComparer.OrdinalIgnoreCase) { "Your", "My", "Our" };
+
+    private static readonly HashSet<string> KindWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Mix", "Mixes", "Radio", "Radios", "Station", "Stations", "Playlist", "Playlists",
+    };
+
+    /// <summary>Whether the name's last word already says what kind of list it is.</summary>
+    internal static bool SaysWhatItIs(string name)
+    {
+        var words = name.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return words.Length > 0 && KindWords.Contains(words[^1].TrimEnd('.', '!', '?', ')'));
+    }
 
     internal static string? Footer(int? songs) => songs switch
     {

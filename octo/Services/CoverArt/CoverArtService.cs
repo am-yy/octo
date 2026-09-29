@@ -32,6 +32,7 @@ public class CoverArtService
 
     private static readonly TimeSpan SeedWait = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan MusicHit = TimeSpan.FromHours(12);
+    private static readonly TimeSpan MusicGrey = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MusicMiss = TimeSpan.FromMinutes(1);
     private static readonly JpegEncoder Jpeg = new() { Quality = 92, ColorType = JpegEncodingColor.YCbCrRatio444 };
 
@@ -272,9 +273,12 @@ public class CoverArtService
     internal static int CoverSize(int? requested) =>
         Math.Clamp(requested is > 0 ? requested.Value : MinCoverSize, MinCoverSize, MaxCoverSize);
 
+    /// <summary>The lightness a genre's or decade's stand-in colour is given: the middle of the library's.</summary>
+    internal const double GenreLightness = 0.62;
+
     /// <summary>A stand-in for the music when the songs give none: the genre's or decade's hue, else nothing.</summary>
     internal CoverMusic? FallbackMusic(string display, string lookup) =>
-        (_book.ListHue(lookup) ?? _book.ListHue(display)) is { } hue ? CoverMusic.OfHue(hue.Hue, hue.Chroma) : null;
+        (_book.ListHue(lookup) ?? _book.ListHue(display)) is { } hue ? CoverMusic.Of(hue.Hue, hue.Chroma, GenreLightness) : null;
 
     /// <summary>
     /// What goes on a list's cover. The name is the list's own, less a trailing "Radio" on a
@@ -351,7 +355,7 @@ public class CoverArtService
                 }
             }
             var music = covers.Count == 0 ? null : CoverMusic.FromCovers(covers);
-            var ttl = music is not null ? MusicHit : MusicMiss;
+            var ttl = music is not null ? MusicHit : covers.Count > 0 ? MusicGrey : MusicMiss;
             if (_musicMemo.Count >= 1024) _musicMemo.Clear();
             _musicMemo[memoKey] = (music, DateTime.UtcNow + ttl);
             return music;

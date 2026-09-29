@@ -10,107 +10,130 @@ namespace Octo.Services.CoverArt;
 /// </summary>
 internal static class CoverBackgrounds
 {
-    /// <summary>Backgrounds this close to the best match count as equally good; the list's name picks among them.</summary>
-    private const double Tie = 0.04;
-
-    /// <summary>At most this many near-equal matches take turns, so lists of one colour still vary.</summary>
-    private const int Choices = 4;
-
     /// <summary>
-    /// The background for a list. With its music's colours: the one whose colours are nearest
-    /// (OKLab, lightness counted half), its second colour weighing in a little; among near-equal
-    /// matches the list's name decides, so a list keeps its background while its music does.
-    /// Without: one picked by the name's hash alone.
+    /// The background for a list, by cover-design.json "background": with its music's colour,
+    /// the nearest few (ties in file order) and among them the one the list's id picks; without,
+    /// any one, picked by the id alone. The same list with the same music always gets the same.
     /// </summary>
     public static int Choose(CoverBook book, CoverMusic? music, string id)
     {
-        var hash = CoverColours.CoverHash(id) >>> 7;
-        if (music is null) return (int)(hash % book.Backgrounds.Count);
-
-        var ranked = book.Backgrounds
-            .Select((background, index) => (Index: index, Distance: Distance(music, background)))
-            .OrderBy(pair => pair.Distance).ThenBy(pair => pair.Index)
+        var pick = CoverColours.CoverHash(id) >>> 7;
+        var all = book.Backgrounds;
+        if (music is null) return (int)(pick % all.Count);
+        var near = Enumerable.Range(0, all.Count)
+            .OrderBy(index => Distance(all[index], music, book.BackgroundChoice))
+            .Take(book.BackgroundChoice.Nearest)
             .ToList();
-        var near = ranked.TakeWhile(pair => pair.Distance <= ranked[0].Distance + Tie).Take(Choices).ToList();
-        return near[(int)(hash % near.Count)].Index;
+        return near[(int)(pick % near.Count)];
     }
 
-    private static double Distance(CoverMusic music, CoverBook.Background background)
+    /// <summary>
+    /// How far a background is from the music's colour: the hue distance to its nearest strong
+    /// hue (a later, weaker hue counts a little less, a near-grey one hardly at all) and how
+    /// differently vivid that hue is, plus the difference in lightness.
+    /// </summary>
+    internal static double Distance(CoverBook.Background background, CoverMusic music, CoverBook.BackgroundRule rule)
     {
-        var first = Nearest(music.First, background.Hues, out var at);
-        // A background's own strongest colour is what reads first, so matching it counts most.
-        var distance = first * (at == 0 ? 1.0 : 1.2);
-        if (music.Second is { } second) distance += 0.35 * Nearest(second, background.Hues, out _);
-        return distance;
-    }
-
-    private static double Nearest(Lch colour, CoverBook.Hue[] hues, out int index)
-    {
-        index = 0;
-        var best = double.MaxValue;
-        for (var i = 0; i < hues.Length; i++)
-        {
-            var d = Lab(colour, new Lch(hues[i].L, hues[i].C, hues[i].H));
-            if (d < best) (best, index) = (d, i);
-        }
-        return best;
-    }
-
-    private static double Lab(Lch x, Lch y)
-    {
-        var (ax, bx) = (x.C * Math.Cos(x.H * Math.PI / 180), x.C * Math.Sin(x.H * Math.PI / 180));
-        var (ay, by) = (y.C * Math.Cos(y.H * Math.PI / 180), y.C * Math.Sin(y.H * Math.PI / 180));
-        var dl = (x.L - y.L) * 0.5;
-        return Math.Sqrt(dl * dl + (ax - ay) * (ax - ay) + (bx - by) * (bx - by));
+        var hue = background.Hues.Length == 0 ? 1.0 : background.Hues.Select((h, i) =>
+            CoverColours.HueDistance(h.H, music.Hue) / 180.0 + i * rule.HueStep
+            + (h.C < rule.GreyBelow ? rule.GreyPenalty : 0.0)
+            + Math.Abs(h.C - music.Chroma) * rule.ChromaWeight).Min();
+        return hue + Math.Abs(background.MeanLightness - music.Lightness) * rule.LightnessWeight;
     }
 
     private static readonly ConcurrentDictionary<(string File, int Side), Image<Rgb24>> Cache = new();
 
     /// <summary>
-    /// A background at <paramref name="side"/> pixels, a copy the caller owns. At the stored size
-    /// it is the file itself; at half, each 2 by 2 block averaged, (a + b + c + d + 2) / 4, as the
-    /// reference defines; any other size is resampled from the stored file.
+    /// A background at <paramref name="side"/> pixels, a copy the caller owns: the stored file
+    /// halved, each pixel (a + b + c + d + 2) / 4, while that still leaves at least the size
+    /// wanted (so 600 is exactly the reference's), then each pixel the mean of the area it
+    /// covers, as the apps sample it.
     /// </summary>
     public static Image<Rgb24> Load(CoverBook book, int index, int side)
     {
         var file = book.Backgrounds[index].File;
         if (Cache.Count > 12) Cache.Clear();
-        var image = Cache.GetOrAdd((file, side), key => Decode(book, key.File, key.Side));
+        var image = Cache.GetOrAdd((file, side), key => Decode(key.File, key.Side));
         lock (image) return image.Clone();
     }
 
-    private static Image<Rgb24> Decode(CoverBook book, string file, int side)
+    private static Image<Rgb24> Decode(string file, int side)
     {
         using var stream = CoverBook.Resource("Backgrounds." + file);
-        var stored = Image.Load<Rgb24>(stream);
-        if (stored.Width == side && stored.Height == side) return stored;
-        using (stored)
+        using var stored = Image.Load<Rgb24>(stream);
+        var size = stored.Width;
+        var pixels = new Rgb24[size * size];
+        stored.CopyPixelDataTo(pixels);
+        while (side * 2 <= size && size % 2 == 0)
         {
-            if (stored.Width == side * 2 && stored.Height == side * 2) return Halve(stored);
-            return stored.Clone(ctx => ctx.Resize(side, side, KnownResamplers.Lanczos3));
+            pixels = Halve(pixels, size);
+            size /= 2;
         }
+        if (size != side) pixels = AreaAverage(pixels, size, side);
+        return Image.LoadPixelData<Rgb24>(pixels, side, side);
     }
 
-    private static Image<Rgb24> Halve(Image<Rgb24> source)
+    private static Rgb24[] Halve(Rgb24[] source, int size)
     {
-        var side = source.Width / 2;
-        var output = new Rgb24[side * side];
-        source.ProcessPixelRows(access =>
+        var half = size / 2;
+        var output = new Rgb24[half * half];
+        for (var y = 0; y < half; y++)
+        for (var x = 0; x < half; x++)
         {
-            for (var y = 0; y < side; y++)
+            var (a, b) = (source[2 * y * size + 2 * x], source[2 * y * size + 2 * x + 1]);
+            var (c, d) = (source[(2 * y + 1) * size + 2 * x], source[(2 * y + 1) * size + 2 * x + 1]);
+            output[y * half + x] = new Rgb24(
+                (byte)((a.R + b.R + c.R + d.R + 2) / 4),
+                (byte)((a.G + b.G + c.G + d.G + 2) / 4),
+                (byte)((a.B + b.B + c.B + d.B + 2) / 4));
+        }
+        return output;
+    }
+
+    /// <summary>Each output pixel the mean of the source area it covers, part pixels in proportion, across then down.</summary>
+    private static Rgb24[] AreaAverage(Rgb24[] source, int from, int side)
+    {
+        var scale = (double)from / side;
+        var spans = new (int Start, double[] Weights)[side];
+        for (var o = 0; o < side; o++)
+        {
+            var a = o * scale;
+            var b = (o + 1) * scale;
+            var start = Math.Clamp((int)Math.Floor(a), 0, from - 1);
+            var end = Math.Max(Math.Min(from, (int)Math.Ceiling(b)), start + 1);
+            var weights = new double[end - start];
+            for (var k = 0; k < weights.Length; k++)
+                weights[k] = Math.Max(0.0, Math.Min(b, start + k + 1.0) - Math.Max(a, start + k)) / (b - a);
+            spans[o] = (start, weights);
+        }
+        var across = new double[3, side * from];
+        for (var y = 0; y < from; y++)
+        for (var x = 0; x < side; x++)
+        {
+            var (start, weights) = spans[x];
+            double r = 0, g = 0, bl = 0;
+            for (var k = 0; k < weights.Length; k++)
             {
-                var top = access.GetRowSpan(2 * y);
-                var bottom = access.GetRowSpan(2 * y + 1);
-                for (var x = 0; x < side; x++)
-                {
-                    var (a, b, c, d) = (top[2 * x], top[2 * x + 1], bottom[2 * x], bottom[2 * x + 1]);
-                    output[y * side + x] = new Rgb24(
-                        (byte)((a.R + b.R + c.R + d.R + 2) / 4),
-                        (byte)((a.G + b.G + c.G + d.G + 2) / 4),
-                        (byte)((a.B + b.B + c.B + d.B + 2) / 4));
-                }
+                var p = source[y * from + start + k];
+                r += p.R * weights[k];
+                g += p.G * weights[k];
+                bl += p.B * weights[k];
             }
-        });
-        return Image.LoadPixelData<Rgb24>(output, side, side);
+            (across[0, y * side + x], across[1, y * side + x], across[2, y * side + x]) = (r, g, bl);
+        }
+        var output = new Rgb24[side * side];
+        for (var i = 0; i < output.Length; i++)
+        {
+            var x = i % side;
+            var (start, weights) = spans[i / side];
+            byte Channel(int c)
+            {
+                var v = 0.0;
+                for (var k = 0; k < weights.Length; k++) v += across[c, (start + k) * side + x] * weights[k];
+                return (byte)Math.Clamp(CoverColours.Round(v), 0, 255);
+            }
+            output[i] = new Rgb24(Channel(0), Channel(1), Channel(2));
+        }
+        return output;
     }
 }

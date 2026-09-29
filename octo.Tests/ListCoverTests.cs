@@ -48,7 +48,7 @@ public class CoverColourTests
     }
 
     [Fact]
-    public void Music_FromColourfulCovers_TakesTheirTwoHues()
+    public void Music_FromColourfulCovers_IsTheirStrongestColour_Rounded()
     {
         var warm = new List<IReadOnlyList<Swatch>>
         {
@@ -57,60 +57,89 @@ public class CoverColourTests
         };
 
         var music = CoverMusic.FromCovers(warm)!;
+        var orange = CoverColours.ToLch(CoverColours.Hex("#D9552B"));
 
-        Assert.InRange(CoverColours.HueDistance(music.First.H, CoverColours.ToLch(CoverColours.Hex("#D9552B")).H), 0, 0.5);
-        Assert.NotNull(music.Second);
-        Assert.True(CoverColours.HueDistance(music.First.H, music.Second!.Value.H) >= 28);
+        Assert.Equal((int)Math.Floor(orange.H + 0.5) % 360, music.Hue);
+        Assert.Equal(Math.Floor(orange.C * 1000 + 0.5) / 1000, music.Chroma);
+        Assert.Equal(Math.Floor(orange.L * 1000 + 0.5) / 1000, music.Lightness);
     }
 
     [Fact]
-    public void Music_FromGreyCovers_IsGrey()
+    public void Music_FromGreyCoversOrNone_IsNothing()
     {
-        var music = CoverMusic.FromCovers([new[] { new Swatch(CoverColours.Hex("#808080"), 0.9f) }])!;
-
-        Assert.True(music.First.C < 0.01);
+        Assert.Null(CoverMusic.FromCovers([new[] { new Swatch(CoverColours.Hex("#808080"), 0.9f) }]));
         Assert.Null(CoverMusic.FromCovers([]));
     }
 
-    /// <summary>Music of a colour gets a background of that colour: its strongest hue close to the music's.</summary>
+    /// <summary>
+    /// The picks the design's rule gives, worked out apart from this code (by a short script
+    /// following cover-design.json "background" word for word), so the server and the apps give
+    /// a list the same background.
+    /// </summary>
     [Theory]
-    [InlineData("#C0302A")]
-    [InlineData("#1D3F8C")]
-    [InlineData("#2FA060")]
-    [InlineData("#E0B020")]
-    [InlineData("#8A2BE2")]
-    public void Background_MatchesTheMusicsHue(string hex)
+    [InlineData("Daft Punk Radio", 97, 0.143, 0.861, "lemonade.webp")]
+    [InlineData("Rock Mix", 26, 0.14, 0.62, "coral.webp")]
+    [InlineData("Your Mix", 262, 0.2, 0.5, "bubblegum.webp")]
+    [InlineData("1990s Mix", 134, 0.14, 0.62, "northern-lights.webp")]
+    [InlineData("Polka Mix", -1, 0, 0, "amber-night.webp")]
+    [InlineData("pl-1", 30, 0.1, 0.4, "afterglow.webp")]
+    public void Background_IsTheDesignsPick(string id, int hue, double chroma, double lightness, string file)
     {
-        var colour = CoverColours.ToLch(CoverColours.Hex(hex));
-        foreach (var name in new[] { "One", "Two", "Three", "Four" })
+        var music = hue < 0 ? null : CoverMusic.Of(hue, chroma, lightness);
+
+        Assert.Equal(file, Book.Backgrounds[CoverBackgrounds.Choose(Book, music, id)].File);
+    }
+
+    /// <summary>Music of a colour gets one of a few backgrounds of that colour, the same one for the same list.</summary>
+    [Theory]
+    [InlineData(200, 30, 40)]
+    [InlineData(30, 60, 200)]
+    [InlineData(40, 160, 70)]
+    [InlineData(240, 200, 30)]
+    [InlineData(150, 40, 190)]
+    public void Background_MatchesTheMusicsColour(int r, int g, int b)
+    {
+        var lch = CoverColours.ToLch(unchecked((int)0xFF000000) | (r << 16) | (g << 8) | b);
+        var music = CoverMusic.Of(lch.H, lch.C, lch.L);
+
+        var picks = Enumerable.Range(0, 60).Select(i => CoverBackgrounds.Choose(Book, music, $"pl-{i}")).Distinct().ToList();
+
+        Assert.InRange(picks.Count, 2, 3);
+        foreach (var pick in picks)
         {
-            var chosen = Book.Backgrounds[CoverBackgrounds.Choose(Book, new CoverMusic(colour, null), name)];
-            var nearest = chosen.Hues.Min(h => CoverColours.HueDistance(h.H, colour.H));
-            Assert.True(nearest <= 35, $"{hex} for {name} got {chosen.Name}, {nearest:F0} degrees off");
+            var background = Book.Backgrounds[pick];
+            var nearest = background.Hues.Min(h => CoverColours.HueDistance(h.H, music.Hue));
+            Assert.True(nearest < 45, $"{background.Name} for hue {music.Hue}: {nearest:F0}");
         }
+        Assert.Equal(CoverBackgrounds.Choose(Book, music, "pl-1"), CoverBackgrounds.Choose(Book, music, "pl-1"));
     }
 
     [Fact]
-    public void Background_ForGreyMusic_IsAQuietOne()
+    public void Background_WithoutMusic_IsAnyOne_AlwaysTheSame()
     {
-        var grey = new CoverMusic(new Lch(0.5, 0.005, 0), null);
+        var picks = Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Choose(Book, null, $"pl-{i}")).ToList();
 
-        var chosen = Book.Backgrounds[CoverBackgrounds.Choose(Book, grey, "Greys")];
-
-        Assert.True(chosen.Hues[0].C < 0.1, $"grey music got {chosen.Name}");
+        Assert.Equal(picks, Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Choose(Book, null, $"pl-{i}")));
+        var used = picks.GroupBy(p => p).ToDictionary(g => g.Key, g => g.Count());
+        Assert.True(used.Count >= Book.Backgrounds.Count - 2);
+        Assert.All(used.Values, count => Assert.True(count < 400 / Book.Backgrounds.Count * 4));
     }
 
-    /// <summary>A list keeps its background; lists of the same colour take turns among the near-equal matches.</summary>
+    /// <summary>Sizes other than the file's: halved while that leaves enough, then each pixel the mean of the area it covers.</summary>
     [Fact]
-    public void Background_IsStablePerName_AndVariesAcrossNames()
+    public void Background_AtOtherSizes_IsTheAreaMean()
     {
-        var music = new CoverMusic(CoverColours.ToLch(CoverColours.Hex("#C0302A")), null);
+        using var at600 = CoverBackgrounds.Load(Book, 0, 600);
+        using var at800 = CoverBackgrounds.Load(Book, 0, 800);
+        using var at1200 = CoverBackgrounds.Load(Book, 0, 1200);
 
-        Assert.Equal(CoverBackgrounds.Choose(Book, music, "Rock Mix"), CoverBackgrounds.Choose(Book, music, "Rock Mix"));
-        var picked = Enumerable.Range(0, 60).Select(i => CoverBackgrounds.Choose(Book, music, $"List {i}")).Distinct().Count();
-        Assert.InRange(picked, 2, 4);
-        var byName = Enumerable.Range(0, 400).Select(i => CoverBackgrounds.Choose(Book, null, $"List {i}")).Distinct().Count();
-        Assert.Equal(Book.Backgrounds.Count, byName);
+        // 800 from 1200: output pixel 1 covers source pixels 1.5 to 3, half of 1 and all of 2.
+        var (a, b) = (at1200[1, 0], at1200[2, 0]);
+        var (c, d) = (at1200[1, 1], at1200[2, 1]);
+        var want = (a.R * 0.5 / 1.5 + b.R / 1.5) * (1 / 1.5) + (c.R * 0.5 / 1.5 + d.R / 1.5) * (0.5 / 1.5);
+        Assert.InRange(at800[1, 0].R - want, -0.51, 0.51);
+        var q = new[] { at1200[0, 0], at1200[1, 0], at1200[0, 1], at1200[1, 1] };
+        Assert.Equal((q.Sum(p => p.R) + 2) / 4, at600[0, 0].R);
     }
 
     [Fact]
@@ -422,7 +451,7 @@ public class ListCoverTests : IDisposable
         Assert.True(Changed(gold, teal, 0, 0, 600, 600) > 10_000, "a new seed cover should redraw it");
     }
 
-    /// <summary>Seeds that cannot be fetched leave the genre's colour; grey seeds give a quiet background.</summary>
+    /// <summary>Grey seeds, or seeds that cannot be fetched, leave the genre's colour.</summary>
     [Fact]
     public async Task GreyOrMissingSeeds_FallBack()
     {
@@ -430,10 +459,10 @@ public class ListCoverTests : IDisposable
         var bare = await service.GetListCoverAsync(new ListCover("Rock Mix", "Rock"));
         var failing = await service.GetListCoverAsync(new ListCover("Rock Mix", "Rock", ListKinds.Mix,
             _ => Task.FromResult<IReadOnlyList<CoverSeed>>([new CoverSeed("gone", _ => throw new HttpRequestException("down"))])));
-        var grey = CoverMusic.FromCovers([CoverArtService.SwatchesOf(Picture("#808080"))!]);
+        var grey = await service.GetListCoverAsync(new ListCover("Rock Mix", "Rock", ListKinds.Mix, Seeds(Picture("#808080"))));
 
         Assert.Equal(bare, failing);
-        Assert.True(CoverBook.Default.Backgrounds[CoverBackgrounds.Choose(CoverBook.Default, grey, "Rock Mix")].Hues[0].C < 0.1);
+        Assert.Equal(bare, grey);
     }
 
     [Fact]
@@ -443,8 +472,8 @@ public class ListCoverTests : IDisposable
         var rock = service.FallbackMusic("Rock Mix", "Rock")!;
         var decade = service.FallbackMusic("1990s Mix", "1990s")!;
 
-        Assert.Equal(26, rock.First.H);
-        Assert.Equal(134, decade.First.H);
+        Assert.Equal(26, rock.Hue);
+        Assert.Equal(134, decade.Hue);
         Assert.Null(service.FallbackMusic("Polka Mix", "Polka"));
         Assert.Equal(CoverBook.Default.ListHue("Soul Radio"), CoverBook.Default.ListHue("R&B & Soul"));
     }

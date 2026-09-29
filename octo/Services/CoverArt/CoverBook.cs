@@ -32,6 +32,10 @@ public sealed class CoverBook
 
     public sealed record VeilYellow(double[] Hues, double Split, double[] Towards, double TurnPerDrop, double ChromaFrom, double ChromaLift);
 
+    /// <summary>How a list's background is picked from the library by its music's colour.</summary>
+    public sealed record BackgroundRule(int Nearest, double HueStep, double GreyBelow, double GreyPenalty,
+        double ChromaWeight, double LightnessWeight);
+
     /// <summary>How the background is darkened under the words, keeping its colour.</summary>
     public sealed record VeilNumbers(double Margin, int Refine, VeilTitle Title, VeilFooter Footer, VeilYellow Yellow);
 
@@ -40,7 +44,7 @@ public sealed class CoverBook
     /// <summary>One painted background: its file and its colours, strongest first.</summary>
     public sealed record Background(string File, string Name, string Family, Hue[] Hues, double MeanLightness);
 
-    private sealed record Document(int Version, FontFiles Fonts, LayoutNumbers Layout, VeilNumbers Veil);
+    private sealed record Document(int Version, FontFiles Fonts, LayoutNumbers Layout, BackgroundRule Background, VeilNumbers Veil);
 
     private sealed record Library(int Size, Background[] Backgrounds);
 
@@ -56,6 +60,7 @@ public sealed class CoverBook
     public FontFiles Fonts { get; }
     public LayoutNumbers Layout { get; }
     public VeilNumbers Veil { get; }
+    public BackgroundRule BackgroundChoice { get; }
     public IReadOnlyList<Background> Backgrounds { get; }
 
     /// <summary>The side the backgrounds are stored at.</summary>
@@ -71,6 +76,7 @@ public sealed class CoverBook
         Fonts = document.Fonts;
         Layout = document.Layout;
         Veil = document.Veil;
+        BackgroundChoice = document.Background;
         Backgrounds = library.Backgrounds.Where(b => b.Hues is { Length: > 0 }).ToList();
         BackgroundSize = library.Size;
         if (Backgrounds.Count == 0) throw new InvalidDataException("the cover library has no backgrounds");

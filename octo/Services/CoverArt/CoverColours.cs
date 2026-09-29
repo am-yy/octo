@@ -168,42 +168,38 @@ public static class CoverColours
 }
 
 /// <summary>
-/// The colours of a list's music: the strongest colour of its first covers, and the strongest of
-/// a clearly different hue if there is one. A cover's background is picked to match them.
+/// The colour of a list's music that picks its cover's background: hue (whole degrees), chroma
+/// and lightness (OKLCH, to 0.001) of the strongest colour of its first covers, rounded as the
+/// Octo apps round it so both pick the same background.
 /// </summary>
-public sealed record CoverMusic(Lch First, Lch? Second)
+public sealed record CoverMusic(int Hue, double Chroma, double Lightness)
 {
-    /// <summary>Colours under this chroma read as grey.</summary>
+    /// <summary>Colours under this chroma read as grey, and give no hue to work from.</summary>
     private const double Colourless = 0.035;
 
-    /// <summary>Hues at least this far apart make a pair worth matching.</summary>
-    private const double PairApart = 28.0;
+    /// <summary>The colour as short text, for cache keys.</summary>
+    public string Key => $"{Hue}.{CoverColours.Round(Chroma * 1000)}.{CoverColours.Round(Lightness * 1000)}";
 
-    /// <summary>The colours, rounded, for cache keys: the same colours give the same key.</summary>
-    public string Key => Describe(First) + (Second is { } second ? "/" + Describe(second) : "");
-
-    private static string Describe(Lch c) =>
-        $"{CoverColours.Round(c.L * 100)}.{CoverColours.Round(c.C * 1000)}.{CoverColours.Round(c.H) % 360}";
-
-    /// <summary>A stand-in for music of one hue, as a genre or decade gives.</summary>
-    public static CoverMusic OfHue(double hue, double chroma) => new(new Lch(0.62, chroma, hue), null);
+    public static CoverMusic Of(double hue, double chroma, double lightness) => new(
+        (CoverColours.Round(hue) % 360 + 360) % 360,
+        CoverColours.Round(Math.Clamp(chroma, 0.0, 0.4) * 1000) / 1000.0,
+        CoverColours.Round(Math.Clamp(lightness, 0.0, 1.0) * 1000) / 1000.0);
 
     /// <summary>
-    /// The music's colours from the main colours of some covers (a list of swatches for each),
-    /// weighed as the apps weigh them: by how much of its cover each fills and how vivid it is.
-    /// Grey covers give their main grey. Null only when there is nothing to read.
+    /// The music's colour from the main colours of some covers (a list of swatches for each):
+    /// the strongest by how much of its cover it fills and how vivid it is. Null with no covers
+    /// or only grey ones.
     /// </summary>
     public static CoverMusic? FromCovers(IReadOnlyList<IReadOnlyList<Swatch>> covers)
     {
         var withColour = covers.Where(c => c.Count > 0).ToList();
         if (withColour.Count == 0) return null;
-        var seen = withColour.SelectMany(swatches => swatches.Take(4)
-            .Select(s => (Lch: CoverColours.ToLch(s.Argb), Weight: (double)s.Share / withColour.Count))).ToList();
-        var colourful = seen.Where(s => s.Lch.C >= Colourless && s.Lch.L is >= 0.15 and <= 0.97).ToList();
-        if (colourful.Count == 0) return new CoverMusic(seen.MaxBy(s => s.Weight).Lch, null);
-        static double Score((Lch Lch, double Weight) s) => Math.Sqrt(s.Weight) * (0.3 + s.Lch.C * 5);
-        var first = colourful.MaxBy(Score);
-        var others = colourful.Where(s => CoverColours.HueDistance(s.Lch.H, first.Lch.H) >= PairApart).ToList();
-        return new CoverMusic(first.Lch, others.Count > 0 ? others.MaxBy(Score).Lch : null);
+        var colourful = withColour.SelectMany(swatches => swatches.Take(4)
+                .Select(s => (Lch: CoverColours.ToLch(s.Argb), Weight: (double)s.Share / withColour.Count)))
+            .Where(s => s.Lch.C >= Colourless && s.Lch.L is >= 0.15 and <= 0.97)
+            .ToList();
+        if (colourful.Count == 0) return null;
+        var first = colourful.MaxBy(s => Math.Sqrt(s.Weight) * (0.3 + s.Lch.C * 5));
+        return Of(first.Lch.H, first.Lch.C, first.Lch.L);
     }
 }

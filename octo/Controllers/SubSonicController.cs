@@ -4012,9 +4012,10 @@ public class SubsonicController : ControllerBase
 
         var artist = await _metadataService.GetArtistAsync(SoulseekMetadataService.ProviderName, id);
         if (artist == null) return null;
-        // The counts come from the same list the page shows, so they agree with it. The
-        // catalog's answers are cached, so the page asking for that list too costs little.
-        var albums = await OutsideArtistAlbumsAsync(id, artist.Name);
+        // The counts come from the same list the page shows, so they agree with it. Only the
+        // track counts already known: the page asks for that list at the same moment, and
+        // that request is the one that asks the catalog for the rest.
+        var albums = await OutsideArtistAlbumsAsync(id, artist.Name, knownCountsOnly: true);
 
         var bytes = Encoding.UTF8.GetBytes(BuildNativeArtistObject(artist, albums).ToJsonString());
         Response.StatusCode = 200;
@@ -4063,9 +4064,12 @@ public class SubsonicController : ControllerBase
     /// An outside artist's albums, each naming the artist and linking back to the artist's
     /// own id, as getArtist fills them: the catalog's listing carries neither.
     /// </summary>
-    private async Task<List<Album>> OutsideArtistAlbumsAsync(string artistId, string artistName)
+    private async Task<List<Album>> OutsideArtistAlbumsAsync(string artistId, string artistName,
+        bool knownCountsOnly = false)
     {
-        var albums = await _metadataService.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, artistId);
+        var albums = knownCountsOnly
+            ? await _metadataService.GetArtistAlbumsKnownCountsAsync(SoulseekMetadataService.ProviderName, artistId)
+            : await _metadataService.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, artistId);
         foreach (var album in albums)
         {
             if (string.IsNullOrEmpty(album.Artist)) album.Artist = artistName;

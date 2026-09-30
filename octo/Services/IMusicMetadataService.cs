@@ -126,6 +126,14 @@ public interface IMusicMetadataService
     Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId,
         IReadOnlyCollection<string>? libraryAlbumTitles)
         => GetArtistAlbumsAsync(externalProvider, externalId);
+
+    /// <summary>
+    /// Gets an artist's albums with only the track counts already known, asking the catalog
+    /// for none: for counts shown beside an artist's page, whose own album list asks for the
+    /// missing ones at the same moment. A provider with no such lookup answers the plain list.
+    /// </summary>
+    Task<List<Album>> GetArtistAlbumsKnownCountsAsync(string externalProvider, string externalId)
+        => GetArtistAlbumsAsync(externalProvider, externalId);
     
     /// <summary>
     /// Searches for playlists on external providers

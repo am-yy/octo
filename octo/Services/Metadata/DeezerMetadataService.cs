@@ -118,6 +118,26 @@ public class DeezerMetadataService : IDisposable
             AbsoluteExpirationRelativeToNow = ttl,
         });
 
+    /// <summary>Requests on their way to the catalog, by cache key. The cache only answers
+    /// once a request is back, so two callers asking the same thing at once each asked.</summary>
+    private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _inFlight = new();
+
+    /// <summary>
+    /// One request for any number of callers asking the same thing at once. The fetch writes
+    /// the cache before it finishes, so a caller arriving after it has left finds the answer
+    /// there. It runs without any one caller's token: a caller giving up stops waiting, and
+    /// the others still get their answer.
+    /// </summary>
+    private async Task<T> SharedAsync<T>(string key, Func<Task<T>> fetch, CancellationToken ct)
+    {
+        var flight = _inFlight.GetOrAdd(key, k => new Lazy<Task<object?>>(async () =>
+        {
+            try { return await fetch(); }
+            finally { _inFlight.TryRemove(k, out _); }
+        }));
+        return (T)(await flight.Value.WaitAsync(ct))!;
+    }
+
     /// <summary>Drop every cached answer. Exposed so a poisoned cache can be cleared
     /// without restarting the container.</summary>
     public void ClearCaches()
@@ -363,17 +383,23 @@ public class DeezerMetadataService : IDisposable
     /// Search the catalog for artists. Plain query: the artist endpoint takes a bare name
     /// and the qualified form is dead everywhere now.
     /// </summary>
-    public async Task<List<ArtistHit>> SearchArtistsAsync(string query, int limit, CancellationToken ct = default)
+    public Task<List<ArtistHit>> SearchArtistsAsync(string query, int limit, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(query) || limit <= 0) return new List<ArtistHit>();
+        if (string.IsNullOrWhiteSpace(query) || limit <= 0) return Task.FromResult(new List<ArtistHit>());
         var key = $"ars|{query}|{limit}".ToLowerInvariant();
-        if (TryGetCached<List<ArtistHit>>(key, out var cached)) return cached!;
+        if (TryGetCached<List<ArtistHit>>(key, out var cached)) return Task.FromResult(cached!);
+        // An artist page names its artist and lists its albums in two requests at once, and
+        // both search for the name. They share one search.
+        return SharedAsync(key, () => FetchArtistSearchAsync(query, limit, key), ct);
+    }
 
+    private async Task<List<ArtistHit>> FetchArtistSearchAsync(string query, int limit, string key)
+    {
         var hits = new List<ArtistHit>();
         try
         {
             var q = Uri.EscapeDataString(query);
-            using var r = await GetJsonAsync($"{Base}/search/artist?q={q}&limit={limit}", ct);
+            using var r = await GetJsonAsync($"{Base}/search/artist?q={q}&limit={limit}", CancellationToken.None);
             // Caching an empty list on a refusal is what would make external artists
             // silently vanish from search3 for the rest of the process.
             if (r.Transient) return new List<ArtistHit>();
@@ -572,13 +598,19 @@ public class DeezerMetadataService : IDisposable
     /// someone is looking at the page, and the background lane is kept full by cache warming,
     /// which turned every one of these away. The caller keeps the number asked small.
     /// </summary>
-    public async Task<int?> AlbumTrackCountAsync(string deezerId, CancellationToken ct = default)
+    public Task<int?> AlbumTrackCountAsync(string deezerId, CancellationToken ct = default)
     {
         var key = $"tc|{deezerId}";
-        if (TryGetCached<int?>(key, out var cached)) return cached;
+        if (TryGetCached<int?>(key, out var cached)) return Task.FromResult(cached);
+        // Two visits to one page at once ask for the same albums; each album is asked once.
+        return SharedAsync(key, () => FetchAlbumTrackCountAsync(deezerId, key), ct);
+    }
+
+    private async Task<int?> FetchAlbumTrackCountAsync(string deezerId, string key)
+    {
         try
         {
-            using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", ct);
+            using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", CancellationToken.None);
             if (r.Transient) return null;
             var count = r.Doc is null ? null : Int(r.Doc.RootElement, "nb_tracks");
             Put(key, count, count is null ? NegativeTtl : PositiveTtl);

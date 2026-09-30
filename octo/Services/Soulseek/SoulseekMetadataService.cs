@@ -872,8 +872,44 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// The same, for a library artist's page: the library's album titles say which of two
     /// artists of one name the page is about.
     /// </summary>
-    public async Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId,
+    public Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId,
         IReadOnlyCollection<string>? libraryAlbumTitles)
+        => ArtistAlbumsAsync(externalProvider, externalId, libraryAlbumTitles, fillCounts: true);
+
+    /// <summary>
+    /// The same list with only the track counts already known, for the counts an artist's own
+    /// record shows. The page asks for its album list at the same moment, and that request
+    /// asks the catalog for the missing counts; asking again here doubled the traffic.
+    /// </summary>
+    public Task<List<Album>> GetArtistAlbumsKnownCountsAsync(string externalProvider, string externalId)
+        => ArtistAlbumsAsync(externalProvider, externalId, null, fillCounts: false);
+
+    /// <summary>An artist's releases and the track counts shown beside them.</summary>
+    private sealed record ArtistWalk(List<DeezerMetadataService.AlbumHit> Releases, int?[] Counts);
+
+    /// <summary>
+    /// Walks of an artist's catalog in progress: the releases alone, and the releases with
+    /// their counts filled. Keyed by the artist's id and the library titles, since those decide
+    /// which artist of a name is meant. A client opens an artist's page with two requests at
+    /// once, and each used to walk the catalog on its own: twice the calls against a quota
+    /// search and playback share. Everything a walk asks is cached once it is back, so a
+    /// finished walk leaves this and the next visit reads the cache.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, Lazy<Task<List<DeezerMetadataService.AlbumHit>>>> _releaseWalks = new();
+    private readonly ConcurrentDictionary<string, Lazy<Task<ArtistWalk>>> _countWalks = new();
+
+    /// <summary>One run of <paramref name="start"/> for every caller asking under the same key
+    /// while it runs.</summary>
+    private static Task<T> SharedWalk<T>(ConcurrentDictionary<string, Lazy<Task<T>>> walks, string key,
+        Func<Task<T>> start) =>
+        walks.GetOrAdd(key, k => new Lazy<Task<T>>(async () =>
+        {
+            try { return await start(); }
+            finally { walks.TryRemove(k, out _); }
+        })).Value;
+
+    private async Task<List<Album>> ArtistAlbumsAsync(string externalProvider, string externalId,
+        IReadOnlyCollection<string>? libraryAlbumTitles, bool fillCounts)
     {
         if (!string.Equals(externalProvider, ProviderName, StringComparison.OrdinalIgnoreCase)) return new List<Album>();
         var routing = _idRegistry.Lookup(externalId);
@@ -882,13 +918,38 @@ public class SoulseekMetadataService : IMusicMetadataService
         var owned = new HashSet<string>(
             (libraryAlbumTitles ?? []).Select(SongIdentity.Key).Where(key => key.Length > 0),
             StringComparer.Ordinal);
-        var releases = await FindArtistReleasesAsync(routing, name, owned);
+        var key = externalId + "|" + string.Join("\u001f", owned.Order(StringComparer.Ordinal));
+        Task<List<DeezerMetadataService.AlbumHit>> Releases() =>
+            SharedWalk(_releaseWalks, key, () => FindArtistReleasesAsync(routing, name, owned));
 
-        // The listing carries no track counts. Each album's own record has one. Counts already
-        // known cost nothing; of the rest, the first few on the page are asked a few at a time, and the
-        // page waits a moment for them. What arrives in time is shown and the rest are kept for
-        // the next visit, so a long career fills in over a visit or two without flooding the
-        // catalog's quota.
+        ArtistWalk walk;
+        if (fillCounts)
+        {
+            walk = await SharedWalk(_countWalks, key, async () =>
+            {
+                var found = await Releases();
+                return new ArtistWalk(found, await FillTrackCountsAsync(found, fill: true));
+            });
+        }
+        else
+        {
+            var found = await Releases();
+            walk = new ArtistWalk(found, await FillTrackCountsAsync(found, fill: false));
+        }
+
+        // Each caller gets albums of its own: a library artist's page relinks them to itself.
+        return ToAlbums(name, walk);
+    }
+
+    /// <summary>
+    /// The listing carries no track counts. Each album's own record has one. Counts already
+    /// known cost nothing; of the rest, the first few on the page are asked a few at a time, and
+    /// the page waits a moment for them. What arrives in time is shown and the rest are kept for
+    /// the next visit, so a long career fills in over a visit or two without flooding the
+    /// catalog's quota. Without <paramref name="fill"/>, only the counts already known.
+    /// </summary>
+    private async Task<int?[]> FillTrackCountsAsync(List<DeezerMetadataService.AlbumHit> releases, bool fill)
+    {
         var counts = new int?[releases.Count];
         var lookups = new List<Task>();
         // Not disposed: lookups still waiting when the page answers keep using it.
@@ -898,10 +959,10 @@ public class SoulseekMetadataService : IMusicMetadataService
             var release = releases[i];
             if (release.TrackCount > 0) counts[i] = release.TrackCount;
             else if (_deezer.TryKnownTrackCount(release.DeezerId, out var known)) counts[i] = known;
-            else if (lookups.Count < TrackCountsPerVisit) lookups.Add(FillCount(i, release.DeezerId));
+            else if (fill && lookups.Count < TrackCountsPerVisit) lookups.Add(FillCount(i, release.DeezerId));
         }
         if (lookups.Count > 0) await Task.WhenAny(Task.WhenAll(lookups), Task.Delay(TrackCountWait));
-        var shown = (int?[])counts.Clone();
+        return (int?[])counts.Clone();
 
         async Task FillCount(int index, string deezerId)
         {
@@ -909,7 +970,11 @@ public class SoulseekMetadataService : IMusicMetadataService
             try { counts[index] = await _deezer.AlbumTrackCountAsync(deezerId); }
             finally { gate.Release(); }
         }
+    }
 
+    private List<Album> ToAlbums(string name, ArtistWalk walk)
+    {
+        var (releases, shown) = (walk.Releases, walk.Counts);
         var albums = new List<Album>(releases.Count);
         for (var i = 0; i < releases.Count; i++)
         {

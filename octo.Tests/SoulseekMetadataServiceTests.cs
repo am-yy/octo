@@ -10,6 +10,7 @@ using Octo.Services.Metadata;
 using Octo.Services.Soulseek;
 using Octo.Services.Subsonic;
 using Octo.Services.YouTube;
+using System.Collections.Concurrent;
 using System.Net;
 
 namespace Octo.Tests;
@@ -18,18 +19,24 @@ public class SoulseekMetadataServiceTests
 {
     private readonly ExternalIdRegistry _registry = new();
 
+    /// <summary>Every url the fake catalog was asked for.</summary>
+    private readonly ConcurrentQueue<string> _calls = new();
+
     /// <summary>Builds the service with a Deezer layer answering from a url-substring map.
-    /// YouTube is never reached by the album paths under test.</summary>
-    private SoulseekMetadataService BuildService(Dictionary<string, string> routes)
+    /// YouTube is never reached by the album paths under test. A delay keeps requests in
+    /// flight long enough for callers arriving together to overlap.</summary>
+    private SoulseekMetadataService BuildService(Dictionary<string, string> routes, int delayMs = 0)
     {
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
             .Setup<Task<HttpResponseMessage>>("SendAsync",
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync((HttpRequestMessage req, CancellationToken _) =>
+            .Returns(async (HttpRequestMessage req, CancellationToken _) =>
             {
                 var url = req.RequestUri!.ToString();
+                _calls.Enqueue(url);
+                if (delayMs > 0) await Task.Delay(delayMs);
                 foreach (var (needle, body) in routes)
                 {
                     if (url.Contains(needle, StringComparison.OrdinalIgnoreCase))
@@ -343,6 +350,40 @@ public class SoulseekMetadataServiceTests
         Assert.Contains("Dedicated to Markos III", albums.Select(a => a.Title));
         Assert.DoesNotContain("Nevermind", albums.Select(a => a.Title));
         Assert.Equal("111", _registry.Lookup(id)!.ExternalArtistId);
+    }
+
+    [Fact]
+    public async Task ArtistPage_OpenedWithTwoRequestsAtOnce_WalksTheCatalogOnce()
+    {
+        // Feishin opens an artist page with the artist and its album list at the same moment,
+        // and a second client may open it too. Each request walked the catalog on its own:
+        // 44 calls for one page, against a limit of 30 every 5 seconds.
+        var titles = Enumerable.Range(0, 30).Select(i => $"Record {i}").ToArray();
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[{""id"":222,""name"":""Busy"",""nb_fan"":9}]}",
+            ["/artist/222/albums"] = @"{""data"":[" + string.Join(",", titles.Select((t, i) =>
+                $@"{{""id"":{1000 + i},""title"":""{t}"",""record_type"":""album"",""release_date"":""2001-01-01""}}")) + "]}",
+            ["/album/1"] = @"{""nb_tracks"":10}",
+        }, delayMs: 50);
+        var id = OutsideArtist("Busy");
+
+        var lists = await Task.WhenAll(
+            svc.GetArtistAsync(SoulseekMetadataService.ProviderName, id).ContinueWith(_ =>
+                svc.GetArtistAlbumsKnownCountsAsync(SoulseekMetadataService.ProviderName, id)).Unwrap(),
+            svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id),
+            svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id));
+
+        // One walk: the name search, the artist's listing, and the own records of the first
+        // 20 albums without a count. 22 calls, where each request used to make its own.
+        Assert.Equal(1, _calls.Count(c => c.Contains("/search/artist")));
+        Assert.Equal(1, _calls.Count(c => c.Contains("/artist/222/albums")));
+        Assert.Equal(20, _calls.Count(c => c.Contains("/album/1")));
+        Assert.Equal(22, _calls.Count);
+        Assert.All(lists, list => Assert.Equal(30, list.Count));
+        // Both page lists show the counts that came back, and each has albums of its own.
+        Assert.Equal(20, lists[1].Count(a => a.SongCount == 10));
+        Assert.NotSame(lists[1][0], lists[2][0]);
     }
 
     [Fact]

@@ -26,6 +26,9 @@ public sealed class MergedFormatTests
     {
         public readonly List<string> NavidromeFormats = [];
 
+        /// <summary>Every path the catalog was asked for.</summary>
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> DeezerCalls = new();
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var uri = request.RequestUri!;
@@ -34,6 +37,7 @@ public sealed class MergedFormatTests
 
             if (uri.Host == "api.deezer.com")
             {
+                DeezerCalls.Enqueue(path);
                 // The catalog writes this title with a curly apostrophe; the library's tags do not.
                 if (path.StartsWith("/search/album", StringComparison.Ordinal) && query["q"]?.Contains("Look Back") == true)
                     return Json("""{"data":[{"id":20,"title":"Don’t Look Back","record_type":"album","nb_tracks":10,"artist":{"name":"Test Artist"}},{"id":21,"title":"Look Back Again","record_type":"album","nb_tracks":10,"artist":{"name":"Test Artist"}}]}""");
@@ -366,6 +370,28 @@ public sealed class MergedFormatTests
         // Each album opens natively too.
         using var opened = await client.GetAsync($"/api/album/{albums[0].GetProperty("id").GetString()}");
         opened.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task NativeArtist_ThePageAndItsAlbumsAtOnceAskTheCatalogOnce()
+    {
+        // Feishin asks for the artist and the album list together. Each walked the catalog,
+        // album counts and all, so one page cost twice its calls.
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+        var id = RegisterOutsideArtist(factory);
+
+        var answers = await Task.WhenAll(
+            client.GetAsync($"/api/artist/{id}"),
+            client.GetAsync($"/api/album?_end=-1&_order=DESC&_sort=max_year&_start=0&artist_id={id}&missing=false"));
+        Assert.All(answers, answer => answer.EnsureSuccessStatusCode());
+
+        var calls = factory.Servers.DeezerCalls.ToList();
+        // The search that names the artist, the listing, and each album's own record, once.
+        Assert.Equal(1, calls.Count(path => path.StartsWith("/search/artist", StringComparison.Ordinal)));
+        Assert.Equal(1, calls.Count(path => path == "/artist/7/albums"));
+        Assert.Equal(["/album/1", "/album/2", "/album/3"], calls.Where(path => path.StartsWith("/album/", StringComparison.Ordinal)).Order());
+        Assert.Equal(5, calls.Count);
     }
 
     [Fact]

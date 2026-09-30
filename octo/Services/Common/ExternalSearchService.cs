@@ -125,7 +125,9 @@ public sealed class ExternalSearchService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var collected = new List<(string Artist, string Title)>();
 
-        var tracks = await _lastFm!.SearchTracksAsync(query, Math.Min(50, BuildSize * 2));
+        // Last.fm's search carries rows from mislabelled scrobbles; put their names right first,
+        // or they reach the results, the player and each listener's Last.fm as they are.
+        var tracks = LastFmSearchCleanup.Clean(await _lastFm!.SearchTracksAsync(query, Math.Min(50, BuildSize * 2)));
         foreach (var t in tracks)
         {
             var key = SongIdentity.MatchKey(t.Artist, t.Title);

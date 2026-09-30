@@ -35,7 +35,8 @@ public class LastFmService
         _logger = logger;
     }
 
-    public record SimilarTrack(string Artist, string Title, double Match, int? Duration = null);
+    /// <param name="Listeners">How many people Last.fm counts for the row, where the call says.</param>
+    public record SimilarTrack(string Artist, string Title, double Match, int? Duration = null, long? Listeners = null);
 
     public async Task<List<SimilarTrack>> GetSimilarTracksAsync(string artist, string title, int limit = 50,
         CancellationToken cancellationToken = default)
@@ -276,8 +277,10 @@ public class LastFmService
                 {
                     var name = t.TryGetProperty("name", out var n) ? n.GetString() : null;
                     var artist = t.TryGetProperty("artist", out var a) ? a.GetString() : null;
+                    long? listeners = t.TryGetProperty("listeners", out var l) && long.TryParse(
+                        l.ValueKind == JsonValueKind.String ? l.GetString() : l.GetRawText(), out var count) ? count : null;
                     if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(artist))
-                        tracks.Add(new SimilarTrack(artist!, name!, 1.0));
+                        tracks.Add(new SimilarTrack(artist!, name!, 1.0, Listeners: listeners));
                 }
             }
             _logger.LogInformation("Last.fm track.search '{Q}' -> {N} tracks", query, tracks.Count);

@@ -672,7 +672,7 @@ public class DeezerMetadataServiceTests
     }
 
     [Fact]
-    public async Task GetArtistAlbumsAsync_ListsTheArtistsRecordsNewestFirst()
+    public async Task GetArtistAlbumsAsync_GroupsAlbumsThenEpsThenSinglesThenCompilations()
     {
         // The catalog's own shape for an artist's releases: no artist and no track counts,
         // a clean and an explicit copy of one album, a single, and a compilation of theirs.
@@ -688,7 +688,9 @@ public class DeezerMetadataServiceTests
 
         var hits = await svc.GetArtistAlbumsAsync("42", "Test Artist");
 
-        Assert.Equal(new[] { "The Best Of", "Live Set", "Second", "First" }, hits.Select(h => h.Title));
+        // The way the apps group a discography, newest first within each group.
+        Assert.Equal(new[] { "Second", "First", "Live Set", "A Single", "The Best Of" }, hits.Select(h => h.Title));
+        Assert.Equal(new[] { "album", "album", "ep", "single", "compile" }, hits.Select(h => h.RecordType));
         Assert.All(hits, h => Assert.Equal("Test Artist", h.Artist));
         Assert.Equal("2", hits.Single(h => h.Title == "Second").DeezerId);
         Assert.Equal(1997, hits.Single(h => h.Title == "First").Year);
@@ -696,7 +698,7 @@ public class DeezerMetadataServiceTests
     }
 
     [Fact]
-    public async Task GetArtistAlbumsAsync_ShowsSinglesOnlyForAnArtistWithNothingElse()
+    public async Task GetArtistAlbumsAsync_SinglesAreNewestFirstToo()
     {
         var json = @"{""data"":[
             {""id"":1,""title"":""Song A"",""record_type"":""single"",""release_date"":""2020-01-01""},
@@ -708,4 +710,33 @@ public class DeezerMetadataServiceTests
 
         Assert.Equal(new[] { "Song B", "Song A" }, hits.Select(h => h.Title));
     }
+
+    [Fact]
+    public async Task GetArtistAlbumsAsync_ACareerOfSinglesShowsThemAfterItsAlbum()
+    {
+        // Singles used to be hidden whenever there was one album, which hid most of a career
+        // like this one.
+        var json = @"{""data"":[
+            {""id"":1,""title"":""Hit Three"",""record_type"":""single"",""release_date"":""2024-01-01""},
+            {""id"":2,""title"":""Hit Two"",""record_type"":""single"",""release_date"":""2023-01-01""},
+            {""id"":3,""title"":""The Album"",""record_type"":""album"",""release_date"":""2021-01-01""},
+            {""id"":4,""title"":""Hit One"",""record_type"":""single"",""release_date"":""2020-01-01""}
+        ]}";
+        var svc = BuildService(new() { ["/artist/9/albums"] = json });
+
+        var hits = await svc.GetArtistAlbumsAsync("9", "Singles Artist");
+
+        Assert.Equal(new[] { "The Album", "Hit Three", "Hit Two", "Hit One" }, hits.Select(h => h.Title));
+    }
+
+    [Theory]
+    [InlineData("album", "Album")]
+    [InlineData("ep", "EP")]
+    [InlineData("single", "Single")]
+    [InlineData("compile", "Compilation")]
+    [InlineData("ALBUM", "Album")]
+    [InlineData("mixtape", null)]
+    [InlineData(null, null)]
+    public void ReleaseType_UsesOpenSubsonicNames(string? recordType, string? expected)
+        => Assert.Equal(expected, DeezerMetadataService.ReleaseType(recordType));
 }

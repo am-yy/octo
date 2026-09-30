@@ -876,7 +876,7 @@ public class SoulseekMetadataService : IMusicMetadataService
         var releases = await FindArtistReleasesAsync(routing, name, owned);
 
         // The listing carries no track counts. Each album's own record has one. Counts already
-        // known cost nothing; of the rest, the newest few are asked a few at a time, and the
+        // known cost nothing; of the rest, the first few on the page are asked a few at a time, and the
         // page waits a moment for them. What arrives in time is shown and the rest are kept for
         // the next visit, so a long career fills in over a visit or two without flooding the
         // catalog's quota.

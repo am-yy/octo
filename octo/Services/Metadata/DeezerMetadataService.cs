@@ -453,12 +453,12 @@ public class DeezerMetadataService : IDisposable
     }
 
     /// <summary>
-    /// An artist's own releases for their page, newest first: albums, EPs and their own
-    /// compilations, one copy of each title (the catalog lists a clean and an explicit copy of
-    /// many). This listing gives no track counts, so singles cannot be told from real records
-    /// the way album search does; they are shown only for an artist with nothing else, so a
-    /// page is never empty and never buried in singles. The artist's name is not on this
-    /// listing, so every hit carries the one given.
+    /// An artist's own releases for their page: albums, then EPs, then singles, then their own
+    /// compilations, newest first within each, the way the apps group a discography. One copy
+    /// of each title (the catalog lists a clean and an explicit copy of many). Singles used to
+    /// be left out unless there was nothing else, which hid half of a career that is mostly
+    /// singles; grouped after the records, they no longer bury them. The artist's name is not
+    /// on this listing, so every hit carries the one given.
     /// </summary>
     public async Task<List<AlbumHit>> GetArtistAlbumsAsync(string deezerArtistId, string artistName, CancellationToken ct = default)
     {
@@ -466,8 +466,7 @@ public class DeezerMetadataService : IDisposable
         var key = $"ara|{deezerArtistId}".ToLowerInvariant();
         if (TryGetCached<List<AlbumHit>>(key, out var cached)) return cached!;
 
-        var records = new List<AlbumHit>();
-        var singles = new List<AlbumHit>();
+        var releases = new List<AlbumHit>();
         try
         {
             var id = Uri.EscapeDataString(deezerArtistId);
@@ -494,8 +493,7 @@ public class DeezerMetadataService : IDisposable
                         Str(a, "cover_xl") ?? Str(a, "cover_medium"), year, Int(a, "nb_tracks") ?? 0, recordType);
 
                     if (!seen.Add(Octo.Services.Common.SongIdentity.Key(title) + "|" + recordType)) continue;
-                    if (string.Equals(recordType, "single", StringComparison.OrdinalIgnoreCase)) singles.Add(hit);
-                    else records.Add(hit);
+                    releases.Add(hit);
                 }
             }
         }
@@ -504,12 +502,37 @@ public class DeezerMetadataService : IDisposable
             _logger.LogDebug("deezer artist albums '{Id}' failed: {M}", deezerArtistId, ex.Message);
         }
 
-        var hits = (records.Count > 0 ? records : singles)
-            .OrderByDescending(h => h.Year ?? 0)
+        var hits = releases
+            .OrderBy(h => ReleaseRank(h.RecordType))
+            .ThenByDescending(h => h.Year ?? 0)
             .ToList();
         Put(key, hits, hits.Count == 0 ? NegativeTtl : PositiveTtl);
         return hits;
     }
+
+    /// <summary>
+    /// OpenSubsonic's name for a catalog record type, or null for one it has no name for. The
+    /// catalog says "compile" for a compilation.
+    /// </summary>
+    public static string? ReleaseType(string? recordType) => recordType?.Trim().ToLowerInvariant() switch
+    {
+        "album" => "Album",
+        "ep" => "EP",
+        "single" => "Single",
+        "compile" or "compilation" => "Compilation",
+        _ => null,
+    };
+
+    /// <summary>Where a record type sits on an artist's page: albums, EPs, singles, compilations,
+    /// then anything the catalog did not name.</summary>
+    private static int ReleaseRank(string? recordType) => ReleaseType(recordType) switch
+    {
+        "Album" => 0,
+        "EP" => 1,
+        "Single" => 2,
+        "Compilation" => 3,
+        _ => 4,
+    };
 
     /// <summary>A track count already known for an album, without asking the catalog.</summary>
     public bool TryKnownTrackCount(string deezerId, out int? count) => TryGetCached($"tc|{deezerId}", out count);

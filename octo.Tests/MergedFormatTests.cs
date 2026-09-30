@@ -253,9 +253,9 @@ public sealed class MergedFormatTests
         var artist = json.RootElement.GetProperty("subsonic-response").GetProperty("artist");
         var albums = artist.GetProperty("album").EnumerateArray().ToList();
 
-        // The owned album once, the outside one added, the single left out.
-        Assert.Equal(["Test Album", "Other Album"], albums.Select(a => a.GetProperty("name").GetString()));
-        Assert.Equal(2, artist.GetProperty("albumCount").GetInt32());
+        // The owned album once, then the outside ones, the album before the single.
+        Assert.Equal(["Test Album", "Other Album", "A Single"], albums.Select(a => a.GetProperty("name").GetString()));
+        Assert.Equal(3, artist.GetProperty("albumCount").GetInt32());
         var outside = albums[1];
         Assert.Equal("Test Artist", outside.GetProperty("artist").GetString());
         // It links back to the library artist, not to an outside copy of them.
@@ -287,7 +287,7 @@ public sealed class MergedFormatTests
         using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&f=json&id={id}"));
         var artist = json.RootElement.GetProperty("subsonic-response").GetProperty("artist");
 
-        Assert.Equal(["Other Album", "Test Album"],
+        Assert.Equal(["Other Album", "Test Album", "A Single"],
             artist.GetProperty("album").EnumerateArray().Select(a => a.GetProperty("name").GetString()));
         Assert.All(artist.GetProperty("album").EnumerateArray(), a => Assert.Equal(id, a.GetProperty("artistId").GetString()));
     }
@@ -339,8 +339,8 @@ public sealed class MergedFormatTests
         var artist = detail.RootElement;
         Assert.Equal(id, artist.GetProperty("id").GetString());
         Assert.Equal("Test Artist", artist.GetProperty("name").GetString());
-        Assert.Equal(2, artist.GetProperty("albumCount").GetInt32());
-        Assert.Equal(2, artist.GetProperty("stats").GetProperty("albumartist").GetProperty("albumCount").GetInt32());
+        Assert.Equal(3, artist.GetProperty("albumCount").GetInt32());
+        Assert.Equal(3, artist.GetProperty("stats").GetProperty("albumartist").GetProperty("albumCount").GetInt32());
         Assert.Equal(0, artist.GetProperty("size").GetInt32());
         Assert.Equal("https://cdn/test-artist.jpg", artist.GetProperty("largeImageUrl").GetString());
 
@@ -348,10 +348,11 @@ public sealed class MergedFormatTests
         using var listResponse = await client.GetAsync(
             $"/api/album?_end=-1&_order=DESC&_sort=max_year&_start=0&artist_id={id}&missing=false");
         listResponse.EnsureSuccessStatusCode();
-        Assert.Equal("2", listResponse.Headers.GetValues("X-Total-Count").Single());
+        Assert.Equal("3", listResponse.Headers.GetValues("X-Total-Count").Single());
         using var list = JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync());
         var albums = list.RootElement.EnumerateArray().ToList();
-        Assert.Equal(["Other Album", "Test Album"], albums.Select(a => a.GetProperty("name").GetString()));
+        // The albums, then the single, as getArtist lists them.
+        Assert.Equal(["Other Album", "Test Album", "A Single"], albums.Select(a => a.GetProperty("name").GetString()));
         Assert.All(albums, a =>
         {
             Assert.Equal(id, a.GetProperty("albumArtistId").GetString());
@@ -376,7 +377,7 @@ public sealed class MergedFormatTests
         using var page = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
         Assert.Equal(["Test Album"], page.RootElement.EnumerateArray().Select(a => a.GetProperty("name").GetString()));
-        Assert.Equal("2", response.Headers.GetValues("X-Total-Count").Single());
+        Assert.Equal("3", response.Headers.GetValues("X-Total-Count").Single());
     }
 
     [Fact]

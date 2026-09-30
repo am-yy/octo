@@ -1279,6 +1279,15 @@ h1[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
 .radio-status-toolbar select { min-width: 190px; }
 .radio-reset-row { border-top: 1px solid rgba(151, 177, 185, 0.08); }
 
+/* Last.fm scrobbling: one row per Navidrome user, with the connect field under them. */
+.lfm-scrobble-card { margin-top: 12px; }
+.lfm-scrobble-state { margin: 14px 18px 0; }
+.lfm-scrobble-card > .set-row.stack { border-top: 1px solid rgba(151, 177, 185, 0.08); }
+.lfm-user-notice { color: var(--warn); }
+.lfm-connect-row { display: flex; gap: 8px; }
+.lfm-connect-row .set-input { flex: 1; min-width: 0; }
+.lfm-scrobble-card a.btn { text-decoration: none; }
+
 @media (max-width: 760px) {
   .radio-discovery-row { grid-template-columns: 1fr 44px; }
   .radio-discovery-fields { grid-column: 1 / -1; grid-template-columns: 1fr; }

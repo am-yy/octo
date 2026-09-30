@@ -38,6 +38,7 @@ function activateTab(name, { focus = false } = {}) {
   if (name === 'raw' && typeof loadRawConfig === 'function') loadRawConfig();
   if (name === 'sources' && typeof loadConfigSources === 'function') loadConfigSources();
   if (name === 'lastfm' && typeof loadRadioStatus === 'function') loadRadioStatus();
+  if (name === 'lastfm' && typeof loadLastFmScrobbling === 'function') loadLastFmScrobbling();
   if (focus) {
     window.scrollTo({ top: 0 });
     const heading = document.querySelector(`section[data-pane="${name}"] h1`);
@@ -222,6 +223,7 @@ async function loadSettings() {
   loadLyricsLibrary();
   loadLyricsChoices();
   loadRadioStatus();
+  loadLastFmScrobbling();
 
   // Meta references
   const cfgPath = document.getElementById('meta-config-path');
@@ -498,6 +500,8 @@ document.querySelectorAll('form[data-section]').forEach(form => {
       renderOctoAddresses();
       renderRestartPending();
       renderSetupChecklist();
+      // The scrobbling card reads the running settings, which catch up with the file a moment later.
+      if (form.dataset.section?.startsWith('lastfm')) setTimeout(loadLastFmScrobbling, 700);
       status.textContent = `Saved · ${new Date().toLocaleTimeString()}`;
       form.querySelector('.form-actions')?.classList.remove('dirty');
       // A saved admin password is only ever shown as the placeholder; the typed value should
@@ -1792,6 +1796,98 @@ document.getElementById('radio-reset')?.addEventListener('click', async event =>
   try { const response = await api(`/api/admin/lastfm/radio/history?user=${encodeURIComponent(user)}`, { method: 'DELETE' }); const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); toast(data.message || 'Radio history reset.'); await loadRadioStatus();
   } catch (error) { toast(`Reset failed: ${error.message}`, 'error'); } finally { button.disabled = false; }
+});
+
+// ────────────────────────────────────────────────────────────────
+// Last.fm scrobbling: connect each Navidrome user to their own Last.fm
+// ────────────────────────────────────────────────────────────────
+// The approval page for each user part way through connecting. Kept only in this page: after a
+// reload the admin presses Connect again, which asks Last.fm for a fresh link.
+const lfmApprovalLinks = new Map();
+
+async function loadLastFmScrobbling() {
+  const list = document.getElementById('lfm-scrobble-users');
+  const state = document.getElementById('lfm-scrobble-state');
+  if (!list || !state) return;
+  try {
+    const r = await api('/api/admin/lastfm/scrobble', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    const ready = d.hasApiKey && d.hasApiSecret;
+    state.hidden = d.available && ready && d.enabled;
+    state.className = `lfm-scrobble-state notice ${ready ? '' : 'notice-warn'}`;
+    state.textContent = !d.available ? 'Last.fm scrobbling is not available in this build.'
+      : !d.hasApiKey ? 'Save a Last.fm API key above to start.'
+      : !d.hasApiSecret ? 'Save the shared secret above. Last.fm needs it to accept scrobbles from Octo.'
+      : 'Scrobbling is switched off. Connected listeners stay connected.';
+    const users = d.users || [];
+    list.innerHTML = users.length ? users.map(u => {
+      const link = lfmApprovalLinks.get(u.user.toLowerCase());
+      const waiting = u.awaitingApproval && link;
+      const detail = u.connected
+        ? `Connected as <strong>${escapeHtml(u.lastFmUser || 'a Last.fm account')}</strong>.`
+        : waiting ? 'Open Last.fm, signed in as this listener, allow access, then press Finish.'
+        : 'Not connected.';
+      const notice = u.notice ? `<span class="set-info-d lfm-user-notice">${escapeHtml(u.notice)}</span>` : '';
+      const actions = u.connected
+        ? `<button class="btn btn-ghost" type="button" data-lfm-action="disconnect" data-user="${escapeHtml(u.user)}">Disconnect</button>`
+        : waiting
+          ? `<a class="btn" href="${escapeHtml(link)}" target="_blank" rel="noopener">Open Last.fm</a>
+             <button class="btn btn-primary" type="button" data-lfm-action="finish" data-user="${escapeHtml(u.user)}">Finish</button>`
+          : `<button class="btn" type="button" data-lfm-action="connect" data-user="${escapeHtml(u.user)}" ${ready ? '' : 'disabled'}>Connect</button>`;
+      return `<div class="set-row"><div class="set-info"><span class="set-info-t">${escapeHtml(u.user)}</span><span class="set-info-d">${detail}</span>${notice}</div><div class="set-ctrl">${actions}</div></div>`;
+    }).join('') : '<div class="radio-empty">Listeners appear here after they sign in through Octo. You can also connect one by name below.</div>';
+    const add = document.getElementById('lfm-scrobble-add');
+    if (add) add.disabled = !ready;
+  } catch (e) {
+    list.innerHTML = `<div class="radio-empty">Scrobbling status unavailable: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function lastFmScrobbleAction(action, user, button) {
+  if (!user) return;
+  if (action === 'disconnect'
+      && !confirm(`Stop scrobbling outside plays for “${user}”? Their Last.fm history is untouched.`)) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await api(`/api/admin/lastfm/scrobble/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 409) { toast(d.error || 'Last.fm has not seen the approval yet.', 'error'); return; }
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    if (action === 'connect') {
+      lfmApprovalLinks.set(user.toLowerCase(), d.url);
+      toast('Open Last.fm, allow access, then press Finish.');
+    } else if (action === 'finish') {
+      lfmApprovalLinks.delete(user.toLowerCase());
+      toast(`${user} is connected as ${d.lastFmUser || 'their Last.fm account'}.`);
+      // Saved settings reach Octo a moment after the file is written.
+      await new Promise(resolve => setTimeout(resolve, 600));
+    } else {
+      toast(d.message || 'Disconnected.');
+      await new Promise(resolve => setTimeout(resolve, 600));
+    }
+    await loadLastFmScrobbling();
+  } catch (e) {
+    toast(`${action === 'disconnect' ? 'Disconnect' : 'Connect'} failed: ${e.message}`, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+document.getElementById('lfm-scrobble-users')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-lfm-action]');
+  if (button) lastFmScrobbleAction(button.dataset.lfmAction, button.dataset.user, button);
+});
+document.getElementById('lfm-scrobble-add')?.addEventListener('click', async event => {
+  const input = document.getElementById('lfm-scrobble-new-user');
+  const user = input?.value.trim();
+  if (!user) { input?.focus(); return; }
+  await lastFmScrobbleAction('connect', user, event.currentTarget);
+  if (lfmApprovalLinks.has(user.toLowerCase())) input.value = '';
 });
 
 // ────────────────────────────────────────────────────────────────

@@ -570,7 +570,44 @@
               </div>
               <input class="set-input" id="f-lastfm-key" name="LastFm.ApiKey" type="password" autocomplete="new-password" placeholder="32-char hex string" />
             </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Shared secret <span class="set-opt">optional</span></div>
+                <div class="set-info-d">Shown beside the API key on the same Last.fm page. Only scrobbling needs it. Once saved it is never shown again.</div>
+              </div>
+              <input class="set-input" id="f-lastfm-secret" name="LastFm.ApiSecret" type="password" autocomplete="new-password" placeholder="32-char hex string" />
+            </div>
           </form>
+        </div>
+
+        <div class="set-section">
+          <div class="set-head">
+            <h3 class="set-title">Scrobbling</h3>
+            <p class="set-desc">Sends plays of outside songs, such as previews and Continuous Radio, to each listener's own Last.fm. Library plays are left to Navidrome, which already scrobbles them.</p>
+          </div>
+          <form data-section="lastfm-scrobble" class="set-card">
+            <div class="set-row">
+              <div class="set-info">
+                <div class="set-info-t">Scrobble outside plays</div>
+                <div class="set-info-d">For every listener connected below. A song counts once the player says it was played; Last.fm takes nothing shorter than 30 seconds.</div>
+              </div>
+              <label class="switch"><input type="checkbox" name="LastFm.ScrobbleExternalPlays" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+          </form>
+          <div class="set-card lfm-scrobble-card">
+            <div id="lfm-scrobble-state" class="lfm-scrobble-state" hidden></div>
+            <div id="lfm-scrobble-users" aria-live="polite"><div class="radio-empty">Loading…</div></div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Connect a listener</div>
+                <div class="set-info-d">Their Navidrome username, as they sign in. Connect gives you a Last.fm page: open it signed in as that person, allow access, then come back and press Finish.</div>
+              </div>
+              <div class="lfm-connect-row">
+                <input class="set-input" id="lfm-scrobble-new-user" type="text" autocomplete="off" spellcheck="false" placeholder="Navidrome username" aria-label="Navidrome username to connect" />
+                <button class="btn" id="lfm-scrobble-add" type="button">Connect</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="set-section">
@@ -1577,7 +1614,7 @@
             <label for="raw-editor">JSON content</label>
             <textarea id="raw-editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="{}"></textarea>
             <div class="field-help">
-              Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>YouTube</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Leave <code>"(saved, not shown)"</code> as it is to keep the stored admin password.
+              Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>YouTube</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Leave <code>"(saved, not shown)"</code> as it is to keep what is stored: the admin password, the Last.fm shared secret, and each Last.fm session key.
               Radio remains inside <code>LastFm</code>; pinned rows are the ordered <code>LastFm.DiscoveryStations</code> array and should be edited as complete objects with stable <code>Id</code>, <code>Name</code>, <code>Enabled</code>, and <code>Tags</code> fields.
               Anything you set here overrides the corresponding env var until removed.
             </div>

@@ -731,15 +731,16 @@ public class DeezerMetadataServiceTests
     }
 
     [Theory]
-    [InlineData("album", "Album")]
-    [InlineData("ep", "EP")]
-    [InlineData("single", "Single")]
-    [InlineData("compile", "Compilation")]
-    [InlineData("ALBUM", "Album")]
-    [InlineData("mixtape", null)]
-    [InlineData(null, null)]
-    public void ReleaseType_UsesOpenSubsonicNames(string? recordType, string? expected)
-        => Assert.Equal(expected, DeezerMetadataService.ReleaseType(recordType));
+    [InlineData("album", "album")]
+    [InlineData("ep", "ep")]
+    [InlineData("single", "single")]
+    [InlineData("compile", "album,compilation")]
+    [InlineData("compilation", "album,compilation")]
+    [InlineData("ALBUM", "album")]
+    [InlineData("mixtape", "")]
+    [InlineData(null, "")]
+    public void ReleaseTypes_AreNavidromesLowercaseWords(string? recordType, string expected)
+        => Assert.Equal(expected, string.Join(",", DeezerMetadataService.ReleaseTypes(recordType)));
 
     [Theory]
     [InlineData("album", "ep", "single")]

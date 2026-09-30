@@ -15,8 +15,9 @@ public class Album
     public string? Genre { get; set; }
 
     /// <summary>
-    /// OpenSubsonic's release types, such as "Album", "EP" or "Single". What lets a client
-    /// group an artist's page the way the catalog does, without guessing from a track count.
+    /// OpenSubsonic's release types, such as "album", "ep" or "single": lowercase, as
+    /// Navidrome relays them for library albums. What lets a client group an artist's page
+    /// the way the catalog does, without guessing from a track count.
     /// </summary>
     public List<string> ReleaseTypes { get; set; } = new();
     public bool IsLocal { get; set; }

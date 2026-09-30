@@ -562,26 +562,37 @@ public class DeezerMetadataService : IDisposable
     }
 
     /// <summary>
-    /// OpenSubsonic's name for a catalog record type, or null for one it has no name for. The
-    /// catalog says "compile" for a compilation.
+    /// A catalog record type as release types, in the lowercase words Navidrome relays from the
+    /// tags (MusicBrainz's): "album", "ep", "single". An outside album sits beside library
+    /// albums on one artist's page, and the two used to disagree on case. The catalog says
+    /// "compile" for a compilation, which MusicBrainz files as an album that is a compilation.
+    /// None for a type with no such word.
     /// </summary>
-    public static string? ReleaseType(string? recordType) => recordType?.Trim().ToLowerInvariant() switch
+    public static IReadOnlyList<string> ReleaseTypes(string? recordType) => RecordType(recordType) switch
     {
-        "album" => "Album",
-        "ep" => "EP",
-        "single" => "Single",
-        "compile" or "compilation" => "Compilation",
-        _ => null,
+        "album" => ["album"],
+        "ep" => ["ep"],
+        "single" => ["single"],
+        "compile" => ["album", "compilation"],
+        _ => [],
+    };
+
+    /// <summary>The catalog's record type in one spelling: lowercase, "compile" for either
+    /// word for a compilation.</summary>
+    private static string? RecordType(string? recordType) => recordType?.Trim().ToLowerInvariant() switch
+    {
+        "compilation" => "compile",
+        var type => type,
     };
 
     /// <summary>Where a record type sits on an artist's page: albums, EPs, singles, compilations,
     /// then anything the catalog did not name.</summary>
-    private static int ReleaseRank(string? recordType) => ReleaseType(recordType) switch
+    private static int ReleaseRank(string? recordType) => RecordType(recordType) switch
     {
-        "Album" => 0,
-        "EP" => 1,
-        "Single" => 2,
-        "Compilation" => 3,
+        "album" => 0,
+        "ep" => 1,
+        "single" => 2,
+        "compile" => 3,
         _ => 4,
     };
 

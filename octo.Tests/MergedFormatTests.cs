@@ -471,9 +471,11 @@ public sealed class MergedFormatTests
 
         // The library's album keeps what Navidrome said, word for word.
         Assert.Equal(["album", "compilation"], types["Test Album"]);
-        // The outside ones say what the catalog calls them, in OpenSubsonic's words.
-        Assert.Equal(["Album"], types["Other Album"]);
-        Assert.Equal(["Single"], types["A Single"]);
+        // The outside ones say what the catalog calls them, in the same lowercase words, so
+        // one artist's list never mixes "album" and "Album".
+        Assert.Equal(["album"], types["Other Album"]);
+        Assert.Equal(["single"], types["A Single"]);
+        Assert.All(types.Values.SelectMany(t => t), type => Assert.Equal(type.ToLowerInvariant(), type));
 
         var xml = XDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&id=ar-1"));
         var xmlTypes = xml.Root!.Element(Ns + "artist")!.Elements(Ns + "album").ToDictionary(

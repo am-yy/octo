@@ -896,10 +896,9 @@ public class SoulseekMetadataService : IMusicMetadataService
             ?? MostFollowed(candidates);
     }
 
-    /// <summary>A catalog record type as OpenSubsonic's release types: one, or none when the
-    /// catalog gave no type it has a name for.</summary>
+    /// <summary>A catalog record type as release types, a fresh list for each album.</summary>
     private static List<string> ReleaseTypes(string? recordType) =>
-        DeezerMetadataService.ReleaseType(recordType) is { } type ? [type] : [];
+        [.. DeezerMetadataService.ReleaseTypes(recordType)];
 
     /// <summary>How many of an artist's releases the library holds, by the matcher's key.</summary>
     private static int Shared(IEnumerable<DeezerMetadataService.AlbumHit> releases, IReadOnlySet<string> owned) =>

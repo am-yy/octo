@@ -520,16 +520,16 @@ public class SubsonicResponseBuilderTests
     [Fact]
     public void AlbumRow_CarriesItsReleaseTypesInBothFormats()
     {
-        var album = new Album { Id = "al1", Title = "Live Set", Artist = "A", ReleaseTypes = ["EP"] };
+        var album = new Album { Id = "al1", Title = "Live Set", Artist = "A", ReleaseTypes = ["ep"] };
 
         var json = JsonSerializer.Serialize(_builder.ConvertAlbumToJson(album));
-        Assert.Equal(["EP"], JsonDocument.Parse(json).RootElement.GetProperty("releaseTypes")
+        Assert.Equal(["ep"], JsonDocument.Parse(json).RootElement.GetProperty("releaseTypes")
             .EnumerateArray().Select(t => t.GetString()));
 
         // A list of text is one element per value in XML, the way the upstream server writes it.
         var ns = XNamespace.Get("http://subsonic.org/restapi");
         var xml = _builder.ConvertAlbumToXml(album, ns);
-        Assert.Equal(["EP"], xml.Elements(ns + "releaseTypes").Select(e => e.Value));
+        Assert.Equal(["ep"], xml.Elements(ns + "releaseTypes").Select(e => e.Value));
         Assert.Null(xml.Attribute("releaseTypes"));
     }
 
@@ -548,14 +548,14 @@ public class SubsonicResponseBuilderTests
     [Fact]
     public void CreateAlbumResponse_CarriesItsReleaseTypesInBothFormats()
     {
-        var album = new Album { Id = "al1", Title = "Hit", Artist = "A", ReleaseTypes = ["Single"] };
+        var album = new Album { Id = "al1", Title = "Hit", Artist = "A", ReleaseTypes = ["single"] };
 
         var json = JsonSerializer.Serialize(Assert.IsType<JsonResult>(_builder.CreateAlbumResponse("json", album)).Value);
-        Assert.Equal(["Single"], JsonDocument.Parse(json).RootElement.GetProperty("subsonic-response")
+        Assert.Equal(["single"], JsonDocument.Parse(json).RootElement.GetProperty("subsonic-response")
             .GetProperty("album").GetProperty("releaseTypes").EnumerateArray().Select(t => t.GetString()));
 
         var doc = XDocument.Parse(Assert.IsType<ContentResult>(_builder.CreateAlbumResponse("xml", album)).Content!);
         var ns = doc.Root!.GetDefaultNamespace();
-        Assert.Equal(["Single"], doc.Root.Element(ns + "album")!.Elements(ns + "releaseTypes").Select(e => e.Value));
+        Assert.Equal(["single"], doc.Root.Element(ns + "album")!.Elements(ns + "releaseTypes").Select(e => e.Value));
     }
 }

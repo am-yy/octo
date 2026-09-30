@@ -496,17 +496,22 @@ public class SoulseekMetadataServiceTests
             ["/search/artist"] = @"{""data"":[{""id"":444,""name"":""Test Artist""}]}",
             ["/artist/444/albums"] = @"{""data"":[
                 {""id"":5,""title"":""A Single"",""record_type"":""single"",""release_date"":""2020-01-01"",""nb_tracks"":1},
-                {""id"":6,""title"":""Odd One"",""record_type"":""mixtape"",""release_date"":""2019-01-01"",""nb_tracks"":9}]}",
+                {""id"":6,""title"":""Odd One"",""record_type"":""mixtape"",""release_date"":""2019-01-01"",""nb_tracks"":9},
+                {""id"":7,""title"":""Best Of"",""record_type"":""compile"",""release_date"":""2018-01-01"",""nb_tracks"":20}]}",
         });
 
         var found = Assert.Single(await svc.SearchAlbumsAsync("test", 10));
-        Assert.Equal(["Album"], found.ReleaseTypes);
+        Assert.Equal(["album"], found.ReleaseTypes);
 
         var opened = await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, found.Id);
-        Assert.Equal(["EP"], opened!.ReleaseTypes);
+        Assert.Equal(["ep"], opened!.ReleaseTypes);
 
         var page = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, OutsideArtist("Test Artist"));
-        Assert.Equal(["Single"], page.Single(a => a.Title == "A Single").ReleaseTypes);
+        Assert.Equal(["single"], page.Single(a => a.Title == "A Single").ReleaseTypes);
+        // The catalog's "compile", as MusicBrainz and so Navidrome file one: an album that is
+        // a compilation. Still listed after the singles.
+        Assert.Equal(["album", "compilation"], page.Single(a => a.Title == "Best Of").ReleaseTypes);
+        Assert.Equal(["A Single", "Best Of", "Odd One"], page.Select(a => a.Title));
         // A type OpenSubsonic has no name for is left unsaid rather than guessed.
         Assert.Empty(page.Single(a => a.Title == "Odd One").ReleaseTypes);
     }

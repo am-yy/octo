@@ -2578,6 +2578,8 @@ function syncSegment(seg, animate) {
 function syncSegments(animate) {
   document.querySelectorAll('.seg[data-seg-for]').forEach(s => syncSegment(s, animate));
 }
+decoratePageHeaders();
+buildHints();
 labelSettingControls();
 buildSegments();
 window.addEventListener('resize', () => syncSegments(false));
@@ -2633,6 +2635,54 @@ bindCopy('copy-octo-public-address',
 renderOctoAddresses();
 
 // ────────────────────────────────────────────────────────────────
+// Page headers, the folded sidebar, and hints
+// ────────────────────────────────────────────────────────────────
+// Each page's header carries the icon its sidebar entry has, so the two are always the same
+// picture. Copied from the sidebar rather than written twice.
+function decoratePageHeaders() {
+  navItems.forEach(item => {
+    const header = document.querySelector(`section[data-pane="${item.dataset.tab}"] .page-header`);
+    const glyph = item.querySelector('svg.icon');
+    if (!header || !glyph || header.querySelector('.page-icon')) return;
+    const tile = document.createElement('span');
+    tile.className = 'page-icon';
+    tile.setAttribute('aria-hidden', 'true');
+    tile.appendChild(glyph.cloneNode(true));
+    header.prepend(tile);
+    // A folded sidebar shows icons only, so each keeps its name as a tooltip.
+    const label = item.querySelector('span')?.textContent.trim();
+    if (label) item.title = label;
+  });
+}
+
+// A description says one thing. Anything more sits in a .set-info-more beside it, folded away
+// behind a "More" link, so a page reads as a list of settings rather than a wall of text.
+function buildHints() {
+  let n = 0;
+  document.querySelectorAll('.set-info-more').forEach(more => {
+    if (more.dataset.built) return;
+    more.dataset.built = '1';
+    if (!more.id) more.id = `set-more-${++n}`;
+    more.hidden = true;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'hint-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-controls', more.id);
+    toggle.innerHTML = `<span>More</span>${icon('i-caret-down')}`;
+    toggle.addEventListener('click', () => {
+      const open = more.hidden;
+      more.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.querySelector('span').textContent = open ? 'Less' : 'More';
+    });
+    const desc = more.previousElementSibling?.classList.contains('set-info-d') ? more.previousElementSibling : null;
+    if (desc) desc.append(' ', toggle);
+    else more.before(toggle);
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
 // Accessible names and restart chips
 // ────────────────────────────────────────────────────────────────
 // Most rows describe their control in a sibling .set-info rather than a <label>, which left
@@ -2646,13 +2696,15 @@ function labelSettingControls() {
     if (!title.id) title.id = `set-t-${++n}`;
     const desc = row.querySelector(':scope > .set-info .set-info-d');
     if (desc && !desc.id) desc.id = `set-d-${n}`;
+    const more = row.querySelector(':scope > .set-info .set-info-more');
+    const described = [desc?.id, more?.id].filter(Boolean).join(' ');
     row.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(ctrl => {
       if (ctrl.closest('.source-priority-row, .radio-discovery-row')) return;
       // A switch's <label> wraps only the track and thumb, so it gives no name of its own.
       const namedByLabel = Array.from(ctrl.labels || []).some(label => label.textContent.trim());
       if (namedByLabel || ctrl.hasAttribute('aria-label') || ctrl.hasAttribute('aria-labelledby')) return;
       ctrl.setAttribute('aria-labelledby', title.id);
-      if (desc) ctrl.setAttribute('aria-describedby', desc.id);
+      if (described) ctrl.setAttribute('aria-describedby', described);
     });
     if (row.querySelector('[data-restart="true"]') && !title.querySelector('.restart-badge')) {
       title.insertAdjacentHTML('beforeend',
@@ -2747,6 +2799,21 @@ function renderSetupChecklist() {
     : missing.length ? `Setup: ${missing.length} of ${required.length} required step${required.length === 1 ? '' : 's'} need${missing.length === 1 ? 's' : ''} attention`
       : 'Setup complete. Point your apps at the address below.';
   wrap.classList.toggle('needs-attention', missing.length > 0);
+  // The sidebar marks where each missing step is fixed, so setup is visible from every page.
+  rows.filter(row => row.required).forEach(row => {
+    const item = document.querySelector(`.sidebar-nav-item[data-tab="${row.tab}"]`);
+    if (!item) return;
+    const flagged = row.state === 'bad';
+    let flag = item.querySelector('.nav-flag');
+    if (flagged && !flag) {
+      flag = document.createElement('span');
+      flag.className = 'nav-flag';
+      flag.innerHTML = '<span class="visually-hidden"> (needs setting up)</span>';
+      item.appendChild(flag);
+    } else if (!flagged && flag) {
+      flag.remove();
+    }
+  });
   // Open when something required is missing; otherwise stay out of the way, unless the user
   // opened it themselves.
   if (!wrap.dataset.userToggled) wrap.open = missing.length > 0;

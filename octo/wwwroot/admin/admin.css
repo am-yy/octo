@@ -337,6 +337,22 @@ section[data-pane].active { display: block; }
   max-width: 62ch;
 }
 .page-header a { color: var(--accent-hover); }
+.page-header > div { flex: 1 1 auto; min-width: 0; }
+.page-header > .btn { flex: 0 0 auto; }
+/* The page's own icon, the one its sidebar entry shows, on a small tile of glaze. */
+.page-icon {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-panel);
+  background: var(--specular), var(--glaze-film);
+  box-shadow: var(--glaze-rest);
+  color: var(--ink);
+  margin-top: 2px;
+}
+.page-icon .icon { width: 24px; height: 24px; }
 
 /* ────────────────────────────────────────────────────────────── */
 /*  Buttons                                                       */
@@ -616,6 +632,64 @@ input[type="number"].set-input { max-width: 160px; }
 .set-inline .set-input { flex: 1 1 auto; min-width: 0; }
 .set-inline .btn, .field-inline .btn { height: auto; min-height: var(--h-field); }
 .set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-l); }
+
+/* ── Hints: the rest of a description, folded behind "More" ── */
+.hint-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--accent-hover);
+  font-size: var(--t-meta);
+  font-weight: 500;
+  border-radius: var(--r-row);
+  white-space: nowrap;
+}
+.hint-toggle:hover { color: var(--ink); }
+.hint-toggle .icon { width: 12px; height: 12px; transition: transform var(--t-swap) var(--ease); }
+.hint-toggle[aria-expanded="true"] .icon { transform: rotate(180deg); }
+.set-info-more {
+  margin-top: var(--s-s);
+  padding-left: 10px;
+  box-shadow: inset 2px 0 0 var(--accent-line);
+  font-size: var(--t-meta);
+  color: var(--text-muted);
+  line-height: 1.55;
+  max-width: 62ch;
+}
+.set-info-more p { margin: 0 0 var(--s-s); }
+.set-info-more p:last-child { margin: 0; }
+
+/* ── More settings: the rarely needed knobs of a card, folded shut ── */
+.set-more > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-m);
+  padding: 0 var(--s-xl);
+  color: var(--text-secondary);
+  font-size: var(--t-table);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.set-more > summary::-webkit-details-marker { display: none; }
+.set-more > summary::before {
+  content: '';
+  width: 6px; height: 6px;
+  margin: 0 3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--t-swap) var(--ease);
+}
+.set-more[open] > summary::before { transform: rotate(45deg); }
+.set-more > summary:hover { color: var(--ink); }
+.set-more > summary:focus-visible { outline-offset: -3px; }
+.set-more > .set-row { border-top: 1px solid var(--hairline); }
 
 /* Settings and info cards outside the row system (Raw config, Config sources, About). */
 .settings-card,
@@ -1365,12 +1439,46 @@ input[type="number"].set-input { max-width: 160px; }
   .sidebar-nav-label { display: none; }
   .sidebar-nav-item { width: auto; flex: 0 0 auto; white-space: nowrap; margin-top: 0; height: 40px; padding: 0 12px; }
   .content { padding: var(--s-page) var(--s-xl) 64px; }
-  .page-header { flex-direction: column; align-items: stretch; gap: var(--s-m); }
-  .page-header > .btn { align-self: flex-start; }
+  .page-header { flex-wrap: wrap; gap: var(--s-l); }
+  .page-header > div { flex-basis: calc(100% - 60px); }
+  .page-icon { width: 40px; height: 40px; }
+  .page-header > .btn { margin-left: 52px; }
   .settings-card, .info-card, .callout { padding: var(--s-xl); }
   .set-row { padding: var(--s-l) 14px; }
   .form-actions { padding: var(--s-l) 14px; }
   #raw-form .form-actions { margin: var(--s-xl) calc(-1 * var(--s-xl)) calc(-1 * var(--s-xl)); }
+}
+
+/* A narrow window folds the sidebar to a rail of icons, as the desktop app does; each keeps its
+ * name in a tooltip and for screen readers. */
+@media (min-width: 761px) and (max-width: 1024px) {
+  .app { grid-template-columns: 64px minmax(0, 1fr); }
+  .sidebar-brand { justify-content: center; padding: var(--s-xl) 0 var(--s-m); }
+  .sidebar-brand-text { display: none; }
+  .sidebar-nav { padding: 0 var(--s-m) var(--s-m); }
+  .sidebar-nav-label {
+    height: 1px;
+    padding: 0;
+    margin: var(--s-m) var(--s-s);
+    overflow: hidden;
+    color: transparent;
+    background: var(--hairline);
+  }
+  .sidebar-nav-section + .sidebar-nav-section { margin-top: 0; }
+  .sidebar-nav-item { justify-content: center; padding: 0; height: 40px; }
+  .sidebar-nav-item > span:not(.nav-flag):not(.sidebar-nav-badge) {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .sidebar-nav-item .icon { width: 20px; height: 20px; }
+  .sidebar-nav-badge, .nav-flag, .sidebar-nav-item.has-unsaved::after {
+    position: absolute; top: 4px; right: 6px; margin: 0;
+  }
+  .sidebar-nav-badge { min-width: 16px; height: 16px; line-height: 16px; padding: 0 4px; font-size: 10px; right: 3px; top: 2px; }
+  .sidebar-nav-item.has-unsaved::after { top: auto; bottom: 5px; }
+  .sidebar-footer { padding: var(--s-m); }
+  #restart-btn { padding: 0; }
+  #restart-btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .content { padding: var(--s-section) var(--s-section) 80px; }
 }
 
 /* ── Touch targets ── */
@@ -1397,6 +1505,17 @@ input[type="number"].set-input { max-width: 160px; }
   overflow: hidden; clip: rect(0 0 0 0);
   white-space: nowrap; border: 0;
 }
+
+/* ── A setup step that needs doing, marked where it is done ── */
+.nav-flag {
+  width: 7px; height: 7px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--bad);
+  box-shadow: 0 0 0 3px var(--bad-wash);
+}
+.sidebar-nav-item.has-unsaved .nav-flag { margin-left: var(--s-s); }
 
 /* ── Unsaved changes in the nav ── */
 .sidebar-nav-item.has-unsaved::after {

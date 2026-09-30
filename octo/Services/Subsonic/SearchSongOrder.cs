@@ -94,6 +94,9 @@ public sealed class SearchSongOrderCache
         // order and the build it came from agree on which queries are the same query.
         $"{user}\n{endpoint}\n{musicFolderId}\n{query.Trim().ToLowerInvariant()}";
 
+    /// <summary>Orders kept right now. Tests read it.</summary>
+    internal int Count => _orders.Count;
+
     internal SearchSongOrder? Get(string key) =>
         _orders.TryGetValue(key, out SearchSongOrder? order) ? order : null;
 

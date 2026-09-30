@@ -901,6 +901,15 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
     public List<(string Authorization, string Body)> ListenBrainzSubmissions { get; } = [];
     public FakeLastFm LastFm { get; } = new();
 
+    /// <summary>API keys Navidrome knows, and whose each is. Any other key fails every call.</summary>
+    public Dictionary<string, string> ApiKeys { get; } = new(StringComparer.Ordinal) { ["bob-key"] = "bob" };
+
+    /// <summary>When set, tokenInfo fails though the key itself is accepted.</summary>
+    public bool TokenInfoFails { get; set; }
+
+    public int TokenInfoCalls => Volatile.Read(ref _tokenInfoCalls);
+    private int _tokenInfoCalls;
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
@@ -930,6 +939,16 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
         var format = query["f"] ?? "json";
         var username = query["u"] ?? "";
         if (username == "bad") return Result(format == "xml" ? FailedXml() : FailedJson());
+        // Navidrome's API key sign-in: an unknown key fails, and u beside a key is refused.
+        if (query["apiKey"] is { } apiKey && (!ApiKeys.ContainsKey(apiKey) || username.Length > 0))
+            return Result(format == "xml" ? FailedXml() : FailedJson());
+        if (path.Equals("rest/tokenInfo", StringComparison.OrdinalIgnoreCase))
+        {
+            Interlocked.Increment(ref _tokenInfoCalls);
+            return Result(TokenInfoFails || query["apiKey"] is not { } key
+                ? FailedJson()
+                : OkJson($"\"tokenInfo\":{{\"username\":\"{ApiKeys[key]}\"}}"));
+        }
 
         if (path.Equals("rest/scrobble", StringComparison.OrdinalIgnoreCase))
         {

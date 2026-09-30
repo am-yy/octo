@@ -63,43 +63,57 @@ public sealed class LogRedactionTests
         }
     }
 
+    /// <summary>Navidrome answering ok to everything, tokenInfo included (as winters).</summary>
     private sealed class PingOk : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        public ConcurrentQueue<string> Paths { get; } = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Paths.Enqueue(request.RequestUri!.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome"}}""",
+                    """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","tokenInfo":{"username":"winters"}}}""",
                     Encoding.UTF8, "application/json"),
             });
+        }
     }
 
     /// <summary>Octo with the request log turned up to Information, as a deployment that wants to
     /// see its traffic runs it; the shipped appsettings keep Microsoft.AspNetCore at Warning.</summary>
-    private sealed class LoggingWebFactory : WebApplicationFactory<Program>
+    private sealed class LoggingWebFactory(bool everything = false) : WebApplicationFactory<Program>
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "octo-log-web-" + Guid.NewGuid());
         public CapturingLoggerProvider Log { get; } = new();
+        public PingOk Upstream { get; } = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             Directory.CreateDirectory(_directory);
-            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
-                new Dictionary<string, string?>
-                {
-                    ["Logging:LogLevel:Microsoft.AspNetCore"] = "Information",
-                    ["Subsonic:Url"] = "http://navidrome.test",
-                    ["Subsonic:AutoDetectDownloadPath"] = "false",
-                    ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                    ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
-                    ["Library:DownloadPath"] = _directory,
-                }));
+            var settings = new Dictionary<string, string?>
+            {
+                ["Logging:LogLevel:Microsoft.AspNetCore"] = "Information",
+                ["Subsonic:Url"] = "http://navidrome.test",
+                ["Subsonic:AutoDetectDownloadPath"] = "false",
+                ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
+                ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
+                ["Library:DownloadPath"] = _directory,
+            };
+            if (everything)
+            {
+                // Every line Octo and HttpClient can write, for the tests that ask.
+                settings["Logging:LogLevel:Default"] = "Trace";
+                settings["Logging:LogLevel:Octo"] = "Trace";
+                settings["Logging:LogLevel:System.Net.Http"] = "Trace";
+            }
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(settings));
             builder.ConfigureLogging(logging => logging.AddProvider(Log));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IHostedService>();
                 services.RemoveAll<IHttpClientFactory>();
-                services.AddSingleton<IHttpClientFactory>(new ReviewFixtures.OneClientFactory(new PingOk()));
+                services.AddSingleton<IHttpClientFactory>(new ReviewFixtures.OneClientFactory(Upstream));
             });
         }
 
@@ -209,6 +223,27 @@ public sealed class LogRedactionTests
         Assert.Equal(4, own.Count);
         Assert.All(own, e => Assert.Contains($"u=winters&{name}=***&id=7", e.Message));
         Assert.DoesNotContain(secret, factory.Log.AllText());
+    }
+
+    /// <summary>An API key sign-in carries no username, so Octo asks Navidrome whose key it is.
+    /// That call carries the key too, and neither it nor Octo's own lines about it may log it.</summary>
+    [Fact]
+    public async Task AnApiKeySignIn_IsNamed_WithoutTheKeyReachingTheLog()
+    {
+        await using var factory = new LoggingWebFactory(everything: true);
+        using var client = factory.CreateClient();
+        var key = Secret();
+
+        await client.GetAsync($"/rest/scrobble.view?apiKey={key}&v=1.16.1&c=Octo&f=json&id=42&submission=true");
+        await client.GetAsync(
+            $"/rest/search3.view?query=anything&songCount=40&songOffset=40&apiKey={key}&v=1.16.1&c=Octo&f=json");
+        await RequestLines(factory.Log);
+
+        // Upstream is reached through a stand-in client factory, so HttpClient writes no lines of
+        // its own here; HttpClientLines_CarryNoSecret covers those.
+        Assert.Contains(factory.Upstream.Paths, path => path.EndsWith("/rest/tokenInfo", StringComparison.Ordinal));
+        Assert.Contains(factory.Log.Entries, e => e.Message.Contains("apiKey=***", StringComparison.Ordinal));
+        Assert.DoesNotContain(key, factory.Log.AllText());
     }
 
     [Fact]

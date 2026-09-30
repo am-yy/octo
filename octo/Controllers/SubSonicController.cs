@@ -74,6 +74,7 @@ public class SubsonicController : ControllerBase
     private readonly Octo.Services.Lyrics.LyricsChoiceService? _lyricsChoices;
     private readonly Octo.Services.Library.LibraryActionExecutor? _libraryActions;
     private readonly SearchSongOrderCache _searchSongOrders;
+    private readonly RequestIdentity _requestIdentity;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -115,9 +116,12 @@ public class SubsonicController : ControllerBase
         Octo.Services.Lyrics.LyricsChoiceService? lyricsChoices = null,
         Octo.Services.Library.LibraryActionExecutor? libraryActions = null,
         SearchSongOrderCache? searchSongOrders = null,
-        LastFmScrobbleService? lastFmScrobbles = null)
+        LastFmScrobbleService? lastFmScrobbles = null,
+        RequestIdentity? requestIdentity = null)
     {
         _lastFmScrobbles = lastFmScrobbles;
+        _requestIdentity = requestIdentity
+            ?? new RequestIdentity(Microsoft.Extensions.Logging.Abstractions.NullLogger<RequestIdentity>.Instance);
         _libraryActions = libraryActions;
         _searchSongOrders = searchSongOrders ?? new SearchSongOrderCache();
         _acquisitionTracker = acquisitionTracker;
@@ -1064,9 +1068,12 @@ public class SubsonicController : ControllerBase
         // Remember what this page showed so the next page can carry on from it. Only when
         // discovery was part of the answer (a type-ahead page has none to continue) and
         // the library answered, since a failed relay would record an empty library.
-        if (externalTarget > 0 && localResult.Success)
+        // Filed under who asked; a request Octo cannot name (an API key Navidrome would not
+        // vouch for) is not remembered at all, so it can never land in someone else's slot.
+        if (externalTarget > 0 && localResult.Success
+            && await SongOrderKeyAsync(parameters, searchEndpoint, cleanQuery) is { } orderKey)
         {
-            _searchSongOrders.Set(SongOrderKey(parameters, searchEndpoint, cleanQuery),
+            _searchSongOrders.Set(orderKey,
                 SearchSongOrder.From(built, requestedSongs, localSongTarget, externalTarget, localParsed.Songs));
         }
 
@@ -1108,9 +1115,16 @@ public class SubsonicController : ControllerBase
         return MergeSearchResults(localParsed, localResult.ContentType, externalResult, playlistTask, format, envelope);
     }
 
-    private static string SongOrderKey(Dictionary<string, string> parameters, string searchEndpoint, string cleanQuery) =>
-        SearchSongOrderCache.Key(parameters.GetValueOrDefault("u", ""), searchEndpoint,
-            parameters.GetValueOrDefault("musicFolderId"), cleanQuery);
+    /// <summary>
+    /// Where a search's order is kept: per user, so null when the request names nobody Octo can
+    /// vouch for. An API key sign-in carries no <c>u</c>; before this every such user shared
+    /// the one empty-name slot and could be handed another's order.
+    /// </summary>
+    private async Task<string?> SongOrderKeyAsync(Dictionary<string, string> parameters, string searchEndpoint,
+        string cleanQuery) =>
+        await _requestIdentity.UsernameAsync(parameters, _proxyService, HttpContext.RequestAborted) is { } user
+            ? SearchSongOrderCache.Key(user, searchEndpoint, parameters.GetValueOrDefault("musicFolderId"), cleanQuery)
+            : null;
 
     /// <summary>
     /// A later page of a search's songs: the next stretch of the order page one started
@@ -1127,8 +1141,11 @@ public class SubsonicController : ControllerBase
         if (!_subsonicSettings.EnableSearchDiscovery) return null;
 
         var requestedSongs = int.TryParse(parameters.GetValueOrDefault("songCount", "20"), out var sc) ? sc : 20;
-        var key = SongOrderKey(parameters, searchEndpoint, cleanQuery);
-        var order = _searchSongOrders.Get(key);
+        // With nobody to file it under, nothing is read or kept: every later page is rebuilt.
+        // For an API key sign-in the tokenInfo call that names the user is made with the
+        // request's own key, so it is also the credential check this page has not yet had.
+        var key = await SongOrderKeyAsync(parameters, searchEndpoint, cleanQuery);
+        var order = key is null ? null : _searchSongOrders.Get(key);
         if (order is null)
         {
             // Nothing remembered: expired, or Octo restarted since page one. Build the order
@@ -1150,7 +1167,7 @@ public class SubsonicController : ControllerBase
 
             var prefixSongs = _modelMapper.ParseSearchResponse(prefix.Body, prefix.ContentType).Songs;
             order = SearchSongOrder.From(await builtTask, requestedSongs, localTarget, externalTarget, prefixSongs);
-            _searchSongOrders.Set(key, order);
+            if (key is not null) _searchSongOrders.Set(key, order);
             _logger.LogDebug("search '{Q}': page one's order was gone, rebuilt it for offset {Offset}",
                 cleanQuery, songOffset);
         }
@@ -2923,8 +2940,11 @@ public class SubsonicController : ControllerBase
         IReadOnlyList<string> submissions, IReadOnlyList<string> times,
         IReadOnlyDictionary<string, string> authenticatedParameters)
     {
-        var username = authenticatedParameters.GetValueOrDefault("u", "").Trim();
-        if (username.Length == 0) return;
+        // Called only once Navidrome has accepted these credentials. An API key sign-in has no
+        // u, so its owner is asked of Navidrome; nobody to name means nothing is learned.
+        var username = await _requestIdentity.UsernameAsync(authenticatedParameters, _proxyService,
+            HttpContext.RequestAborted);
+        if (string.IsNullOrEmpty(username)) return;
         var learning = _radioStateStore is not null && _lastFmSettings.EnableRadio
             && _lastFmSettings.EnablePersonalizedStations;
         var submitting = _listenBrainz is not null && _listenBrainz.IsEnabledFor(username);

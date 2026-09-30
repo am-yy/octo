@@ -258,6 +258,15 @@ internal sealed class SearchPagingUpstream : HttpMessageHandler
 
     public int LastFmCalls => _lastFmCalls;
 
+    /// <summary>API keys this Navidrome knows, and whose each is.</summary>
+    public Dictionary<string, string> ApiKeys { get; } = new(StringComparer.Ordinal)
+    {
+        ["alice-key"] = "alice", ["bob-key"] = "bob",
+    };
+
+    public int TokenInfoCalls => Volatile.Read(ref _tokenInfoCalls);
+    private int _tokenInfoCalls;
+
     /// <summary>When set, Last.fm answers in reverse, as a later build might.</summary>
     public bool Reshuffle { get; set; }
 
@@ -286,6 +295,14 @@ internal sealed class SearchPagingUpstream : HttpMessageHandler
         var endpoint = path.StartsWith("rest/search2", StringComparison.Ordinal) ? "search2"
             : path.StartsWith("rest/search3", StringComparison.Ordinal) ? "search3" : null;
         var xml = query["f"] == "xml";
+        if (path.StartsWith("rest/tokenInfo", StringComparison.Ordinal))
+        {
+            Interlocked.Increment(ref _tokenInfoCalls);
+            return Ok(query["apiKey"] is { } key && ApiKeys.TryGetValue(key, out var owner)
+                ? """{"subsonic-response":{"status":"ok","version":"1.16.1","tokenInfo":{"username":""" + JsonSerializer.Serialize(owner) + "}}}"
+                : """{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":44,"message":"Invalid API key"}}}""",
+                "application/json");
+        }
         if (endpoint is null)
             return Ok(xml ? """<subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1"/>"""
                 : """{"subsonic-response":{"status":"ok","version":"1.16.1"}}""", xml ? "text/xml" : "application/json");

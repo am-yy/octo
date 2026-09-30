@@ -275,6 +275,9 @@ builder.Services.AddSingleton<Octo.Services.Common.ExternalSearchService>();
 // building its discovery rows again and repeating or skipping some.
 builder.Services.AddSingleton<Octo.Services.Subsonic.SearchSongOrderCache>();
 
+// Who a request is from when it signs in with an API key and so carries no username.
+builder.Services.AddSingleton<Octo.Services.Subsonic.RequestIdentity>();
+
 // Permanent-copy fetches run here, never inside the request that asked for one. A client
 // giving up on a slow play must not cancel a transfer slskd is going to finish anyway.
 builder.Services.AddSingleton<Octo.Services.Common.TrackAcquisitionQueue>();

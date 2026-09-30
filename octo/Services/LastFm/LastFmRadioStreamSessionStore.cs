@@ -19,8 +19,11 @@ public sealed class LastFmRadioStreamSessionStore
 {
     internal const int MaximumSessions = 1024;
     private static readonly TimeSpan Lifetime = TimeSpan.FromHours(12);
+    // What the stream later relays to Navidrome as this listener (a library song, its
+    // scrobble). An API key sign-in has only apiKey, so without it those relays had no
+    // credentials at all.
     private static readonly HashSet<string> AuthenticationKeys =
-        new(["u", "p", "t", "s", "v", "c"], StringComparer.OrdinalIgnoreCase);
+        new(["u", "p", "t", "s", "apiKey", "v", "c"], StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
     private readonly Dictionary<string, LastFmRadioStreamSession> _sessions =
         new(StringComparer.Ordinal);

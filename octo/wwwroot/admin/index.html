@@ -880,45 +880,53 @@
         <header class="page-header">
           <div>
             <h1>Tags &amp; genres</h1>
-            <p>How Octo tags what it downloads, and a tool that applies the same genre rules to music already in your library.</p>
+            <p>How Octo tags the songs it downloads, finds their lyrics, and tidies their genres.</p>
           </div>
         </header>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Metadata</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Tags on new downloads</h3>
+            <p class="set-desc">What Octo writes into each song it saves.</p>
+          </div>
           <form data-section="metadata" class="set-card">
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">Tag language</div>
-                <div class="set-info-d">Language for genre and other text fetched from metadata providers (Deezer, Last.fm) and written into a download's tags. Without it, providers pick a language from the server's IP address. Two-letter code like <code>en</code>, <code>de</code>, <code>fr</code>; empty lets the provider decide. New lookups use it right away; results cached in the last 12 hours keep their old language until they expire. Cover art picks up a new language after a restart.</div>
+                <div class="set-info-d">A two-letter language for genres and other words from Deezer and Last.fm, like <code>en</code>, <code>de</code> or <code>fr</code>.</div>
+                <div class="set-info-more">Without one, the providers pick a language from the server's address; leave it empty to let them. New lookups use it right away. Answers cached in the last 12 hours keep their old language until they expire, and cover art picks up a new language after a restart.</div>
               </div>
               <input class="set-input" id="f-metadata-language" name="Metadata.Language" placeholder="en" maxlength="16" />
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">File singles under their title</div>
-                <div class="set-info-d">A download whose source, Deezer and its own tags all name no album is filed as a single under its title, instead of joining the one &ldquo;[Unknown Album]&rdquo; Navidrome gives every album-less track. Never applied to a compilation.</div>
+                <div class="set-info-d">A song with no album anywhere is filed as a single under its own title.</div>
+                <div class="set-info-more">Only when its source, Deezer and its own tags all name no album, instead of joining the one &ldquo;[Unknown Album]&rdquo; Navidrome gives every song without one. Never for a compilation.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.AlbumFromTitle" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Cover Art Archive first</div>
-                <div class="set-info-d">When a fingerprint named the release, ask the Cover Art Archive for its cover before Deezer, iTunes and Last.fm: the right pressing, no guessing by name.</div>
+                <div class="set-info-d">When a fingerprint named the release, take its cover from the Cover Art Archive first.</div>
+                <div class="set-info-more">Before Deezer, iTunes and Last.fm: the right pressing, with no guessing by name.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.UseCoverArtArchive" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Replace video covers</div>
-                <div class="set-info-d">A cover that is not square is a video thumbnail, so it counts as missing. When nothing better turns up, its centre square is used, which for a YouTube &ldquo;Topic&rdquo; upload is the real cover inside the letterbox.</div>
+                <div class="set-info-d">A cover that is not square is a video still, so Octo looks for a real one.</div>
+                <div class="set-info-more">When nothing better turns up, its centre square is used, which for a YouTube &ldquo;Topic&rdquo; upload is the real cover inside the letterbox.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.ReplaceVideoCovers" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Write cover.jpg</div>
-                <div class="set-info-d">Also put the cover beside the file, where Navidrome reads it first. Only in the Organized layout, and only in a folder the download created, so an album that was already there never changes cover.</div>
+                <div class="set-info-d">Also save the cover beside the file, where Navidrome looks first.</div>
+                <div class="set-info-more">Only in the Organized layout, and only in a folder the download created, so an album already there never changes cover.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.WriteCoverFile" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -928,20 +936,22 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Lyrics</h3>
-            <p class="set-desc">A lyrics file beside each download, which Navidrome serves without a rescan, and lyrics for any song as it plays when your library has none, in every app. Synced lyrics go in a <code>.lrc</code>, plain ones in a <code>.txt</code>; lyrics timed word by word are still a normal <code>.lrc</code> that any player shows line by line. A file that already has lyrics is never touched.</p>
+            <p class="set-desc">A lyrics file beside each download, and lyrics for any song as it plays, in every app.</p>
           </div>
           <form data-section="lyrics" class="set-card">
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Fetch lyrics</div>
-                <div class="set-info-d">Looked up in the background after a download finishes, so a slow lyrics service never holds up the next one.</div>
+                <div class="set-info-d">Looked up in the background after each download, so a slow lyrics service never holds up the next one.</div>
+                <div class="set-info-more">Synced lyrics go in a <code>.lrc</code>, plain ones in a <code>.txt</code>; lyrics timed word by word are still a normal <code>.lrc</code> that any player shows line by line. Navidrome serves the file without a rescan. A song that already has lyrics is never touched, and a song with none still gets lyrics as it plays.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.FetchLyrics" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack source-priority-setting">
               <div class="set-info">
                 <div class="set-info-t" id="lyrics-source-order-label">Sources <span class="set-opt">in order</span></div>
-                <div class="set-info-d">Asked from the top down. Drag to reorder, or use the arrow keys on the handle. A source that is off is never contacted.</div>
+                <div class="set-info-d">Asked from the top down. A source that is off is never contacted.</div>
+                <div class="set-info-more">Drag a source to reorder, or use the arrow keys on its handle.</div>
               </div>
               <div class="source-priority-list" id="lyrics-source-order" aria-labelledby="lyrics-source-order-label"></div>
               <input type="hidden" id="f-lyrics-sources" name="Metadata.LyricsSources" />
@@ -950,14 +960,16 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Prefer word-timed lyrics</div>
-                <div class="set-info-d">Lyrics timed word by word beat lyrics timed line by line from a source higher up. Off, the first timed lyrics win, which asks fewer services per song.</div>
+                <div class="set-info-d">Lyrics timed word by word win over line-timed ones from a source higher up.</div>
+                <div class="set-info-more">Off, the first timed lyrics win, which asks fewer services per song.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.PreferWordTimedLyrics" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Write lyrics files beside all library songs</div>
-                <div class="set-info-d">Off, &ldquo;Find lyrics for the library&rdquo; only writes beside songs Octo downloaded. On, it also writes beside your own rips and purchases. Existing lyrics files and lyrics inside a song are never replaced either way.</div>
+                <div class="set-info-d">Lets &ldquo;Find lyrics for the library&rdquo; write beside your own rips and purchases too.</div>
+                <div class="set-info-more">Off, it only writes beside songs Octo downloaded. Existing lyrics files, and lyrics inside a song, are never replaced either way.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.WriteLyricsBesideAllSongs" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -967,13 +979,13 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Find lyrics for the library</h3>
-            <p class="set-desc">Looks up lyrics for songs that have none, one song at a time with a pause between, and writes a lyrics file beside each one found. Stop it whenever you like and resume later from where it was.</p>
+            <p class="set-desc">Looks up lyrics for songs that have none, one song at a time. Stop whenever you like and carry on later.</p>
           </div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Also look for word timing</div>
-                <div class="set-info-d">Octo's own line-timed lyrics files are looked up again and replaced when word-timed lyrics turn up.</div>
+                <div class="set-info-d">Octo's own line-timed files are looked up again, and replaced when word-timed lyrics turn up.</div>
               </div>
               <label class="switch"><input type="checkbox" id="lyrics-library-upgrade" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -989,7 +1001,8 @@
             <div id="lyrics-review" class="set-row stack" hidden>
               <div class="set-info">
                 <div class="set-info-t">Review</div>
-                <div class="set-info-d">Lyrics written where the match was not certain, most often because a length could not be checked. Choose other lyrics, or dismiss the ones that are right.</div>
+                <div class="set-info-d">Lyrics written where the match was not certain, most often because the length could not be checked.</div>
+                <div class="set-info-more">Choose other lyrics, or confirm the ones that are right.</div>
               </div>
               <div id="lyrics-review-list" class="config-table"></div>
             </div>
@@ -999,7 +1012,7 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Fix a song's lyrics</h3>
-            <p class="set-desc">Wrong lyrics, or none? Find the song, then choose other lyrics, hide them, or go back to automatic. The choice applies in every app that plays from this server.</p>
+            <p class="set-desc">Wrong lyrics, or none? Choose others, hide them, or go back to automatic. It applies in every app.</p>
           </div>
           <div class="set-card">
             <div class="set-row stack">
@@ -1036,19 +1049,31 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Genre normalization</h3>
-            <p class="set-desc">Downloads arrive with whatever genre the source had: YouTube categories like &ldquo;Music&rdquo; or &ldquo;People &amp; Blogs&rdquo;, hyper-specific tags, or seven genres at once. This collapses them into a list you can browse. Rules are tried <strong>top to bottom and the first match wins</strong>, so put the specific ones above the general ones. Applies to new downloads; files already in the library keep their tags.</p>
+            <p class="set-desc">Turns messy genre tags on new downloads into a short list you can browse.</p>
           </div>
           <form data-section="genre" class="set-card" id="genre-form">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Normalize genres</div><div class="set-info-d">Off by default, because this rewrites a tag you may have curated.</div></div>
+              <div class="set-info">
+                <div class="set-info-t">Normalize genres</div>
+                <div class="set-info-d">Off to begin with, because this rewrites a tag you may have curated.</div>
+                <div class="set-info-more"><p>Downloads arrive with whatever genre the source had: YouTube categories like &ldquo;Music&rdquo; or &ldquo;People &amp; Blogs&rdquo;, very specific tags, or seven genres at once.</p><p>Songs already in your library keep their tags; the re-tag tool further down applies these rules to them.</p></div>
+              </div>
               <label class="switch"><input type="checkbox" name="Genre.Enabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Genres per track</div><div class="set-info-d">The default keeps what a file already has, so switching normalisation on does not throw away accurate tags. Set it to 1 for one broad genre per track, which is what makes browsing useful on a library whose tags are a mess.</div></div>
+            <div class="set-row">
+              <div class="set-info">
+                <div class="set-info-t">Genres per song</div>
+                <div class="set-info-d">Set it to 1 for one broad genre per song, which makes browsing useful on a messy library.</div>
+                <div class="set-info-more">The default keeps as many as a file already has, so switching normalization on does not throw away accurate tags.</div>
+              </div>
               <input class="set-input" name="Genre.MaxGenres" type="number" min="1" max="10" />
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">When nothing is left</div><div class="set-info-d"><strong>Clear removes the genre</strong>, which is the point: without it, junk that maps to nothing survives forever. Leave keeps whatever was there, and Unknown writes a label instead.</div></div>
+              <div class="set-info">
+                <div class="set-info-t">When nothing is left</div>
+                <div class="set-info-d">What happens when no genre survives the rules.</div>
+                <div class="set-info-more"><strong>Clear removes the genre</strong>, which is the point: otherwise junk that maps to nothing stays forever. Leave keeps what was there, and Unknown writes a label instead.</div>
+              </div>
               <select class="set-input" id="f-genre-on-empty" name="Genre.OnEmpty">
                 <option value="Clear">Clear the genre</option>
                 <option value="Leave">Leave it alone</option>
@@ -1060,7 +1085,11 @@
               <input class="set-input" name="Genre.UnknownLabel" placeholder="Unknown" maxlength="60" />
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Fallback source</div><div class="set-info-d">Where to look when a file has no usable genre left. Last.fm uses the top tags it already caches, and needs an API key but not radio.</div></div>
+              <div class="set-info">
+                <div class="set-info-t">Fallback source</div>
+                <div class="set-info-d">Where to look when a file has no usable genre left.</div>
+                <div class="set-info-more">Last.fm uses the top tags it already keeps, and needs an API key but not radio.</div>
+              </div>
               <select class="set-input" name="Genre.Fallback">
                 <option value="None">Leave it empty</option>
                 <option value="LastFm">Last.fm top tags</option>
@@ -1068,14 +1097,19 @@
               </select>
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Blocklist</div><div class="set-info-d">Extra values that are never a genre, comma separated. YouTube categories, format tags and years are already handled.</div></div>
+              <div class="set-info">
+                <div class="set-info-t">Blocklist</div>
+                <div class="set-info-d">Extra values that are never a genre, separated by commas.</div>
+                <div class="set-info-more">YouTube categories, format tags and years are handled already.</div>
+              </div>
               <input class="set-input" id="f-genre-blocklist" placeholder="my rip, needs replacing" />
               <input type="hidden" id="genre-blocklist-json" name="Genre.Blocklist" data-json="true" />
             </div>
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">Mapping rules</div>
-                <div class="set-info-d">Drag to reorder, or focus a handle and use the arrow keys. A rule with an empty genre drops the value instead of mapping it.</div>
+                <div class="set-info-d">Tried <strong>top to bottom, and the first match wins</strong>, so put specific rules above general ones.</div>
+                <div class="set-info-more">Drag to reorder, or focus a handle and use the arrow keys. A rule with an empty genre drops the value instead of mapping it.</div>
               </div>
               <div class="genre-preset-actions">
                 <button class="btn btn-ghost" type="button" id="genre-preset-broad">Use broad preset</button>
@@ -1091,13 +1125,14 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Re-tag the existing library</h3>
-            <p class="set-desc">The settings above only apply to new downloads. This applies them to files that are already in your library. Start with a preview: nothing is written until you look at the list and say so.</p>
+            <p class="set-desc">Applies the genre rules above to songs already in your library. Nothing is written until you have seen a preview.</p>
           </div>
           <div class="set-card">
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">Which files</div>
-                <div class="set-info-d">&ldquo;Downloads Octo made&rdquo; only touches files Octo created. &ldquo;The whole library&rdquo; also rewrites your own rips and purchases, and asks you to type the music path to confirm.</div>
+                <div class="set-info-d">Only downloads Octo made, or the whole library, your own rips and purchases included.</div>
+                <div class="set-info-more">The whole library asks you to type the music path to confirm.</div>
               </div>
               <select class="set-input" id="genre-backfill-scope">
                 <option value="OctoDownloads">Downloads Octo made</option>
@@ -1106,7 +1141,7 @@
               <div class="set-info-d scope-hint" id="genre-backfill-scope-hint" role="status" hidden>You changed which files. Preview again before applying.</div>
             </div>
             <div class="notice notice-warn">
-              <strong>There is no undo for anything but the genre.</strong> Writing a tag rewrites the whole tag block, so an unusual field the tag library does not understand is lost on the first save and cannot be restored. Undo is matched by file path, so a file you move afterwards stays changed. Your own backup of the music folder is the only complete safety net.
+              <strong>Only the genre can be undone.</strong> Saving a tag rewrites the whole tag block, so an unusual field the tag library does not understand is lost for good. Undo goes by file path, so a file moved afterwards stays changed. Your own backup of the music folder is the only full safety net.
             </div>
             <div class="set-row">
               <div class="set-info"><div class="set-info-t">Preview</div><div class="set-info-d">Walks every file and shows what would change. Writes nothing.</div></div>
@@ -1115,7 +1150,7 @@
             <div id="genre-backfill-status" class="set-row stack"></div>
             <div id="genre-backfill-results"></div>
             <div class="set-row" id="genre-backfill-actions">
-              <div class="set-info"><div class="set-info-t">Apply</div><div class="set-info-d">Available once a preview has finished, for the same files and rules it previewed.</div></div>
+              <div class="set-info"><div class="set-info-t">Apply</div><div class="set-info-d">Once a preview has finished, for the same files and rules it previewed.</div></div>
               <div class="genre-preset-actions">
                 <button class="btn" type="button" id="genre-backfill-apply" hidden>Apply these changes</button>
                 <button class="btn btn-ghost" type="button" id="genre-backfill-resume" hidden>Resume</button>
@@ -1405,113 +1440,127 @@
         <header class="page-header">
           <div>
             <h1>Library actions</h1>
-            <p>Fix a wrong download from the player you are already using, instead of coming back here. Add the track to one of Octo's action playlists and it gets handled.</p>
+            <p>Fix a wrong download from the music app you already use: add the song to one of Octo's action playlists.</p>
           </div>
         </header>
 
         <div class="notice notice-warn">
-          <strong>This removes files.</strong> Nothing is deleted outright: a removed file moves to a quarantine folder inside your music directory and is only really deleted once it is older than the retention window. Even so, this acts on files Octo did not download, on one tap in a music client with no confirmation dialog. Leave the rehearsal mode on until you have read a run.
+          <strong>This removes files.</strong> A removed file moves to a quarantine folder inside your music folder, and is only deleted once it is older than the retention window. It acts on files Octo did not download too, from one tap in a music app with no confirmation. Keep rehearsal mode on until you have read a run.
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Who and how</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Who and how</h3>
+            <p class="set-desc">Switch it on, say who may use it, and try it in rehearsal first.</p>
+          </div>
           <form data-section="library-actions" class="set-card" id="library-actions-form">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Enable library actions</div><div class="set-info-d">Off by default. Needs a Navidrome admin credential under Music server, because finding the file behind a track is an admin-only lookup. <strong>Star ratings act as soon as you save.</strong> Action playlists start being watched after a restart.</div></div>
+              <div class="set-info"><div class="set-info-t">Enable library actions</div><div class="set-info-d">Off to begin with. Needs a Navidrome admin sign-in under Music server.</div><div class="set-info-more">Finding the file behind a song is an admin-only lookup. <strong>Star ratings act as soon as you save.</strong> Action playlists are watched from the next restart.</div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.Enabled" data-restart="true" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Rehearsal mode</div><div class="set-info-d">Do everything except touch a file, and write down what would have happened. Turn this off only once a run looks right.</div></div>
+              <div class="set-info"><div class="set-info-t">Rehearsal mode</div><div class="set-info-d">Do everything except touch a file, and write down what would have happened.</div><div class="set-info-more">Turn it off only once a run looks right.</div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.DryRun" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">Who may trigger actions</div>
-                <div class="set-info-d">Navidrome usernames, comma separated. <strong>An empty list means nobody</strong>, which is why the feature will not save as enabled without at least one name here.</div>
+                <div class="set-info-d">Navidrome usernames, separated by commas. <strong>Empty means nobody.</strong></div>
+                <div class="set-info-more">That is why the feature will not save as on without at least one name here.</div>
               </div>
               <input class="set-input" id="f-action-users" placeholder="alice, bob" />
               <input type="hidden" id="action-users-json" name="LibraryActions.AllowedUsers" data-json="true" />
             </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Action playlists</div><div class="set-info-d">Octo keeps one private playlist per enabled action for each allowed user. Adding a track to one requests that action.</div></div>
+              <div class="set-info"><div class="set-info-t">Action playlists</div><div class="set-info-d">One private playlist per action for each allowed user. Adding a song to one asks for that action.</div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.PlaylistsEnabled" data-restart="true" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
-            </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Playlist name prefix</div><div class="set-info-d">So the action playlists sort together. Leave empty for none.</div></div>
-              <input class="set-input" name="LibraryActions.PlaylistPrefix" maxlength="16" />
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Star ratings as commands</div>
-                <div class="set-info-d"><strong>Worth leaving off.</strong> A star is a one-tap gesture with no confirmation in any client, and rating a track you dislike is an ordinary thing to do. Five stars means Keep, which removes nothing, so the top of the scale is always safe. Applies as soon as you save.</div>
+                <div class="set-info-d"><strong>Worth leaving off.</strong> A star is one tap with no confirmation in any app.</div>
+                <div class="set-info-more">Rating a song you dislike is an ordinary thing to do. Five stars means Keep, which removes nothing, so the top of the scale is always safe. Applies as soon as you save.</div>
               </div>
               <label class="switch"><input type="checkbox" name="LibraryActions.RatingsEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Where a star counts</div><div class="set-info-d"><strong>Only in Octo's playlists</strong> makes a star a command only on a track sitting in Review or Duplicates, where the only reason to rate it is to answer; everywhere else a star is just a rating. Automatic does that while either playlist is on, and counts a star on any track otherwise, which is how ratings worked before they existed.</div></div>
-              <select class="set-input" name="LibraryActions.RatingsScope">
-                <option value="Auto">Automatic</option>
-                <option value="NoticeOnly">Only in Octo's playlists</option>
-                <option value="Global">Any track</option>
-              </select>
-            </div>
+            <details class="set-more">
+              <summary>More settings</summary>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Where a star counts</div><div class="set-info-d"><strong>Only in Octo's playlists</strong> makes a star a command only on a song in Review or Duplicates.</div><div class="set-info-more">There the only reason to rate a song is to answer; everywhere else a star is just a rating. Automatic does that while either playlist is on, and counts a star on any song otherwise, which is how ratings worked before those playlists existed.</div></div>
+                <select class="set-input" name="LibraryActions.RatingsScope">
+                  <option value="Auto">Automatic</option>
+                  <option value="NoticeOnly">Only in Octo's playlists</option>
+                  <option value="Global">Any song</option>
+                </select>
+              </div>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Playlist name prefix</div><div class="set-info-d">Keeps the action playlists together in a list. Leave empty for none.</div></div>
+                <input class="set-input" name="LibraryActions.PlaylistPrefix" maxlength="16" />
+              </div>
+            </details>
           </form>
         </div>
 
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Review</h3>
-            <p class="set-desc">Octo asks about the downloads you can settle by listening: AcoustID had never heard the recording, was not sure of it, or heard a different one in a YouTube download. Each allowed user gets a playlist of their own. Needs library actions on.</p>
+            <p class="set-desc">Octo asks about downloads you can settle by listening, in a playlist of their own. Needs library actions on.</p>
           </div>
           <form data-section="library-actions-review" class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Review playlist</div><div class="set-info-d">Answer by adding a track to an action playlist, by Keep (its playlist, or five stars), or by removing it from Review, which means "fine, stop asking". Nothing in Review is ever acted on by itself. Takes effect at the next check, no restart.</div></div>
+              <div class="set-info"><div class="set-info-t">Review playlist</div><div class="set-info-d">Answer by adding the song to an action playlist, by Keep, or by taking it out of Review.</div><div class="set-info-more"><p>Octo asks when AcoustID had never heard the recording, was not sure of it, or heard a different one in a YouTube download. Each allowed user gets a playlist of their own.</p><p>Keep is its playlist, or five stars. Taking a song out of Review means &ldquo;fine, stop asking&rdquo;. Nothing in Review is ever acted on by itself. Takes effect at the next check, with no restart.</p></div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.ReviewEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Playlist name</div></div>
-              <input class="set-input" name="LibraryActions.ReviewPlaylistName" maxlength="80" placeholder="Review" />
-            </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Prefix for Octo's playlists</div><div class="set-info-d">Sets the playlists where Octo asks you something apart from the action playlists, where you tell Octo something. Leave empty for none.</div></div>
-              <input class="set-input" name="LibraryActions.NoticePrefix" maxlength="16" />
-            </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">At most <span class="set-opt">tracks</span></div><div class="set-info-d">How many questions one playlist holds at once. The rest wait their turn, so a busy week arrives as a queue rather than a wall.</div></div>
-              <input class="set-input" name="LibraryActions.NoticeMaxTracks" type="number" min="1" max="500" data-number="true" />
-            </div>
+            <details class="set-more">
+              <summary>Playlist name and size</summary>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Playlist name</div></div>
+                <input class="set-input" name="LibraryActions.ReviewPlaylistName" maxlength="80" placeholder="Review" />
+              </div>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Prefix for Octo's playlists</div><div class="set-info-d">Sets the playlists where Octo asks you something apart from the ones where you tell Octo something. Leave empty for none.</div></div>
+                <input class="set-input" name="LibraryActions.NoticePrefix" maxlength="16" />
+              </div>
+              <div class="set-row">
+                <div class="set-info"><div class="set-info-t">At most <span class="set-opt">songs</span></div><div class="set-info-d">How many questions one playlist holds at once. The rest wait their turn.</div></div>
+                <input class="set-input" name="LibraryActions.NoticeMaxTracks" type="number" min="1" max="500" data-number="true" />
+              </div>
+            </details>
           </form>
         </div>
 
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Duplicates</h3>
-            <p class="set-desc">Recordings your library holds more than once, side by side in a playlist, the copy worth keeping first: lossless before lossy, then the higher bitrate. Octo only points them out. Needs library actions on.</p>
+            <p class="set-desc">Songs your library holds more than once, side by side in a playlist, the best copy first. Needs library actions on.</p>
           </div>
           <form data-section="library-actions-duplicates" class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Duplicates playlist</div><div class="set-info-d">Two files count as copies only when they carry the same MusicBrainz recording and are the same version, so a live take, a remix or a radio edit is never one. Remove a copy you do not want with an action playlist; Keep, or taking a copy out of the playlist, means the copies are on purpose and stops Octo asking about them.</div></div>
+              <div class="set-info"><div class="set-info-t">Duplicates playlist</div><div class="set-info-d">Octo only points the copies out; you decide which goes.</div><div class="set-info-more"><p>Lossless comes before lossy, then the higher bitrate. Two files count as copies only when they carry the same MusicBrainz recording and are the same version, so a live take, a remix or a radio edit never is one.</p><p>Remove a copy you do not want with an action playlist. Keep, or taking a copy out of the playlist, means the copies are on purpose and stops Octo asking.</p></div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.DuplicatesEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Playlist name</div></div>
-              <input class="set-input" name="LibraryActions.DuplicatesPlaylistName" maxlength="80" placeholder="Duplicates" />
-            </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Look every <span class="set-opt">hours</span></div><div class="set-info-d">How often Octo walks the library for copies. The walk only reads.</div></div>
-              <input class="set-input" name="LibraryActions.DuplicatesScanHours" type="number" min="1" max="168" data-number="true" />
-            </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Look now</div><div class="set-info-d">Walk the library straight away rather than at the next interval. What it found shows under Questions.</div></div>
+              <div class="set-info"><div class="set-info-t">Look now</div><div class="set-info-d">Walk the library straight away rather than at the next interval. What it finds shows under Questions.</div></div>
               <button class="btn btn-ghost" type="button" id="duplicates-scan"><svg class="icon" aria-hidden="true"><use href="#i-magnifying-glass"/></svg><span>Scan now</span></button>
             </div>
+            <details class="set-more">
+              <summary>Playlist name and schedule</summary>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Playlist name</div></div>
+                <input class="set-input" name="LibraryActions.DuplicatesPlaylistName" maxlength="80" placeholder="Duplicates" />
+              </div>
+              <div class="set-row">
+                <div class="set-info"><div class="set-info-t">Look every <span class="set-opt">hours</span></div><div class="set-info-d">How often Octo walks the library for copies. The walk only reads.</div></div>
+                <input class="set-input" name="LibraryActions.DuplicatesScanHours" type="number" min="1" max="168" data-number="true" />
+              </div>
+            </details>
           </form>
         </div>
 
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">The actions</h3>
-            <p class="set-desc">Rename them, switch them on individually, and choose which star count asks for each. Set a rating to 0 to leave that action playlist-only. Keep removes nothing: it answers Review with "this is right", and switches itself on with Review unless you set it.</p>
+            <p class="set-desc">Rename each action, switch it on, and choose the star rating that asks for it; 0 stars leaves it playlist-only. Keep removes nothing: it answers Review with &ldquo;this is right&rdquo;.</p>
           </div>
           <form data-section="library-actions-list" class="set-card" id="library-actions-list-form">
             <div id="library-action-list" class="genre-mapping-list"></div>
@@ -1521,22 +1570,25 @@
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Quarantine and pacing</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Quarantine and pacing</h3>
+            <p class="set-desc">Where removed files wait, and how quickly actions run.</p>
+          </div>
           <form data-section="library-actions-quarantine" class="set-card">
             <div class="set-row stack">
               <div class="set-info"><div class="set-info-t">Quarantine folder</div><div class="set-info-d">Inside your music folder. The leading dot keeps it out of Navidrome's scan.</div></div>
               <input class="set-input" name="LibraryActions.QuarantineDirectory" maxlength="60" />
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Keep removed files for <span class="set-opt">days</span></div><div class="set-info-d">The only step that really deletes. <strong>0 keeps them forever</strong>, so you can manage the space yourself.</div></div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Keep removed files for <span class="set-opt">days</span></div><div class="set-info-d">The only step that really deletes. <strong>0 keeps them forever.</strong></div></div>
               <input class="set-input" name="LibraryActions.QuarantineRetentionDays" type="number" min="0" max="3650" />
             </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Keep the original after a replacement</div><div class="set-info-d">Off means the retention window is the only safety net for a replaced file.</div></div>
+              <div class="set-info"><div class="set-info-t">Keep the original after a replacement</div><div class="set-info-d">Off, the retention window is the only safety net for a replaced file.</div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.KeepReplacedOriginals" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Check every <span class="set-opt">seconds</span> / at most <span class="set-opt">per check</span></div><div class="set-info-d">How quickly an action is noticed, and a ceiling on how many are applied at once so a client that dumps thousands of tracks cannot run away with your library.</div></div>
+              <div class="set-info"><div class="set-info-t">Check every <span class="set-opt">seconds</span> / at most <span class="set-opt">per check</span></div><div class="set-info-d">How quickly an action is noticed, and how many run at once.</div><div class="set-info-more">The cap stops an app that adds thousands of songs at once from running away with your library.</div></div>
               <div class="set-grid2">
                 <input class="set-input" name="LibraryActions.PollIntervalSeconds" type="number" min="15" max="3600" data-number="true" data-restart="true" data-restart-label="Library actions check interval" aria-label="Check every this many seconds" />
                 <input class="set-input" name="LibraryActions.MaxActionsPerCycle" type="number" min="1" max="200" data-number="true" aria-label="At most this many actions per check" />
@@ -1548,11 +1600,11 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Recent actions</h3>
-            <p class="set-desc">Every file this has moved, who asked for it, and where it went. Logs scroll away; this does not.</p>
+            <p class="set-desc">Every file this has moved, who asked, and where it went. Logs scroll away; this does not.</p>
           </div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">History</div><div class="set-info-d">Signing in with your Navidrome admin account is required, the same as the folder picker.</div></div>
+              <div class="set-info"><div class="set-info-t">History</div><div class="set-info-d">Needs your Navidrome admin sign-in, like the folder picker.</div></div>
               <button class="btn btn-ghost" type="button" id="library-actions-refresh">Show history</button>
             </div>
             <div id="library-actions-history"></div>
@@ -1562,11 +1614,11 @@
         <div class="set-section">
           <div class="set-head">
             <h3 class="set-title">Questions</h3>
-            <p class="set-desc">What Octo has asked, of whom, why, and how each was answered.</p>
+            <p class="set-desc">What Octo asked, of whom, why, and how it was answered.</p>
           </div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Recent questions</div><div class="set-info-d">Signing in with your Navidrome admin account is required, the same as the history above.</div></div>
+              <div class="set-info"><div class="set-info-t">Recent questions</div><div class="set-info-d">Needs your Navidrome admin sign-in, like the history above.</div></div>
               <button class="btn btn-ghost" type="button" id="notices-refresh">Show questions</button>
             </div>
             <div id="notices-list"></div>

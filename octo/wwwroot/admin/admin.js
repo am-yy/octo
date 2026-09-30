@@ -2766,6 +2766,32 @@ function decoratePageHeaders() {
     const label = item.querySelector('span')?.textContent.trim();
     if (label) item.title = label;
   });
+
+  // A long page gets a row of links to its sections under the header, as the desktop app's
+  // settings list its sections beside the page.
+  document.querySelectorAll('section[data-pane]').forEach(pane => {
+    const titles = Array.from(pane.querySelectorAll(':scope > .set-section > .set-head > .set-title'));
+    const header = pane.querySelector(':scope > .page-header');
+    if (titles.length < 4 || !header || pane.querySelector('.page-toc')) return;
+    const toc = document.createElement('nav');
+    toc.className = 'page-toc';
+    toc.setAttribute('aria-label', 'On this page');
+    titles.forEach((title, index) => {
+      if (!title.id) title.id = `${pane.dataset.pane}-section-${index + 1}`;
+      title.setAttribute('tabindex', '-1');
+      const link = document.createElement('a');
+      link.href = `#${pane.dataset.pane}`;
+      link.textContent = title.textContent.trim();
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        title.closest('.set-section').scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+        title.focus({ preventScroll: true });
+      });
+      toc.appendChild(link);
+    });
+    header.after(toc);
+  });
 }
 
 // A description says one thing. Anything more sits in a .set-info-more beside it, folded away

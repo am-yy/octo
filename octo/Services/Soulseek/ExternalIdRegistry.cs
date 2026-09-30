@@ -72,6 +72,38 @@ public class ExternalIdRegistry : IDisposable
     }
 
     /// <summary>
+    /// The songs a song row filed under the album <paramref name="album"/> by
+    /// <paramref name="artist"/>, newest first, one per recording. A row names its album
+    /// after the song's album, or after its own title when it has none
+    /// (SubsonicResponseBuilder.ConvertSongFields), so this matches on the same rule, plus
+    /// the title alone, for a song whose album was filled in after its row named one.
+    /// For getAlbum when the catalog cannot list the album (#59).
+    /// </summary>
+    public IReadOnlyList<(string Id, SoulseekRouting Routing)> SongsFiledUnder(string? artist, string? album,
+        int limit = 50)
+    {
+        if (string.IsNullOrEmpty(artist) || string.IsNullOrEmpty(album)) return [];
+        List<string> order;
+        lock (_lruLock) order = _lru.ToList();
+
+        var found = new List<(string Id, SoulseekRouting Routing)>();
+        var recordings = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in order)
+        {
+            if (!_byId.TryGetValue(id, out var routing) || routing.Kind != RoutingKind.Song) continue;
+            if (!string.Equals(routing.Artist, artist, StringComparison.Ordinal)) continue;
+            var filedUnder = string.IsNullOrWhiteSpace(routing.Album) ? routing.Title : routing.Album;
+            if (!string.Equals(filedUnder, album, StringComparison.Ordinal)
+                && !string.Equals(routing.Title, album, StringComparison.Ordinal)) continue;
+            var recording = Octo.Services.Common.SongIdentity.Key(routing.Title);
+            if (!recordings.Add(recording.Length > 0 ? recording : id)) continue;
+            found.Add((id, routing));
+            if (found.Count >= limit) break;
+        }
+        return found;
+    }
+
+    /// <summary>
     /// Store a length for a song under <paramref name="shortId"/>, by the rules in
     /// <see cref="SongLength"/>. Looked up by id at write time rather than handed a routing,
     /// because a background lookup can outlive the routing it started from: a search that

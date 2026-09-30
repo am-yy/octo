@@ -1,10 +1,14 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
+using Octo.Models.Domain;
+using Octo.Models.Settings;
 using Octo.Services.CoverArt;
 using Octo.Services.Metadata;
 using Octo.Services.Soulseek;
+using Octo.Services.Subsonic;
 using Octo.Services.YouTube;
 using System.Net;
 
@@ -176,5 +180,59 @@ public class SoulseekMetadataServiceTests
         var albumId = (await svc.SearchAlbumsAsync("test", 10)).Single().Id;
 
         Assert.Null(await svc.GetAlbumAsync("deezer", albumId));
+    }
+
+    /// <summary>The album a song row names for a song Deezer cannot place: the row's own
+    /// title, minted by the response builder exactly as getSong and search3 mint it.</summary>
+    private string AlbumIdFromSongRow(string songId, string artist, string title)
+    {
+        var builder = new SubsonicResponseBuilder(_registry, Options.Create(new SubsonicSettings()));
+        var row = builder.ConvertSongToJson(new Song
+        {
+            Id = songId, Artist = artist, Title = title, Album = "", Duration = 151, IsLocal = false,
+        });
+        return (string)row["parent"];
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_SongRowAlbumDeezerCannotName_ListsTheSongThatNamedIt()
+    {
+        // Issue #59: an upload Deezer does not know gets a single-style album named after
+        // itself. getAlbum answered it with no songs, and Tempo crashed opening the player.
+        var svc = BuildService(new());
+        var songId = _registry.Register(new SoulseekRouting
+        {
+            Kind = RoutingKind.Song, YouTubeId = "yt-raya", Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 151,
+        });
+        var albumId = AlbumIdFromSongRow(songId, "Phonk", "Zericxxn - Raya");
+
+        var album = await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, albumId);
+
+        Assert.NotNull(album);
+        var song = Assert.Single(album!.Songs);
+        Assert.Equal(songId, song.Id);
+        Assert.Equal(albumId, song.AlbumId);
+        Assert.Equal(album.Title, song.Album);
+        Assert.Equal(1, album.SongCount);
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_SongRowAlbum_ListsEachRecordingOnceUnderItsNewestId()
+    {
+        // The same upload minted twice (a lookup found its video, so its id changed) is one song.
+        var svc = BuildService(new());
+        var older = _registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 180 });
+        var newer = _registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, YouTubeId = "yt-raya", Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 151 });
+        _registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, Artist = "Someone Else", Title = "Zericxxn - Raya", Duration = 151 });
+        var albumId = AlbumIdFromSongRow(newer, "Phonk", "Zericxxn - Raya");
+
+        var album = await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, albumId);
+
+        var song = Assert.Single(album!.Songs);
+        Assert.Equal(newer, song.Id);
+        Assert.NotEqual(older, song.Id);
     }
 }

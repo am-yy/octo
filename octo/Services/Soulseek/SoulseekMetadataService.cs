@@ -621,9 +621,10 @@ public class SoulseekMetadataService : IMusicMetadataService
         {
             // Logged rather than silent: this is what a user sees as an album that opens
             // with no tracks, and without a line here there is nothing to diagnose from.
+            ListSongsFiledUnder(album, routing, placeholder, artistId);
             _logger.LogWarning(
-                "getAlbum '{Artist} - {Album}' ({Id}): no Deezer album id resolved; returning album without a tracklist",
-                routing.Artist, placeholder, externalId);
+                "getAlbum '{Artist} - {Album}' ({Id}): no Deezer album id resolved; listing the {Count} song(s) filed under it",
+                routing.Artist, placeholder, externalId, album.Songs.Count);
             return album;
         }
 
@@ -632,10 +633,11 @@ public class SoulseekMetadataService : IMusicMetadataService
         // whatever we already have rather than failing the request.
         if (detail is null)
         {
+            ListSongsFiledUnder(album, routing, placeholder, artistId);
             _logger.LogWarning(
                 "getAlbum '{Artist} - {Album}' ({Id}): Deezer album {DeezerId} returned no usable detail "
-                + "(see the deezer warning above for why); returning album without a tracklist",
-                routing.Artist, placeholder, externalId, deezerAlbumId);
+                + "(see the deezer warning above for why); listing the {Count} song(s) filed under it",
+                routing.Artist, placeholder, externalId, deezerAlbumId, album.Songs.Count);
             return album;
         }
 
@@ -692,6 +694,38 @@ public class SoulseekMetadataService : IMusicMetadataService
         }
 
         return album;
+    }
+
+    /// <summary>
+    /// An album the catalog cannot list still has the songs Octo showed under it: at least the
+    /// one whose row named it. Listing those instead of nothing is what keeps a client that
+    /// opens the album of the song it is playing (Tempo, #59) from finding it empty.
+    /// </summary>
+    private void ListSongsFiledUnder(Album album, SoulseekRouting routing, string placeholder, string artistId)
+    {
+        foreach (var (id, song) in _idRegistry.SongsFiledUnder(routing.Artist, placeholder)
+                     .OrderBy(pair => pair.Routing.DiscNumber ?? 1).ThenBy(pair => pair.Routing.Track ?? int.MaxValue))
+        {
+            album.Songs.Add(new Song
+            {
+                Id = id,
+                Title = song.Title ?? "",
+                Artist = song.Artist ?? "",
+                ArtistId = artistId,
+                Album = album.Title,
+                AlbumId = album.Id,
+                Duration = SongLength.Shown(song).Seconds ?? song.Duration,
+                Track = song.Track,
+                DiscNumber = song.DiscNumber,
+                Isrc = song.Isrc,
+                Year = album.Year,
+                CoverArtUrl = album.CoverArtUrl,
+                IsLocal = false,
+                ExternalProvider = ProviderName,
+                ExternalId = id,
+            });
+        }
+        if (album.Songs.Count > 0) album.SongCount = album.Songs.Count;
     }
 
     public async Task<Artist?> GetArtistAsync(string externalProvider, string externalId)

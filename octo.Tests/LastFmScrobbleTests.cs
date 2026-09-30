@@ -99,7 +99,8 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
     [Fact]
     public async Task CompletedPlay_IsScrobbledWithEverythingLastFmAsksFor()
     {
-        _service.Scrobble("Alice", Song, DateTimeOffset.FromUnixTimeSeconds(1757200000).UtcDateTime);
+        var playedAt = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
+        _service.Scrobble("Alice", Song, DateTimeOffset.FromUnixTimeSeconds(playedAt).UtcDateTime);
         await WhenIdle();
 
         var call = Assert.Single(_lastFm.CallsTo("track.scrobble"));
@@ -109,7 +110,8 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         Assert.Equal("Be Nice 2 Me", call["track[0]"]);
         Assert.Equal("Icedancer", call["album[0]"]);
         Assert.Equal("154", call["duration[0]"]);
-        Assert.Equal("1757200000", call["timestamp[0]"]);
+        Assert.Equal(playedAt.ToString(), call["timestamp[0]"]);
+        Assert.False(call.ContainsKey("chosenByUser[0]"));
         Assert.Equal(LastFmScrobbleService.Sign(call, FakeLastFm.Secret), call["api_sig"]);
     }
 
@@ -184,10 +186,10 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         Assert.True(times[1] - times[0] >= TimeSpan.FromMilliseconds(250));
     }
 
-    /// <summary>Error 9 is Last.fm saying the listener revoked Octo. Retrying cannot help: the user
-    /// is disconnected, the saved session removed, and the dashboard says why.</summary>
+    /// <summary>Error 9 is Last.fm saying the listener revoked Octo. The session stops at once and
+    /// the dashboard says why, but one refusal is not enough to delete what the admin saved.</summary>
     [Fact]
-    public async Task InvalidSession_DisconnectsTheUser()
+    public async Task InvalidSession_PausesTheUser_AndKeepsTheSavedSession()
     {
         _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
 
@@ -195,7 +197,7 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         await WhenIdle();
 
         Assert.False(_service.IsEnabledFor("alice"));
-        Assert.Null(((_file.Load()["LastFm"] as JsonObject)?["UserSessions"] as JsonObject)?["alice"]);
+        Assert.Equal("sk-alice", SavedSession("alice"));
         var alice = Assert.Single(_service.Users([]), user => user.User == "alice");
         Assert.False(alice.Connected);
         Assert.Contains("Connect again", alice.Notice);
@@ -205,6 +207,99 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         await WhenIdle();
         Assert.Single(_lastFm.Calls);
     }
+
+    /// <summary>After the grace the session is tried once more. Refused again, it is removed.</summary>
+    [Fact]
+    public async Task InvalidSession_TwiceAnHourApart_RemovesTheSavedSession()
+    {
+        _service.RefusalGrace = TimeSpan.FromMilliseconds(150);
+        _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+        Assert.Equal("sk-alice", SavedSession("alice"));
+
+        await Until(() => _service.IsEnabledFor("alice"));
+        _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+
+        Assert.Equal(2, _lastFm.CallsTo("track.scrobble").Count);
+        Assert.Null(SavedSession("alice"));
+        await Task.Delay(200);
+        Assert.False(_service.IsEnabledFor("alice"));
+        Assert.Contains("Connect again", Assert.Single(_service.Users([]), user => user.User == "alice").Notice);
+    }
+
+    /// <summary>A session Last.fm takes again after the grace was never revoked: the notice goes.</summary>
+    [Fact]
+    public async Task InvalidSession_ThenAccepted_IsConnectedAgain()
+    {
+        _service.RefusalGrace = TimeSpan.FromMilliseconds(150);
+        _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+
+        await Until(() => _service.IsEnabledFor("alice"));
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+
+        Assert.Equal(2, _lastFm.CallsTo("track.scrobble").Count);
+        Assert.Equal("sk-alice", SavedSession("alice"));
+        var alice = Assert.Single(_service.Users([]), user => user.User == "alice");
+        Assert.True(alice.Connected);
+        Assert.Null(alice.Notice);
+    }
+
+    /// <summary>Error 8 ("operation failed") comes back the same however often it is asked.</summary>
+    [Fact]
+    public async Task OperationFailed_IsNotRetried()
+    {
+        _lastFm.Failures.Enqueue(8);
+
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+
+        Assert.Single(_lastFm.CallsTo("track.scrobble"));
+    }
+
+    /// <summary>Last.fm ignores plays older than two weeks, so they are not sent to be ignored.</summary>
+    [Fact]
+    public async Task PlaysOlderThanTwoWeeks_AreNotQueued()
+    {
+        _service.Scrobble("alice", Song, DateTime.UtcNow.AddDays(-15));
+        _service.Scrobble("alice", Song with { Title = "Recent" }, DateTime.UtcNow.AddDays(-13));
+        await WhenIdle();
+
+        var call = Assert.Single(_lastFm.CallsTo("track.scrobble"));
+        Assert.Equal("Recent", call["track[0]"]);
+        Assert.False(call.ContainsKey("track[1]"));
+    }
+
+    /// <summary>A radio stream picks the next song itself; Last.fm is told the listener did not.</summary>
+    [Fact]
+    public async Task APlayTheListenerDidNotPick_IsSentAsNotChosen()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _lastFm.Hold = _ => release.Task;
+        _service.Scrobble("alice", Song, DateTime.UtcNow.AddMinutes(-9));
+        await Until(() => _lastFm.Calls.Count == 1);
+        _service.Scrobble("alice", Song with { Title = "Picked" }, DateTime.UtcNow.AddMinutes(-6));
+        _service.Scrobble("alice", Song with { Title = "Radio" }, DateTime.UtcNow.AddMinutes(-3), chosenByUser: false);
+        _lastFm.Hold = null;
+        release.SetResult();
+        await WhenIdle();
+
+        var batch = _lastFm.CallsTo("track.scrobble")[^1];
+        Assert.Equal("Picked", batch["track[0]"]);
+        Assert.False(batch.ContainsKey("chosenByUser[0]"));
+        Assert.Equal("Radio", batch["track[1]"]);
+        Assert.Equal("0", batch["chosenByUser[1]"]);
+        Assert.Equal(LastFmScrobbleService.Sign(batch, FakeLastFm.Secret), batch["api_sig"]);
+    }
+
+    private string? SavedSession(string user) =>
+        ((((_file.Load()["LastFm"] as JsonObject)?["UserSessions"] as JsonObject)?[user]) as JsonObject)?["SessionKey"]
+            ?.GetValue<string>();
 
     [Fact]
     public async Task InvalidSession_OnNowPlaying_AlsoDisconnects()
@@ -265,8 +360,9 @@ public sealed class LastFmScrobbleEndpointTests
         var id = RegisterOutsideSong(fixture);
         using var client = fixture.CreateClient();
 
+        var playedAt = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds();
         var body = await client.GetStringAsync(
-            $"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true&time=1757200000000");
+            $"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true&time={playedAt}000");
         await WhenIdle(fixture);
 
         Assert.Contains("\"status\":\"ok\"", body);
@@ -276,7 +372,7 @@ public sealed class LastFmScrobbleEndpointTests
         Assert.Equal("Be Nice 2 Me", call["track[0]"]);
         Assert.Equal("Icedancer", call["album[0]"]);
         Assert.Equal("154", call["duration[0]"]);
-        Assert.Equal("1757200000", call["timestamp[0]"]);
+        Assert.Equal(playedAt.ToString(), call["timestamp[0]"]);
         Assert.Empty(fixture.Handler.LastFm.CallsTo("track.updateNowPlaying"));
     }
 
@@ -361,6 +457,71 @@ public sealed class LastFmScrobbleEndpointTests
 
         Assert.Single(fixture.Handler.LastFm.Calls);
         Assert.False(fixture.Services.GetRequiredService<LastFmScrobbleService>().IsEnabledFor("bob"));
+    }
+
+    /// <summary>One submission for several ids is for all of them, as Navidrome reads it: two songs
+    /// starting are two Now Playings, not a Now Playing and a finished play.</summary>
+    [Fact]
+    public async Task OneSubmissionFlag_AppliesToEveryId()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        var first = RegisterOutsideSong(fixture);
+        var second = fixture.Services.GetRequiredService<ExternalIdRegistry>().Register(new SoulseekRouting
+        {
+            Kind = RoutingKind.Song, Artist = "Bladee", Title = "Hahaha", Album = "Icedancer", Duration = 160,
+        });
+        using var client = fixture.CreateClient();
+
+        await client.GetStringAsync($"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={first}&id={second}&submission=false");
+        await WhenIdle(fixture);
+
+        Assert.Equal(2, fixture.Handler.LastFm.CallsTo("track.updateNowPlaying").Count);
+        Assert.Empty(fixture.Handler.LastFm.CallsTo("track.scrobble"));
+        Assert.Empty(fixture.Handler.ListenBrainzSubmissions);
+        Assert.Empty(fixture.State.GetUser("bob").Plays);
+    }
+
+    /// <summary>One time for two ids, one of them outside. Navidrome refuses times that do not pair
+    /// with ids; relaying the lone time with the library id alone would have paired them wrongly.</summary>
+    [Fact]
+    public async Task TimesThatDoNotPairWithIds_AreNotRelayed()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        var outside = RegisterOutsideSong(fixture);
+        using var client = fixture.CreateClient();
+        var stale = DateTimeOffset.UtcNow.AddDays(-3).ToUnixTimeMilliseconds();
+
+        await client.GetStringAsync(
+            $"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={outside}&id=one&submission=true&time={stale}");
+        await WhenIdle(fixture);
+
+        Assert.Equal(["one"], fixture.Handler.RelayedScrobbleIds);
+        Assert.Empty(fixture.Handler.RelayedScrobbleTimes);
+        // Nor is it pinned on the outside song: the play is dated when it arrived.
+        var sent = long.Parse(Assert.Single(fixture.Handler.LastFm.CallsTo("track.scrobble"))["timestamp[0]"]);
+        Assert.True(sent > DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds());
+    }
+
+    /// <summary>A client that posts the same finished play twice played it once.</summary>
+    [Fact]
+    public async Task ARepeatedFinishedPlay_IsLearnedOnce()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        var id = RegisterOutsideSong(fixture);
+        using var client = fixture.CreateClient();
+        var at = DateTimeOffset.UtcNow.AddMinutes(-4).ToUnixTimeMilliseconds();
+
+        for (var i = 0; i < 2; i++)
+            await client.GetStringAsync($"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true");
+        for (var i = 0; i < 2; i++)
+            await client.GetStringAsync($"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true&time={at}");
+        await WhenIdle(fixture);
+
+        // Once without a time, once with one: two plays, not four.
+        var plays = fixture.Handler.LastFm.CallsTo("track.scrobble")
+            .Sum(call => call.Keys.Count(key => key.StartsWith("artist[", StringComparison.Ordinal)));
+        Assert.Equal(2, plays);
+        Assert.Equal(2, fixture.Handler.ListenBrainzSubmissions.Count);
     }
 
     /// <summary>The client's answer does not wait on Last.fm: a stalled call still gets an ok.</summary>
@@ -479,6 +640,47 @@ public sealed class LastFmScrobbleAdminTests
 
         Assert.DoesNotContain("stored-secret", await save.Content.ReadAsStringAsync());
         Assert.Equal("stored-secret", (string?)JsonNode.Parse(File.ReadAllText(factory.SettingsPath))!["LastFm"]!["ApiSecret"]);
+    }
+
+    /// <summary>A session key typed onto the end of the placeholder is refused, like the secret is:
+    /// saved, it would be a key Last.fm rejects, and the listener would be cut off for it.</summary>
+    [Fact]
+    public async Task RawConfig_WithASessionKeyTypedOntoThePlaceholder_IsRefused()
+    {
+        const string stored = """{ "LastFm": { "UserSessions": { "alice": { "SessionKey": "sk-alice", "LastFmUser": "lfm-alice" } } } }""";
+        await using var factory = new ScrobbleAdminFactory(stored);
+        using var client = factory.AdminClient();
+
+        using var put = await client.PutAsync("/api/admin/raw-config", new StringContent(
+            $$"""{ "LastFm": { "UserSessions": { "alice": { "SessionKey": "{{AdminController.SecretPlaceholder}}x" } } } }""",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
+        Assert.Contains("alice", await put.Content.ReadAsStringAsync());
+        Assert.Equal(stored, File.ReadAllText(factory.SettingsPath));
+    }
+
+    /// <summary>Last.fm handed over the session but settings.json could not be written. The admin
+    /// hears that plainly, as a conflict, rather than as a server error.</summary>
+    [Fact]
+    public async Task Finish_WhenTheSettingsFileCannotBeWritten_SaysSo()
+    {
+        await using var factory = new ScrobbleAdminFactory();
+        using var client = factory.AdminClient();
+        using var connect = await client.PostAsync("/api/admin/lastfm/scrobble/connect", Json(new { user = "alice" }));
+        connect.EnsureSuccessStatusCode();
+        factory.LastFm.Approved = true;
+
+        HttpResponseMessage finish;
+        using (new FileStream(factory.SettingsPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            finish = await client.PostAsync("/api/admin/lastfm/scrobble/finish", Json(new { user = "alice" }));
+
+        using (finish)
+        {
+            Assert.Equal(HttpStatusCode.Conflict, finish.StatusCode);
+            Assert.Contains("could not be saved", await finish.Content.ReadAsStringAsync());
+        }
+        Assert.DoesNotContain("sk-alice", File.ReadAllText(factory.SettingsPath));
     }
 
     private static Task<string> Status(HttpClient client) => client.GetStringAsync("/api/admin/lastfm/scrobble");

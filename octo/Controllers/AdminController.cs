@@ -273,6 +273,17 @@ public class AdminController : ControllerBase
         {
             return Conflict(new { error = $"{ex.Message} Fix it in Raw config, or on disk at {ex.Path}, then Connect again." });
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Last.fm has already handed over the session; only saving it failed (the file is
+            // locked, read-only, or the disk is full). Nothing was saved, so say so plainly.
+            _logger.LogWarning(ex, "Could not save the Last.fm session to {Path}", _settings.FilePath);
+            return Conflict(new
+            {
+                error = $"Last.fm approved Octo, but the connection could not be saved to {_settings.FilePath} ({ex.Message})."
+                        + " Make sure Octo can write that file, then press Finish again, or Connect again if the link has expired.",
+            });
+        }
     }
 
     [HttpPost("lastfm/scrobble/disconnect")]
@@ -1547,6 +1558,8 @@ public class AdminController : ControllerBase
                 && savedSecret.TryGetValue<string>(out var savedSecretText)
                 && savedSecretText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
                 return BadRequest(new { error = "Retype the whole Last.fm shared secret; it was added to the hidden placeholder." });
+            if (SessionKeyTypedIntoPlaceholder(parsed) is { } typedInto)
+                return BadRequest(new { error = $"Connect {typedInto} to Last.fm again, or paste their whole session key; it was added to the hidden placeholder." });
             var pretty = parsed.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
             _settings.Replace(parsed);
             _logger.LogInformation("Admin raw-config saved ({Bytes} bytes)", pretty.Length);
@@ -1867,6 +1880,26 @@ public class AdminController : ControllerBase
             RestorePlaceholder(session, stored, "SessionKey");
             if (KeyOf(session, "SessionKey") is null) sessions.Remove(user);
         }
+    }
+
+    /// <summary>
+    /// The listener whose Last.fm session key, after the placeholders were restored, still starts
+    /// with the placeholder: someone typed onto the end of it. Saved, it would be a key Last.fm
+    /// refuses, and the listener would be disconnected for it. Null when there is none.
+    /// </summary>
+    internal static string? SessionKeyTypedIntoPlaceholder(JsonObject incoming)
+    {
+        if (Child(incoming, "LastFm") is not JsonObject lastFm
+            || Child(lastFm, "UserSessions") is not JsonObject sessions)
+            return null;
+        foreach (var (user, node) in sessions)
+            if (node is JsonObject session
+                && KeyOf(session, "SessionKey") is { } key
+                && session[key] is JsonValue value
+                && value.TryGetValue<string>(out var text)
+                && text.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
+                return user;
+        return null;
     }
 
     /// <summary>Swaps one placeholder back for the stored value, or drops the key when nothing is

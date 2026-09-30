@@ -572,10 +572,11 @@ public sealed class LastFmRadioStreamService
                 _ = _listenBrainz.SubmitListenAsync(session.Username, track.Artist, track.Title,
                     track.Album, track.Duration ?? song.Duration, DateTime.UtcNow);
             // Last.fm dates a scrobble from when the song started, and this one just ended.
+            // The station picked it, not the listener, and Last.fm is told as much.
             var duration = track.Duration ?? song.Duration;
             _lastFmScrobbles?.Scrobble(session.Username,
                 new LastFmTrack(track.Artist, track.Title, track.Album, duration),
-                DateTime.UtcNow.AddSeconds(-(duration ?? 0)));
+                DateTime.UtcNow.AddSeconds(-(duration ?? 0)), chosenByUser: false);
             return;
         }
         var parameters = session.Authentication.ToDictionary(pair => pair.Key, pair => pair.Value,

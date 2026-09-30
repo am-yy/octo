@@ -56,6 +56,9 @@ public sealed class LastFmScrobbleService
     private static readonly TimeSpan LongestRetryWait = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan LongestPause = TimeSpan.FromHours(1);
 
+    /// <summary>Last.fm ignores a play older than two weeks, so one is not queued at all.</summary>
+    internal static readonly TimeSpan OldestPlay = TimeSpan.FromDays(14);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptionsMonitor<LastFmSettings> _settings;
     private readonly SettingsFileWriter _settingsFile;
@@ -73,6 +76,10 @@ public sealed class LastFmScrobbleService
     // after the file changes, and one set in the environment is not in the file at all, so this
     // is what stops the key being used again in the meantime.
     private readonly ConcurrentDictionary<string, byte> _revokedKeys = new(StringComparer.Ordinal);
+    // When Last.fm first refused a session with error 9. The session rests until the grace is
+    // over; only a second refusal after that removes it from settings.json, since one error 9
+    // has been known to be Last.fm's hiccup rather than the listener revoking Octo.
+    private readonly ConcurrentDictionary<string, DateTime> _refusedAt = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (string Token, DateTime Expires)> _pendingApprovals =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _notices = new(StringComparer.OrdinalIgnoreCase);
@@ -92,6 +99,9 @@ public sealed class LastFmScrobbleService
 
     /// <summary>How long every call stops after Last.fm says Octo is calling too often.</summary>
     internal TimeSpan RateLimitPause { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long a session Last.fm refused rests before it is tried once more.</summary>
+    internal TimeSpan RefusalGrace { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>Plays queued or being sent, and Now Playing calls still out. Tests wait on it.</summary>
     internal int Outstanding
@@ -128,13 +138,16 @@ public sealed class LastFmScrobbleService
 
     /// <summary>
     /// Queues one completed play. The client already decided it counts (Last.fm asks for half
-    /// the song or four minutes); the one rule left to Octo is that Last.fm takes nothing
-    /// shorter than 30 seconds.
+    /// the song or four minutes); the rules left to Octo are that Last.fm takes nothing
+    /// shorter than 30 seconds and nothing played more than two weeks ago.
     /// </summary>
-    public void Scrobble(string username, LastFmTrack track, DateTime playedAtUtc)
+    /// <param name="chosenByUser">False for a play the listener did not pick, such as the next
+    /// song on an Octo radio stream. Last.fm is told so.</param>
+    public void Scrobble(string username, LastFmTrack track, DateTime playedAtUtc, bool chosenByUser = true)
     {
         if (!IsEnabledFor(username) || !Usable(track)) return;
         if (track.DurationSeconds is > 0 and < 30) return;
+        if (DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc) < DateTime.UtcNow - OldestPlay) return;
         var user = username.Trim();
         lock (_gate)
         {
@@ -144,7 +157,7 @@ public sealed class LastFmScrobbleService
                 _logger.LogWarning("Last.fm queue for {User} is full; dropping the oldest play", user);
                 queue.RemoveAt(0);
             }
-            queue.Add(new PendingScrobble(track, DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc)));
+            queue.Add(new PendingScrobble(track, DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc), chosenByUser));
             if (_draining) return;
             _draining = true;
         }
@@ -218,6 +231,7 @@ public sealed class LastFmScrobbleService
         });
         _pendingApprovals.TryRemove(user, out _);
         _revokedKeys.TryRemove(key, out _);
+        _refusedAt.TryRemove(key, out _);
         _notices.TryRemove(user, out _);
         _logger.LogInformation("Last.fm connected for {User} as {LastFmUser}", user, name);
         return session;
@@ -231,7 +245,11 @@ public sealed class LastFmScrobbleService
     public bool Disconnect(string username)
     {
         var user = RequireUsername(username);
-        if (_settings.CurrentValue.SessionFor(user) is { } current) _revokedKeys[current.SessionKey] = 0;
+        if (_settings.CurrentValue.SessionFor(user) is { } current)
+        {
+            _revokedKeys[current.SessionKey] = 0;
+            _refusedAt.TryRemove(current.SessionKey, out _);
+        }
         _pendingApprovals.TryRemove(user, out _);
         _notices.TryRemove(user, out _);
         lock (_gate) _queues.Remove(user);
@@ -296,7 +314,11 @@ public sealed class LastFmScrobbleService
         if (track.DurationSeconds is > 0)
             parameters["duration"] = track.DurationSeconds.Value.ToString(CultureInfo.InvariantCulture);
         var reply = await CallAsync(parameters, settings.ApiSecret.Trim(), CancellationToken.None);
-        if (reply.Ok) return;
+        if (reply.Ok)
+        {
+            Accepted(user, session.SessionKey);
+            return;
+        }
         if (reply.Error == ErrorInvalidSession) MarkDisconnected(user, session.SessionKey, reply.Message);
         else if (reply.Error == ErrorRateLimited) lock (_gate) Pause();
         else _logger.LogDebug("Last.fm refused Now Playing for {User}: {Detail}", user, Describe(reply));
@@ -376,6 +398,7 @@ public sealed class LastFmScrobbleService
             if (!string.IsNullOrWhiteSpace(track.Album)) parameters[$"album[{index}]"] = track.Album.Trim();
             if (track.DurationSeconds is > 0)
                 parameters[$"duration[{index}]"] = track.DurationSeconds.Value.ToString(CultureInfo.InvariantCulture);
+            if (!batch[index].ChosenByUser) parameters[$"chosenByUser[{index}]"] = "0";
         }
 
         var reply = await CallAsync(parameters, settings.ApiSecret.Trim(), CancellationToken.None);
@@ -390,6 +413,7 @@ public sealed class LastFmScrobbleService
                 _retryAt.Remove(user);
                 Forget(user, batch);
             }
+            Accepted(user, session.SessionKey);
             return;
         }
 
@@ -403,8 +427,9 @@ public sealed class LastFmScrobbleService
                 lock (_gate) Pause();
                 _logger.LogWarning("Last.fm asked Octo to slow down; scrobbles wait before the next try");
                 return;
-            case 0 or 8 or 11 or 16:
-                // Unreachable, or one of Last.fm's own "try again later" answers.
+            case var _ when reply.Retryable:
+                // Unreachable, a server error, or one of Last.fm's own "try again later"
+                // answers (11, 16). Error 8 is not one: it comes back the same each time.
                 lock (_gate)
                 {
                     var attempts = 0;
@@ -450,17 +475,36 @@ public sealed class LastFmScrobbleService
 
     /// <summary>
     /// Last.fm no longer accepts this session, which is what happens when the listener removes
-    /// Octo from their Last.fm applications. Retrying cannot help, so the user is disconnected
-    /// and the dashboard says why.
+    /// Octo from their Last.fm applications. The first refusal stops the session in memory and
+    /// the dashboard says why; the saved session is kept, because Last.fm has been known to say
+    /// this once and mean nothing by it. After <see cref="RefusalGrace"/> the session is tried
+    /// again, and a second refusal then removes it from settings.json for good.
     /// </summary>
     private void MarkDisconnected(string user, string sessionKey, string detail)
     {
-        _revokedKeys[sessionKey] = 0;
-        _notices[user] = $"Last.fm stopped accepting this connection on {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC"
-                         + (string.IsNullOrWhiteSpace(detail) ? "" : $" ({detail.Trim()})")
-                         + ". Connect again to resume scrobbling.";
-        _logger.LogWarning("Last.fm refused the session for {User}; scrobbling for them is off until they connect again", user);
-        RemoveSavedSession(user, onlyKey: sessionKey);
+        var now = DateTime.UtcNow;
+        var why = string.IsNullOrWhiteSpace(detail) ? "" : $" ({detail.Trim()})";
+        if (_refusedAt.TryGetValue(sessionKey, out var first) && now - first >= RefusalGrace)
+        {
+            _revokedKeys[sessionKey] = 0;
+            _refusedAt.TryRemove(sessionKey, out _);
+            _notices[user] = $"Last.fm stopped accepting this connection on {now:yyyy-MM-dd HH:mm} UTC{why}"
+                             + ". Connect again to resume scrobbling.";
+            _logger.LogWarning("Last.fm refused the session for {User} again; it is removed until they connect again", user);
+            RemoveSavedSession(user, onlyKey: sessionKey);
+            return;
+        }
+        _refusedAt.TryAdd(sessionKey, now);
+        _notices[user] = $"Last.fm refused this connection on {now:yyyy-MM-dd HH:mm} UTC{why}"
+                         + ". Scrobbling for this listener is paused. Octo tries once more after an hour and"
+                         + " removes the connection if Last.fm still refuses it. Connect again to resume now.";
+        _logger.LogWarning("Last.fm refused the session for {User}; scrobbling for them is paused", user);
+    }
+
+    /// <summary>A call with this session went through, so an earlier refusal was not meant.</summary>
+    private void Accepted(string user, string sessionKey)
+    {
+        if (_refusedAt.TryRemove(sessionKey, out _)) _notices.TryRemove(user, out _);
     }
 
     /// <summary>
@@ -493,6 +537,7 @@ public sealed class LastFmScrobbleService
 
     private LastFmUserSession? ActiveSession(LastFmSettings settings, string username) =>
         settings.SessionFor(username) is { } session && !_revokedKeys.ContainsKey(session.SessionKey)
+        && !(_refusedAt.TryGetValue(session.SessionKey, out var refused) && DateTime.UtcNow - refused < RefusalGrace)
             ? session : null;
 
     private async Task<Reply> CallAsync(Dictionary<string, string> parameters, string secret,
@@ -513,14 +558,15 @@ public sealed class LastFmScrobbleService
             try { document = JsonNode.Parse(body) as JsonObject; }
             catch (JsonException) { /* not JSON: judged by the status below */ }
             if (document?["error"] is JsonValue error && error.TryGetValue<int>(out var code))
-                return new Reply(null, code, document["message"]?.GetValue<string>() ?? "");
+                return new Reply(null, code, document["message"]?.GetValue<string>() ?? "",
+                    Retryable: code is 11 or 16);
             if (response.IsSuccessStatusCode && document is not null) return new Reply(document, 0, "");
-            return new Reply(null, 0, $"HTTP {(int)response.StatusCode}");
+            return new Reply(null, 0, $"HTTP {(int)response.StatusCode}", Retryable: (int)response.StatusCode >= 500);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
                                    && !cancellationToken.IsCancellationRequested)
         {
-            return new Reply(null, 0, ex.Message);
+            return new Reply(null, 0, ex.Message, Retryable: true);
         }
     }
 
@@ -576,15 +622,18 @@ public sealed class LastFmScrobbleService
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private sealed record Reply(JsonObject? Body, int Error, string Message)
+    /// <param name="Retryable">Worth sending again later: Last.fm unreachable, a server error,
+    /// or its own "try again later" (11, 16).</param>
+    private sealed record Reply(JsonObject? Body, int Error, string Message, bool Retryable = false)
     {
         public bool Ok => Body is not null;
     }
 
-    private sealed class PendingScrobble(LastFmTrack track, DateTime playedAtUtc)
+    private sealed class PendingScrobble(LastFmTrack track, DateTime playedAtUtc, bool chosenByUser)
     {
         public LastFmTrack Track { get; } = track;
         public DateTime PlayedAtUtc { get; } = playedAtUtc;
+        public bool ChosenByUser { get; } = chosenByUser;
         public int Attempts { get; set; }
     }
 }

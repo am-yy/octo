@@ -75,6 +75,7 @@ public class SubsonicController : ControllerBase
     private readonly Octo.Services.Library.LibraryActionExecutor? _libraryActions;
     private readonly SearchSongOrderCache _searchSongOrders;
     private readonly RequestIdentity _requestIdentity;
+    private readonly RecentScrobbles _recentScrobbles;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -117,8 +118,10 @@ public class SubsonicController : ControllerBase
         Octo.Services.Library.LibraryActionExecutor? libraryActions = null,
         SearchSongOrderCache? searchSongOrders = null,
         LastFmScrobbleService? lastFmScrobbles = null,
-        RequestIdentity? requestIdentity = null)
+        RequestIdentity? requestIdentity = null,
+        RecentScrobbles? recentScrobbles = null)
     {
+        _recentScrobbles = recentScrobbles ?? new RecentScrobbles();
         _lastFmScrobbles = lastFmScrobbles;
         _requestIdentity = requestIdentity
             ?? new RequestIdentity(Microsoft.Extensions.Logging.Abstractions.NullLogger<RequestIdentity>.Instance);
@@ -2898,6 +2901,10 @@ public class SubsonicController : ControllerBase
         // own submission and time when the client sent one per id.
         var library = Enumerable.Range(0, ids.Count)
             .Where(index => !_localLibraryService.ParseSongId(ids[index]).isExternal).ToList();
+        // Times that do not pair up with the ids are dropped, not relayed. Navidrome refuses
+        // such a scrobble outright, and leaving the outside ids out could make the counts
+        // match by accident and pin an outside song's time on a library song.
+        if (times.Count > 0 && times.Count != ids.Count) times = [];
         IEnumerable<string> LibraryOnly(IReadOnlyList<string> values) =>
             values.Count == ids.Count ? library.Select(index => values[index]) : values;
         try
@@ -2955,12 +2962,22 @@ public class SubsonicController : ControllerBase
         for (var index = 0; index < ids.Count; index++)
         {
             // Explicit start/now-playing scrobbles are not completed plays. Clients that
-            // omit submission are accepted because many only send one credible event.
-            var completed = index >= submissions.Count || IsTrue(submissions[index]);
+            // omit submission are accepted because many only send one credible event. One
+            // submission for several ids is for all of them, as Navidrome reads it.
+            var completed = submissions.Count == 1
+                ? IsTrue(submissions[0])
+                : index >= submissions.Count || IsTrue(submissions[index]);
             // Last.fm hears only about outside songs. Navidrome scrobbles library songs to
             // it already, so sending one from here too would count the play twice.
             var outside = _localLibraryService.ParseSongId(ids[index]).isExternal;
             if (!completed && !(scrobbling && outside)) continue;
+            // A client that sends the same completed play again is not playing it again.
+            if (completed && !_recentScrobbles.FirstReport(username, ids[index],
+                    index < times.Count ? times[index] : null, DateTime.UtcNow))
+            {
+                _logger.LogDebug("Scrobble of {Id} for {User} repeats one already learned from", ids[index], username);
+                continue;
+            }
             try
             {
                 var song = await _radioTrackResolver.ResolveScrobbleAsync(ids[index], authenticatedParameters);

@@ -29,8 +29,10 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Install Radio transcoder
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # ffmpeg for the Radio transcoder; Noto CJK and Symbola, as in the
+      # image, so the cover tests can draw names in other scripts.
+      - name: Install Radio transcoder and cover fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-symbola
 
       - name: Restore dependencies
         run: dotnet restore

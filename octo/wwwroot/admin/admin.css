@@ -756,6 +756,66 @@ input[type="number"].set-input { max-width: 160px; }
 .form-actions .unsaved-status:empty { display: none; }
 .form-actions.unsaved .saved-status { display: none; }
 
+/* Clean, the Save button is quiet; with changes it is the accent button, the card's edge warms,
+ * and Undo appears. */
+.form-actions:not(.unsaved) button[type="submit"]:not(:disabled) {
+  background: var(--accent-tonal);
+  font-weight: 500;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.38), 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.form-actions:not(.unsaved) button[type="submit"]:not(:disabled):hover { background-color: #34383a; }
+.form-actions:not(.unsaved) .form-undo { display: none; }
+form.set-card.unsaved { border-color: var(--warn-line); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 0 0 3px rgba(255, 149, 0, 0.06); }
+.form-actions .unsaved-status { display: inline-flex; align-items: center; gap: var(--s-s); }
+.form-actions .unsaved-status::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.form-actions .saved-status { display: inline-flex; align-items: center; gap: var(--s-s); }
+.saved-status .icon, .inline-note .icon { width: 15px; height: 15px; }
+.saved-status.ok .icon, #raw-saved-status .icon, .inline-note.ok .icon { color: var(--good); }
+.saved-status.error { color: #ff7b72; margin-left: 0; flex-basis: 100%; order: 10; }
+.saved-status.error .icon, .inline-note.error .icon { color: var(--bad); }
+.saved-status.busy .icon, .inline-note.busy .icon, .state-loading .icon { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#raw-saved-status { display: inline-flex; align-items: center; gap: var(--s-s); }
+
+/* A button's answer, beside the button. */
+.inline-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-s);
+  font-size: var(--t-meta);
+  color: var(--ink-1);
+  line-height: 1.4;
+  margin: var(--s-s) 0 0;
+  animation: pane-in var(--t-card) var(--ease);
+}
+.inline-note.error { color: #ff7b72; }
+.inline-note.info .icon { color: var(--text-secondary); }
+.set-ctrl > .inline-note, .set-row > .inline-note { margin: 0; }
+.genre-preset-actions + .inline-note, .detect-list + .inline-note, .config-table + .inline-note { display: flex; }
+
+/* Loading, empty and failed: an icon and a sentence, the same everywhere. */
+.state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: var(--s-page) var(--s-2xl);
+  color: var(--text-muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+  text-align: center;
+}
+.state .icon { width: 18px; height: 18px; flex-shrink: 0; }
+.state-error { color: #ff7b72; }
+.state-error .icon { color: var(--bad); }
+.config-loading { padding: 0; }
+.detect-pick.is-picked { box-shadow: var(--glaze-lifted), inset 0 0 0 1px var(--accent-line); }
+
 /* Restart-required chip */
 .restart-badge {
   display: inline-flex;

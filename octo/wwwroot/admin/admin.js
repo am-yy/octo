@@ -104,6 +104,39 @@ function toast(msg, kind = 'ok') {
 }
 toastEl.addEventListener('click', () => { toastEl.className = ''; });
 
+// The toast is for news from elsewhere, like Octo coming back after a restart. What a button did
+// is said beside that button, where the eye already is, and stays until the next thing happens
+// there. An error is also put in the assertive region, so a screen reader hears it.
+const noteTimers = new WeakMap();
+function note(anchor, message, kind = 'ok') {
+  if (!anchor) return;
+  let holder = anchor.nextElementSibling?.classList.contains('inline-note') ? anchor.nextElementSibling : null;
+  if (!holder) {
+    holder = document.createElement('span');
+    holder.className = 'inline-note';
+    holder.setAttribute('role', 'status');
+    anchor.after(holder);
+  }
+  clearTimeout(noteTimers.get(holder));
+  if (!message) { holder.hidden = true; return; }
+  const glyph = { ok: 'i-check-circle-fill', error: 'i-x-circle-fill', info: 'i-info-fill', busy: 'i-circle-notch' }[kind] ?? 'i-info-fill';
+  holder.className = `inline-note ${kind}`;
+  holder.innerHTML = `${icon(glyph)}<span>${esc(message)}</span>`;
+  holder.hidden = false;
+  if (kind === 'error' && srAlert) {
+    srAlert.textContent = '';
+    setTimeout(() => { srAlert.textContent = message; }, 50);
+  }
+  // Good news fades after a while; a problem stays until it is dealt with.
+  if (kind === 'ok') noteTimers.set(holder, setTimeout(() => { holder.hidden = true; }, 8000));
+}
+
+// Loading, empty and failed lists all look the same everywhere: an icon and a sentence.
+function stateBlock(kind, message) {
+  const glyph = { loading: 'i-circle-notch', empty: 'i-circle-dashed', error: 'i-warning-circle' }[kind] ?? 'i-info';
+  return `<div class="state state-${kind}"${kind === 'error' ? ' role="alert"' : ''}>${icon(glyph)}<span>${esc(message)}</span></div>`;
+}
+
 // ────────────────────────────────────────────────────────────────
 // Status grid + sidebar badge
 // ────────────────────────────────────────────────────────────────
@@ -327,6 +360,39 @@ function formFingerprint(form) {
 
 function markClean(form) {
   form.dataset.saved = formFingerprint(form);
+  // What every control held when saved, for Undo changes.
+  form._snapshot = Array.from(form.querySelectorAll('input, select, textarea'))
+    .map(el => ({ el, value: el.value, checked: el.checked }));
+  updateDirty(form);
+}
+
+// Puts a card back the way it was last saved. Lists drawn from a hidden JSON field (heart and
+// lyrics sources, genre rules, pinned stations, library actions) are drawn again from it.
+function revertForm(form) {
+  (form._snapshot || []).forEach(({ el, value, checked }) => {
+    if (!el.isConnected) return;
+    if (el.type === 'checkbox') el.checked = checked;
+    else el.value = value;
+  });
+  const redraw = {
+    'f-heart-download-sources': value => renderHeartSourceOrder(JSON.parse(value || '[]')),
+    'f-lyrics-sources': value => renderLyricsSources(value),
+    'radio-discovery-json': value => renderRadioDiscovery(JSON.parse(value || '[]')),
+    'genre-mappings-json': value => renderGenreMappings(JSON.parse(value || '[]')),
+    'library-actions-json': value => renderLibraryActions(JSON.parse(value || '[]')),
+  };
+  Object.entries(redraw).forEach(([id, draw]) => {
+    const field = form.querySelector(`#${id}`);
+    if (field) { try { draw(field.value); } catch { /* keeps what is drawn */ } }
+  });
+  form.querySelectorAll('.field-error').forEach(el => { el.hidden = true; });
+  syncPlaybackSourceControl();
+  updateStreamSettings();
+  updateRadioPublicationSettings();
+  syncGenreUnknownRow();
+  updateDiscoveryBanner();
+  syncSegments(false);
+  form.querySelector('.form-actions')?.classList.remove('dirty');
   updateDirty(form);
 }
 
@@ -344,11 +410,11 @@ function updateDirty(form) {
   form.classList.toggle('unsaved', unsaved);
   const actions = form.querySelector('.form-actions');
   actions?.classList.toggle('unsaved', unsaved);
-  const note = actions?.querySelector('.unsaved-status');
-  const noteText = unsaved ? 'Unsaved changes' : '';
+  const status = actions?.querySelector('.unsaved-status');
+  const statusText = unsaved ? 'Unsaved changes' : '';
   // Only when it changes: rewriting it swaps the text node, which the form's MutationObserver
   // would take as an edit and check again, every frame, and a live region would re-announce.
-  if (note && note.textContent !== noteText) note.textContent = noteText;
+  if (status && status.textContent !== statusText) status.textContent = statusText;
   updateNavDirty();
 }
 
@@ -384,16 +450,52 @@ function ensureSaveBar(form) {
   const actions = document.createElement('div');
   actions.className = 'form-actions';
   actions.innerHTML = `
-    <button type="submit" class="btn btn-primary" ${currentSettings ? '' : 'disabled'}>Save</button>
-    ${form.id === 'lidarr-connection-form' ? '<button type="button" class="btn btn-ghost" id="lidarr-test-connection">Test connection</button>' : ''}
+    <button type="submit" class="btn btn-primary" ${currentSettings ? '' : 'disabled'} title="Save (Ctrl+S)">Save</button>
+    <button type="button" class="btn btn-ghost form-undo">${icon('i-arrow-counter-clockwise')}<span>Undo changes</span></button>
+    ${form.id === 'lidarr-connection-form' ? `<button type="button" class="btn btn-ghost" id="lidarr-test-connection">${icon('i-plugs-connected')}<span>Test connection</span></button>` : ''}
     <span class="unsaved-status" aria-live="polite"></span>
-    <span class="saved-status"></span>
+    <span class="saved-status" role="status"></span>
     <span class="restart-hint">
       ${icon('i-arrow-clockwise')}
       Restart required for one or more changes
     </span>
   `;
   form.appendChild(actions);
+  actions.querySelector('.form-undo').addEventListener('click', () => {
+    revertForm(form);
+    actions.querySelector('button[type="submit"]')?.focus();
+  });
+}
+
+// Ctrl+S (Cmd+S on a Mac) saves the card being edited: the one holding the keyboard, or else
+// the only card on this page with unsaved changes. Never the browser's own "save page".
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 's') return;
+  event.preventDefault();
+  if (document.querySelector('.modal-backdrop:not([hidden])')) return;
+  const pane = document.querySelector('section[data-pane].active');
+  let form = document.activeElement?.closest('form[data-section], #raw-form');
+  if (!form) {
+    const unsaved = pane ? Array.from(pane.querySelectorAll('form[data-section].unsaved')) : [];
+    if (unsaved.length === 1) form = unsaved[0];
+    else if (pane?.dataset.pane === 'raw' && rawDirty) form = rawForm;
+  }
+  const submit = form?.querySelector('button[type="submit"]');
+  if (form && submit && !submit.disabled) form.requestSubmit(submit);
+});
+
+// What a save said, in the card's own bar: a tick and the time, or what went wrong.
+function saveStatus(form, message, kind = 'ok') {
+  const status = form?.querySelector('.saved-status');
+  if (!status) return;
+  status.className = `saved-status ${kind}`;
+  status.innerHTML = message
+    ? `${icon(kind === 'error' ? 'i-x-circle-fill' : kind === 'busy' ? 'i-circle-notch' : 'i-check-circle-fill')}<span>${esc(message)}</span>`
+    : '';
+  if (kind === 'error' && srAlert) {
+    srAlert.textContent = '';
+    setTimeout(() => { srAlert.textContent = message; }, 50);
+  }
 }
 
 // Builds the settings patch a form saves. A JSON field that does not parse stops the save
@@ -481,15 +583,16 @@ document.querySelectorAll('form[data-section]').forEach(form => {
         holder.textContent = message;
         holder.hidden = false;
       }
-      toast(message, 'error');
+      saveStatus(form, message, 'error');
+      invalid.focus();
       return;
     }
     form.querySelectorAll('.field-error[data-json-error]').forEach(el => { el.hidden = true; });
 
-    const status = form.querySelector('.saved-status');
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
-    status.textContent = 'Saving…';
+    saveStatus(form, 'Saving…', 'busy');
+    let reread = true;
 
     try {
       const r = await api('/api/admin/settings', {
@@ -510,7 +613,7 @@ document.querySelectorAll('form[data-section]').forEach(form => {
         currentSettings = await (await api('/api/admin/settings', { cache: 'no-store' })).json();
       } catch {
         // Saved, but the page could not re-read the result; say which, rather than "Save failed".
-        toast('Saved. Reload the page to see the current values.', 'ok');
+        reread = false;
       }
       if (form.id === 'lidarr-connection-form') await loadLidarrOptions();
       renderOctoAddresses();
@@ -518,7 +621,6 @@ document.querySelectorAll('form[data-section]').forEach(form => {
       renderSetupChecklist();
       // The scrobbling card reads the running settings, which catch up with the file a moment later.
       if (form.dataset.section?.startsWith('lastfm')) setTimeout(loadLastFmScrobbling, 700);
-      status.textContent = `Saved · ${new Date().toLocaleTimeString()}`;
       form.querySelector('.form-actions')?.classList.remove('dirty');
       // A saved admin password is only ever shown as the placeholder; the typed value should
       // not stay in the page after it has been saved.
@@ -528,12 +630,12 @@ document.querySelectorAll('form[data-section]').forEach(form => {
         if (saved && saved === currentSettings?._meta?.SecretPlaceholder) input.value = saved;
       });
       markClean(form);
-      toast(needsRestart
-        ? 'Saved. Restart for these to take effect.'
-        : 'Settings saved.', 'ok');
+      const at = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      saveStatus(form, !reread ? 'Saved. Reload the page to see the current values.'
+        : needsRestart ? `Saved at ${at}. Restart Octo to apply it.`
+        : `Saved at ${at}`);
     } catch (err) {
-      status.textContent = '';
-      toast(`Save failed: ${err.message}`, 'error');
+      saveStatus(form, `Not saved: ${err.message}`, 'error');
     } finally {
       submit.disabled = false;
     }
@@ -802,7 +904,8 @@ function renderRejectedPeerCount() {
   button.disabled = count === 0;
 }
 
-document.getElementById('rejected-peers-clear')?.addEventListener('click', async () => {
+document.getElementById('rejected-peers-clear')?.addEventListener('click', async event => {
+  const button = event.currentTarget;
   const count = currentSettings?._meta?.RejectedPeerCount ?? 0;
   if (!count) return;
   if (!confirm(`Forget ${count} rejected peer${count === 1 ? '' : 's'}? Those files become downloadable again.`)) return;
@@ -810,12 +913,12 @@ document.getElementById('rejected-peers-clear')?.addEventListener('click', async
     const response = await api('/api/admin/soulseek/rejected-peers/clear', { method: 'POST' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
-    toast(`Forgot ${body.cleared} rejected peer${body.cleared === 1 ? '' : 's'}.`);
     // Only the count changed. Reloading every form here threw away unsaved edits elsewhere.
     currentSettings = await (await api('/api/admin/settings', { cache: 'no-store' })).json();
     renderRejectedPeerCount();
+    note(button, `Forgot ${body.cleared} rejected peer${body.cleared === 1 ? '' : 's'}.`);
   } catch (error) {
-    toast(`Could not clear: ${error.message}`, 'err');
+    note(button, `Could not clear: ${error.message}`, 'error');
   }
 });
 
@@ -1010,9 +1113,9 @@ document.getElementById('genre-preset-broad')?.addEventListener('click', async (
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     renderGenreMappings(body.broad);
-    toast(`Loaded ${body.broad.length} rules. Save to apply.`);
+    note(document.querySelector('#genre-form .genre-preset-actions'), `Loaded ${body.broad.length} rules. Save to apply.`, 'info');
   } catch (error) {
-    toast(`Could not load the preset: ${error.message}`, 'err');
+    note(document.querySelector('#genre-form .genre-preset-actions'), `Could not load the preset: ${error.message}`, 'error');
   }
 });
 document.getElementById('genre-add-custom')?.addEventListener('click', () => {
@@ -1144,7 +1247,7 @@ async function loadGenreBackfill(retry = false) {
   // The status line is not a live region (it rewrites every two seconds while running), so the
   // end of a run is announced once, here.
   if (previous?.status === 'Running' && run.status !== 'Running') {
-    toast(`${run.dryRun ? 'Preview' : 'Genre run'} ${run.status === 'Completed' ? 'finished' : run.status.toLowerCase()}: ${run.changed} file(s)${run.dryRun ? ' would change' : ' changed'}.`,
+    backfillNote(`${run.dryRun ? 'Preview' : 'Genre run'} ${run.status === 'Completed' ? 'finished' : run.status.toLowerCase()}: ${run.changed} file(s)${run.dryRun ? ' would change' : ' changed'}.`,
       run.status === 'Failed' ? 'error' : 'ok');
   }
 
@@ -1157,6 +1260,10 @@ async function loadGenreBackfill(retry = false) {
     genreBackfillPoll = null;
   }
   return run;
+}
+
+function backfillNote(message, kind = 'ok') {
+  note(document.querySelector('#genre-backfill-actions .genre-preset-actions'), message, kind);
 }
 
 async function startGenreBackfill(dryRun, scopeOverride = null) {
@@ -1180,10 +1287,10 @@ async function startGenreBackfill(dryRun, scopeOverride = null) {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    toast(body.error || `Could not start: HTTP ${response.status}`, 'error');
+    backfillNote(body.error || `Could not start: HTTP ${response.status}`, 'error');
     return;
   }
-  toast(dryRun ? 'Previewing. Nothing is being written.' : 'Applying changes.');
+  backfillNote(dryRun ? 'Previewing. Nothing is being written.' : 'Applying changes.', 'info');
   await loadGenreBackfill();
 }
 
@@ -1203,10 +1310,10 @@ document.getElementById('genre-backfill-cancel')?.addEventListener('click', asyn
   const response = await genreBackfillFetch('/api/admin/genre/backfill/cancel', { method: 'POST' });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    toast(body.error || `Could not cancel: HTTP ${response.status}`, 'error');
+    backfillNote(body.error || `Could not cancel: HTTP ${response.status}`, 'error');
     return;
   }
-  toast('Cancelling after the current file.');
+  backfillNote('Cancelling after the current file.', 'info');
   await loadGenreBackfill();
 });
 document.getElementById('genre-backfill-resume')?.addEventListener('click', async () => {
@@ -1216,15 +1323,15 @@ document.getElementById('genre-backfill-resume')?.addEventListener('click', asyn
       && !confirm(`Resume writing genres from file ${run.processed + 1} of ${run.total}?`)) return;
   const response = await genreBackfillFetch('/api/admin/genre/backfill/resume', { method: 'POST' });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) { toast(body.error || 'Could not resume.', 'error'); return; }
+  if (!response.ok) { backfillNote(body.error || 'Could not resume.', 'error'); return; }
   await loadGenreBackfill();
 });
 document.getElementById('genre-backfill-undo')?.addEventListener('click', async () => {
   if (!confirm('Put back the genre on every file changed since the last undo? Only the genre is restored, and files moved since then stay changed.')) return;
   const response = await genreBackfillFetch('/api/admin/genre/backfill/undo', { method: 'POST' });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) { toast(body.error || 'Could not undo.', 'error'); return; }
-  toast('Restoring genres.');
+  if (!response.ok) { backfillNote(body.error || 'Could not undo.', 'error'); return; }
+  backfillNote('Restoring genres.', 'info');
   await loadGenreBackfill();
 });
 
@@ -1337,6 +1444,7 @@ document.getElementById('f-action-users')?.addEventListener('input', syncLibrary
 // same way: fetch, sign in once on a 401, then one row per entry.
 async function showSessionTable(holder, path, head, row, summary = () => '') {
   if (!holder) return;
+  holder.innerHTML = stateBlock('loading', 'Loading…');
   try {
     let response = await api(path, { credentials: 'same-origin' });
     if (response.status === 401 && await browseAuthenticate(holder)) {
@@ -1347,7 +1455,7 @@ async function showSessionTable(holder, path, head, row, summary = () => '') {
     const note = summary(body);
     const lead = note ? `<p class="set-info-d">${note}</p>` : '';
 
-    if (!body.entries?.length) { holder.innerHTML = `${lead}<p class="set-info-d">Nothing yet.</p>`; return; }
+    if (!body.entries?.length) { holder.innerHTML = `${lead}${stateBlock('empty', 'Nothing yet.')}`; return; }
     holder.innerHTML = `${lead}
       <div class="config-table">
         <div class="config-row config-row-head genre-change-row">
@@ -1358,7 +1466,7 @@ async function showSessionTable(holder, path, head, row, summary = () => '') {
           </div>`).join('')}
       </div>`;
   } catch (error) {
-    holder.innerHTML = `<div class="field-error" role="alert">${esc(error.message)}</div>`;
+    holder.innerHTML = stateBlock('error', error.message);
   }
 }
 
@@ -1403,9 +1511,9 @@ document.getElementById('duplicates-scan')?.addEventListener('click', async (eve
     const response = await api('/api/admin/duplicates/scan', { method: 'POST' });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-    toast('Scanning the library for duplicates. What it finds shows under Questions.', 'ok');
+    note(button, 'Scanning now. What it finds shows under Questions.');
   } catch (error) {
-    toast(error.message, 'error');
+    note(button, error.message, 'error');
   } finally {
     button.disabled = false;
   }
@@ -1414,11 +1522,10 @@ document.getElementById('duplicates-scan')?.addEventListener('click', async (eve
 document.getElementById('lidarr-test-connection')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;
   const form = document.getElementById('lidarr-connection-form');
-  const status = form?.querySelector('.saved-status');
   const baseUrl = document.getElementById('f-lidarr-url')?.value ?? '';
   const apiKey = document.getElementById('f-lidarr-key')?.value ?? '';
   button.disabled = true;
-  if (status) status.textContent = 'Testing…';
+  saveStatus(form, 'Testing…', 'busy');
   try {
     const r = await api('/api/admin/lidarr/test', {
       method: 'POST',
@@ -1428,11 +1535,9 @@ document.getElementById('lidarr-test-connection')?.addEventListener('click', asy
     const result = await r.json();
     if (!r.ok) throw new Error(result.error || `HTTP ${r.status}`);
     populateLidarrOptions(result.options || {});
-    if (status) status.textContent = result.message || 'Connected to Lidarr.';
-    toast(result.message || 'Connected to Lidarr.', 'ok');
+    saveStatus(form, result.message || 'Connected to Lidarr.');
   } catch (err) {
-    if (status) status.textContent = `Test failed: ${err.message}`;
-    toast(`Lidarr test failed: ${err.message}`, 'error');
+    saveStatus(form, `Test failed: ${err.message}`, 'error');
   } finally {
     button.disabled = false;
   }
@@ -1561,7 +1666,7 @@ if (rawForm) {
     } catch (err) {
       rawError.textContent = err.message;
       rawError.hidden = false;
-      toast('Fix JSON errors before saving.', 'error');
+      rawEditor.focus();
       return;
     }
     if (!confirm('Replace settings.json with exactly this text? Every value shown here, including ones that came from environment variables, is written into the file and overrides .env from now on. Every settings card reloads afterwards.')) return;
@@ -1578,14 +1683,14 @@ if (rawForm) {
       });
       const result = await r.json();
       if (!r.ok) throw new Error(result.error || `HTTP ${r.status}`);
-      if (rawSavedStatus) rawSavedStatus.textContent = `Saved · ${new Date().toLocaleTimeString()} · ${result.bytes} bytes`;
+      if (rawSavedStatus) rawSavedStatus.innerHTML = `${icon('i-check-circle-fill')}<span>Saved at ${esc(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}, ${esc(result.bytes)} bytes</span>`;
       rawDirty = false;
-      toast('Settings file saved.', 'ok');
       // Refresh the form-by-form view so any open tab reflects changes.
       await loadSettings();
     } catch (err) {
       if (rawSavedStatus) rawSavedStatus.textContent = '';
-      toast(`Save failed: ${err.message}`, 'error');
+      rawError.textContent = `Not saved: ${err.message}`;
+      rawError.hidden = false;
     } finally {
       submit.disabled = false;
     }
@@ -1594,8 +1699,7 @@ if (rawForm) {
   document.getElementById('raw-reload')?.addEventListener('click', async () => {
     if (rawDirty && !confirm('Discard your edits and reload settings.json from disk?')) return;
     await loadRawConfig(true);
-    if (rawSavedStatus) rawSavedStatus.textContent = `Reloaded · ${new Date().toLocaleTimeString()}`;
-    toast('Reloaded from disk.', 'ok');
+    if (rawSavedStatus) rawSavedStatus.innerHTML = `${icon('i-check-circle-fill')}<span>Reloaded from disk</span>`;
   });
 }
 
@@ -1625,7 +1729,8 @@ async function loadConfigSources() {
       configTable.appendChild(div);
     }
   } catch (e) {
-    configTable.querySelector('.config-loading').textContent = `failed: ${e.message}`;
+    const loading = configTable.querySelector('.config-loading');
+    if (loading) loading.innerHTML = stateBlock('error', `Could not load the values: ${e.message}`);
   }
 }
 
@@ -2389,7 +2494,8 @@ detectBtn?.addEventListener('click', async () => {
         b.addEventListener('click', () => {
           urlInput.value = b.dataset.url;
           urlInput.dispatchEvent(new Event('input', { bubbles: true }));
-          if (typeof toast === 'function') toast('URL filled in — Save to apply.', 'ok');
+          result.querySelectorAll('.detect-pick').forEach(other => other.classList.toggle('is-picked', other === b));
+          note(result.querySelector('.detect-list'), 'Filled in above. Save to apply.');
         }));
     }
   } catch (e) {
@@ -2493,7 +2599,7 @@ async function loadFetched({ withAcquisitions = true } = {}) {
     const data = await r.json();
     const items = data.downloads || [];
     if (!items.length) {
-      list.innerHTML = '<div class="dl-empty">Nothing fetched yet. Heart a song Octo found for you in your music app, and it shows up here once it is in your library.</div>';
+      list.innerHTML = stateBlock('empty', 'Nothing fetched yet. Heart a song Octo found for you in your music app, and it shows up here once it is in your library.');
       return;
     }
     list.innerHTML = items.map(d => {
@@ -2522,7 +2628,7 @@ async function loadFetched({ withAcquisitions = true } = {}) {
       </div>`;
     }).join('');
   } catch (e) {
-    list.innerHTML = `<div class="dl-empty">Couldn't load the log: ${escapeHtml(e.message || 'error')}</div>`;
+    list.innerHTML = stateBlock('error', `Couldn't load the log: ${e.message || 'error'}`);
   }
 }
 document.getElementById('fetched-refresh')?.addEventListener('click', loadFetched);
@@ -2607,7 +2713,12 @@ function bindCopy(buttonId, getAddress) {
     if (!addr) return;
     try {
       await navigator.clipboard.writeText(addr);
-      if (typeof toast === 'function') toast('Address copied.', 'ok');
+      const button = document.getElementById(buttonId);
+      const label = button?.querySelector('span');
+      if (label) {
+        label.textContent = 'Copied';
+        setTimeout(() => { label.textContent = 'Copy'; }, 1600);
+      }
     } catch { /* clipboard blocked; user can select manually */ }
   });
 }
@@ -3051,7 +3162,7 @@ async function lyricsLibraryAction(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   });
-  if (!response.ok) toast(await lyricsError(response), 'err');
+  if (!response.ok) note(document.getElementById('lyrics-library-cancel'), await lyricsError(response), 'error');
   await loadLyricsLibrary();
 }
 
@@ -3075,10 +3186,10 @@ async function searchLyricsSongs() {
   const q = document.getElementById('lyrics-song-search')?.value.trim();
   const results = document.getElementById('lyrics-song-results');
   if (!q || !results) return;
-  results.innerHTML = '<div class="config-row"><span class="set-info-d">Searching…</span></div>';
+  results.innerHTML = stateBlock('loading', 'Searching…');
   const response = await lyricsFetch(`/api/admin/lyrics/songs?q=${encodeURIComponent(q)}`, {}, true, 'lyrics-song-results');
   if (!response.ok) {
-    results.innerHTML = `<div class="field-error" role="alert">${esc(await lyricsError(response))}</div>`;
+    results.innerHTML = stateBlock('error', await lyricsError(response));
     return;
   }
   const { songs } = await response.json();
@@ -3087,7 +3198,7 @@ async function searchLyricsSongs() {
       <span class="lyrics-song"><strong>${esc(song.title)}</strong> <span class="set-opt">${esc(song.artist)}</span>
         <span class="set-info-d">${esc(song.album ?? '')}${song.choice !== 'auto' ? ` · ${lyricsChoiceLabel(song.choice)}` : ''}</span></span>
       <span><button class="btn btn-ghost" type="button" data-lyrics-song="${esc(song.id)}">Lyrics…</button></span>
-    </div>`).join('') : '<div class="config-row"><span class="set-info-d">No songs found.</span></div>';
+    </div>`).join('') : stateBlock('empty', 'No songs found.');
 }
 
 document.getElementById('lyrics-song-search-go')?.addEventListener('click', searchLyricsSongs);
@@ -3104,7 +3215,7 @@ async function openLyricsPicker(target, manual = null) {
   const list = document.getElementById('lyrics-candidates');
   if (!picker || !list) return;
   picker.hidden = false;
-  list.innerHTML = '<div class="config-row"><span class="set-info-d">Asking every lyrics source… this takes a few seconds.</span></div>';
+  list.innerHTML = stateBlock('loading', 'Asking every lyrics source. This takes a few seconds.');
   picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
   const query = new URLSearchParams();
@@ -3114,7 +3225,7 @@ async function openLyricsPicker(target, manual = null) {
   if (manual?.title) query.set('title', manual.title);
   const response = await lyricsFetch(`/api/admin/lyrics/candidates?${query}`, {}, true, 'lyrics-candidates');
   if (!response.ok) {
-    list.innerHTML = `<div class="field-error" role="alert">${esc(await lyricsError(response))}</div>`;
+    list.innerHTML = stateBlock('error', await lyricsError(response));
     return;
   }
   const song = await response.json();
@@ -3135,7 +3246,7 @@ async function openLyricsPicker(target, manual = null) {
         <span class="lyrics-preview">${candidate.preview.map(esc).join('<br>')}</span>
       </span>
       <span><button class="btn btn-ghost" type="button" data-lyrics-candidate="${esc(candidate.id)}" ${candidate.kind === 'instrumental' ? 'disabled' : ''}>${candidate.id === song.choice ? 'In use' : 'Use these'}</button></span>
-    </div>`).join('') : '<div class="config-row"><span class="set-info-d">No source has lyrics for this. Try another title or artist above.</span></div>';
+    </div>`).join('') : stateBlock('empty', 'No source has lyrics for this. Try another title or artist above.');
 }
 
 async function chooseLyrics(candidate) {
@@ -3145,11 +3256,15 @@ async function chooseLyrics(candidate) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: lyricsPicked.id, path: lyricsPicked.path, candidate }),
   }, true, 'lyrics-candidates');
+  const picker = document.getElementById('lyrics-picker');
+  const where = picker && !picker.hidden
+    ? picker.querySelector('.genre-preset-actions')
+    : document.getElementById('lyrics-choices-list');
   if (!response.ok) {
-    toast(await lyricsError(response), 'err');
+    note(where, await lyricsError(response), 'error');
     return;
   }
-  toast(candidate === 'none' ? 'Lyrics hidden for this song.' : candidate === 'auto' ? 'Back to automatic lyrics.' : 'Lyrics chosen for this song.');
+  note(where, candidate === 'none' ? 'Lyrics hidden for this song.' : candidate === 'auto' ? 'Back to automatic lyrics.' : 'Lyrics chosen for this song.');
   document.getElementById('lyrics-picker-state').textContent = `Now: ${lyricsChoiceLabel(candidate === 'none' || candidate === 'auto' ? candidate : 'pinned')}.`;
   loadLyricsChoices();
   loadLyricsLibrary();

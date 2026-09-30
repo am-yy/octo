@@ -110,9 +110,10 @@ public sealed class SearchSongOrderCache
 
     /// <summary>
     /// The order a later page at <paramref name="songOffset"/> of <paramref name="songCount"/>
-    /// rows carries on from: the page one asked for this same count, which is the list this
-    /// page belongs to; else the latest page one no longer than the offset, which the page
-    /// starts after; else nothing, and the order is built again.
+    /// rows carries on from. Only a page one no longer than the offset fits, because the page
+    /// starts after it: of those, the one asked for this same count, which is the list this
+    /// page belongs to, else the latest. With none, the order is built again. A page starting
+    /// inside a page one's rows is not that list's next page, whatever its size.
     /// </summary>
     internal SearchSongOrder? Get(string key, int songCount, int songOffset) =>
         _orders.TryGetValue(key, out Entry? entry) ? entry!.For(songCount, songOffset) : null;
@@ -155,7 +156,7 @@ public sealed class SearchSongOrderCache
         {
             lock (_orders)
             {
-                return _orders.LastOrDefault(order => order.PageOneCount == songCount)
+                return _orders.LastOrDefault(order => order.PageOneCount == songCount && order.PageOneCount <= songOffset)
                     ?? _orders.LastOrDefault(order => order.PageOneCount <= songOffset);
             }
         }

@@ -205,6 +205,46 @@ public sealed class SearchPagingTests
         Assert.Equal(SearchPagingWebFactory.Library.Skip(20).Take(20), second);
     }
 
+    /// <summary>A page that starts inside page one's rows is not that list's next page, even at
+    /// page one's size: it used to be placed as if it were, and repeated rows the list had.</summary>
+    [Fact]
+    public void APageInsidePageOne_DoesNotBorrowItsOrder()
+    {
+        var cache = new Octo.Services.Subsonic.SearchSongOrderCache();
+        var key = Octo.Services.Subsonic.SearchSongOrderCache.Key("alice", "Test", "rest/search3", null, "paging");
+        Octo.Services.Subsonic.SearchSongOrder PageOne(int count) =>
+            Octo.Services.Subsonic.SearchSongOrder.From([], count, count, 0, []);
+        cache.Set(key, PageOne(20));
+        cache.Set(key, PageOne(50));
+
+        Assert.Equal(50, cache.Get(key, 50, 50)!.PageOneCount);
+        Assert.Equal(20, cache.Get(key, 50, 30)!.PageOneCount);
+        Assert.Null(cache.Get(key, 50, 10));
+    }
+
+    /// <summary>
+    /// Navidrome failing on a later page's library rows used to leave a page of outside songs
+    /// only, and the client never saw the rows it skipped. Now the page goes to Navidrome as
+    /// it used to, and the next try, once Navidrome answers, is the page it should be.
+    /// </summary>
+    [Fact]
+    public async Task ALaterPage_WhenNavidromeFails_IsNotMadeFromTheOrderAlone()
+    {
+        await using var fixture = new SearchPagingWebFactory();
+        using var client = fixture.CreateClient();
+
+        await PageAsync(client, 0, 20);
+        fixture.Upstream.FailLaterSongPages = true;
+        var failed = await client.GetStringAsync(
+            "/rest/search3.view?query=paging&songCount=20&songOffset=20&albumCount=0&artistCount=0" +
+            "&u=alice&t=token&s=salt&v=1.16.1&c=Test&f=json");
+        fixture.Upstream.FailLaterSongPages = false;
+        var second = await PageAsync(client, 20, 20);
+
+        Assert.DoesNotContain("ph-", failed);
+        Assert.Equal(WholeSearch.Skip(19).Take(20), second);
+    }
+
     [Fact]
     public async Task ALaterAlbumPage_DoesNotRepeatTheOutsideAlbums()
     {
@@ -322,6 +362,9 @@ internal sealed class SearchPagingUpstream : HttpMessageHandler
     /// <summary>When set, Last.fm answers in reverse, as a later build might.</summary>
     public bool Reshuffle { get; set; }
 
+    /// <summary>When set, a search page past the first fails with a 503.</summary>
+    public bool FailLaterSongPages { get; set; }
+
     public List<(int Offset, int Count)> SongPages(string endpoint) =>
         _songPages.Where(page => page.Endpoint == endpoint).Select(page => (page.Offset, page.Count)).ToList();
 
@@ -363,6 +406,8 @@ internal sealed class SearchPagingUpstream : HttpMessageHandler
         var offset = Number("songOffset", 0);
         var count = Number("songCount", 20);
         _songPages.Enqueue((endpoint, offset, count));
+        if (FailLaterSongPages && offset > 0)
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
         var ids = SearchPagingWebFactory.Library.Skip(Math.Max(0, offset)).Take(Math.Max(0, count)).ToList();
         string Title(string id) => "Library Song " + id["lib-".Length..];
         var envelope = endpoint == "search2" ? "searchResult2" : "searchResult3";

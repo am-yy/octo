@@ -1188,10 +1188,12 @@ public class SubsonicController : ControllerBase
         var localResult = await _proxyService.RelaySafeAsync(searchEndpoint, localParams);
         if (IsFailedSubsonicBody(localResult.Body, localResult.ContentType))
             return File(localResult.Body!, localResult.ContentType ?? $"application/{format}");
+        // Navidrome did not answer. The page is not made from the order alone: without its
+        // library rows it would be short, and the client, taking it as it came, would never
+        // see those rows. It goes to Navidrome as every later page used to.
+        if (!localResult.Success || localResult.Body is null) return null;
 
-        var localParsed = localResult.Success && localResult.Body != null
-            ? _modelMapper.ParseSearchResponse(localResult.Body, localResult.ContentType)
-            : (Songs: new List<object>(), Albums: new List<object>(), Artists: new List<object>());
+        var localParsed = _modelMapper.ParseSearchResponse(localResult.Body, localResult.ContentType);
         var leading = localParsed.Songs.Take(page.LeadingLocals).ToList();
         var trailing = localParsed.Songs.Skip(page.LeadingLocals).Take(page.TrailingLocals).ToList();
 

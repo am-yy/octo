@@ -489,4 +489,28 @@ public class SubsonicResponseBuilderTests
         Assert.NotNull(albumElement.Attribute("created"));
         Assert.True(DateTime.TryParse(albumElement.Attribute("created")!.Value, out _));
     }
+
+    [Fact]
+    public void ConvertAlbumToJson_CarriesDuration()
+    {
+        var album = new Album
+        {
+            Id = "album123", Title = "Test Album", Artist = "Test Artist",
+            Songs = [new Song { Duration = 200 }, new Song { Duration = null }, new Song { Duration = 100 }],
+        };
+
+        var fields = Assert.IsType<Dictionary<string, object>>(_builder.ConvertAlbumToJson(album));
+
+        Assert.Equal(300, fields["duration"]);
+    }
+
+    [Fact]
+    public void ConvertAlbumToXml_CarriesDuration_EvenWithoutKnownSongs()
+    {
+        var album = new Album { Id = "album123", Title = "Test Album", Artist = "Test Artist" };
+
+        var element = _builder.ConvertAlbumToXml(album, XNamespace.Get("http://subsonic.org/restapi"));
+
+        Assert.Equal("0", element.Attribute("duration")?.Value);
+    }
 }

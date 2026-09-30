@@ -4,6 +4,7 @@ using Octo.Models.Domain;
 using Octo.Models.Download;
 using Octo.Models.Settings;
 using Octo.Services.Common;
+using Octo.Services.Fingerprint;
 using Octo.Services.Local;
 using Octo.Services.Metadata;
 using Octo.Services.Notifications;
@@ -50,6 +51,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     /// <summary>The live progress list. Lidarr reports no bytes, so it only ever hears
     /// accepted, landed, done and failed from here.</summary>
     private readonly AcquisitionTracker? _tracker;
+    private readonly MusicBrainzClient? _musicBrainz;
 
     public LidarrHeartAcquisitionService(
         LidarrClient client,
@@ -63,9 +65,11 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         DownloadHistoryService history,
         NotificationService notifications,
         ILogger<LidarrHeartAcquisitionService> logger,
-        AcquisitionTracker? tracker = null)
+        AcquisitionTracker? tracker = null,
+        MusicBrainzClient? musicBrainz = null)
     {
         _tracker = tracker;
+        _musicBrainz = musicBrainz;
         _client = client;
         _metadata = metadata;
         _deezer = deezer;
@@ -88,6 +92,25 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         {
             var song = await _metadata.GetSongAsync(provider, externalId)
                 ?? throw new InvalidOperationException("The starred external track is no longer available.");
+
+            // Deezer names the release a hit came out on first, usually the single, which Lidarr
+            // then cannot match. MusicBrainz knows which studio album the song belongs to.
+            var studioAlbumId = _musicBrainz is null ? null
+                : await _musicBrainz.FindStudioAlbumAsync(song.Artist ?? "", song.Title ?? "", CancellationToken.None);
+            var studio = studioAlbumId is null ? null : await _client.ResolveAlbumByForeignIdAsync(studioAlbumId);
+            if (studio is not null)
+            {
+                song.Album = studio.Title;
+                await QueueResolvedAlbumAsync(new Album
+                {
+                    Title = studio.Title,
+                    Artist = studio.Artist,
+                    Year = studio.Year,
+                    Songs = new List<Song> { song },
+                }, requestedBy, studio);
+                return;
+            }
+
             var enriched = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true);
             var albumTitle = enriched?.AlbumTitle;
             if (string.IsNullOrWhiteSpace(albumTitle)) albumTitle = song.Album;
@@ -135,12 +158,13 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             ? set.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList()
             : null;
 
-    private async Task QueueResolvedAlbumAsync(Album album, string? requestedBy = null)
+    private async Task QueueResolvedAlbumAsync(Album album, string? requestedBy = null,
+        LidarrAlbumCandidate? resolved = null)
     {
         if (string.IsNullOrWhiteSpace(album.Artist) || string.IsNullOrWhiteSpace(album.Title))
             throw new InvalidOperationException("Lidarr requires an album artist and title.");
 
-        var candidate = await _client.ResolveAlbumAsync(album.Artist, album.Title, album.Year);
+        var candidate = resolved ?? await _client.ResolveAlbumAsync(album.Artist, album.Title, album.Year);
         // Before GetOrAdd, so a caller that joins an existing job is still recorded.
         AddRequester(candidate.ForeignAlbumId, requestedBy);
         var lazy = _albumJobs.GetOrAdd(candidate.ForeignAlbumId,

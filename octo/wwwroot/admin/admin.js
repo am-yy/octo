@@ -39,6 +39,7 @@ function activateTab(name, { focus = false } = {}) {
   if (name === 'sources' && typeof loadConfigSources === 'function') loadConfigSources();
   if (name === 'lastfm' && typeof loadRadioStatus === 'function') loadRadioStatus();
   if (name === 'lastfm' && typeof loadLastFmScrobbling === 'function') loadLastFmScrobbling();
+  if (name === 'lastfm' && typeof loadLastFmAccount === 'function') loadLastFmAccount();
   if (focus) {
     window.scrollTo({ top: 0 });
     const heading = document.querySelector(`section[data-pane="${name}"] h1`);
@@ -224,6 +225,8 @@ async function loadSettings() {
   loadLyricsChoices();
   loadRadioStatus();
   loadLastFmScrobbling();
+  // Only when it is the tab on screen; opening the tab later checks then.
+  if (document.querySelector('[data-pane="lastfm"].active')) loadLastFmAccount();
 
   // Meta references
   const cfgPath = document.getElementById('meta-config-path');
@@ -456,6 +459,8 @@ document.querySelectorAll('form[data-section]').forEach(form => {
       if (currentSettings?.LibraryActions?.DryRun && dry && !dry.checked
           && !confirm('Turn off rehearsal mode? From the next check, a track added to an action playlist, or rated if ratings are on, moves a real file into quarantine.')) return;
     }
+
+    if (form.id === 'lastfm-account-form' && !(await lastFmAccountMaySave(form))) return;
 
     const { patch, needsRestart, invalid } = collectPatch(form);
     if (invalid) {
@@ -1799,11 +1804,88 @@ document.getElementById('radio-reset')?.addEventListener('click', async event =>
 });
 
 // ────────────────────────────────────────────────────────────────
+// Last.fm account: check the API key and shared secret with Last.fm
+// ────────────────────────────────────────────────────────────────
+const LFM_KEY_TEXT = {
+  ok: ['ok', 'Last.fm knows this key.'],
+  invalid: ['bad', "Last.fm doesn't know this key. Copy the API key from your app's page on Last.fm."],
+  unreachable: ['warn', "Couldn't reach Last.fm to check this key."],
+};
+const LFM_SECRET_TEXT = {
+  ok: ['ok', 'Matches this key. Scrobbling is ready.'],
+  invalid: ['bad', "This isn't the shared secret of that API key. Copy both from the same app on Last.fm."],
+  'same-as-key': ['bad', 'This is the API key again. The shared secret is the other value, on the line under it.'],
+  missing: ['warn', 'Add it to scrobble outside plays. Discovery and radio work without it.'],
+};
+
+function showLastFmCheck(id, entry) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.hidden = !entry;
+  if (!entry) return;
+  el.className = `lfm-check lfm-check-${entry[0]}`;
+  el.textContent = entry[1];
+}
+
+function renderLastFmCheck(check) {
+  showLastFmCheck('lfm-key-check', LFM_KEY_TEXT[check.key]);
+  showLastFmCheck('lfm-secret-check', check.key === 'ok' ? LFM_SECRET_TEXT[check.secret] : null);
+  const guide = document.getElementById('lfm-setup-guide');
+  if (guide) guide.hidden = check.key === 'ok' && check.secret === 'ok';
+}
+
+async function checkLastFmAccount(apiKey, apiSecret) {
+  const r = await api('/api/admin/lastfm/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey, apiSecret }),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// On opening the tab: what the saved values are worth, without asking Last.fm when nothing is saved.
+async function loadLastFmAccount() {
+  if (!currentSettings) return; // the settings load calls this once they are in
+  const key = currentSettings.LastFm?.ApiKey;
+  if (!key) { renderLastFmCheck({ key: 'missing', secret: 'missing' }); return; }
+  try { renderLastFmCheck(await checkLastFmAccount(null, null)); } catch { /* the notes stay as they were */ }
+}
+
+// Called by the form's Save before anything is written. False stops the save.
+async function lastFmAccountMaySave(form) {
+  const key = form.querySelector('[name="LastFm.ApiKey"]')?.value.trim() || '';
+  const secret = form.querySelector('[name="LastFm.ApiSecret"]')?.value.trim() || '';
+  if (!key) { renderLastFmCheck({ key: 'missing', secret: 'missing' }); return true; }
+  let check;
+  try { check = await checkLastFmAccount(key, secret); } catch { return true; }
+  renderLastFmCheck(check);
+  if (check.key === 'invalid' || ['invalid', 'same-as-key'].includes(check.secret)) {
+    toast('Nothing saved. Last.fm did not accept these; see the note under each field.', 'error');
+    return false;
+  }
+  return true;
+}
+
+// ────────────────────────────────────────────────────────────────
 // Last.fm scrobbling: connect each Navidrome user to their own Last.fm
 // ────────────────────────────────────────────────────────────────
-// The approval page for each user part way through connecting. Kept only in this page: after a
-// reload the admin presses Connect again, which asks Last.fm for a fresh link.
-const lfmApprovalLinks = new Map();
+// Connect opens Last.fm in a new tab, and this page asks Octo every few seconds whether the
+// approval has happened, so there is nothing to come back and press. The link lives on the
+// server while it waits, so a reload picks the wait up again.
+const LFM_POLL_MS = 3000;
+const lfmPolls = new Map();      // user (lower case) -> timer
+const lfmTabs = new Map();       // user (lower case) -> the tab this page opened for them
+const lfmChecking = new Set();   // users with a check out right now
+let lfmLastUsers = [];
+
+function lfmAgo(iso) {
+  const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (seconds < 90) return 'just now';
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
 async function loadLastFmScrobbling() {
   const list = document.getElementById('lfm-scrobble-users');
@@ -1817,62 +1899,138 @@ async function loadLastFmScrobbling() {
     state.hidden = d.available && ready && d.enabled;
     state.className = `lfm-scrobble-state notice ${ready ? '' : 'notice-warn'}`;
     state.textContent = !d.available ? 'Last.fm scrobbling is not available in this build.'
-      : !d.hasApiKey ? 'Save a Last.fm API key above to start.'
-      : !d.hasApiSecret ? 'Save the shared secret above. Last.fm needs it to accept scrobbles from Octo.'
+      : !d.hasApiKey ? 'Save a Last.fm API key and shared secret above to connect listeners.'
+      : !d.hasApiSecret ? 'Save the shared secret above to connect listeners. Last.fm needs it to take plays from Octo.'
       : 'Scrobbling is switched off. Connected listeners stay connected.';
     const users = d.users || [];
-    list.innerHTML = users.length ? users.map(u => {
-      const link = lfmApprovalLinks.get(u.user.toLowerCase());
-      const waiting = u.awaitingApproval && link;
-      const detail = u.connected
-        ? `Connected as <strong>${escapeHtml(u.lastFmUser || 'a Last.fm account')}</strong>.`
-        : waiting ? 'Open Last.fm, signed in as this listener, allow access, then press Finish.'
-        : 'Not connected.';
-      const notice = u.notice ? `<span class="set-info-d lfm-user-notice">${escapeHtml(u.notice)}</span>` : '';
-      const actions = u.connected
-        ? `<button class="btn btn-ghost" type="button" data-lfm-action="disconnect" data-user="${escapeHtml(u.user)}">Disconnect</button>`
-        : waiting
-          ? `<a class="btn" href="${escapeHtml(link)}" target="_blank" rel="noopener">Open Last.fm</a>
-             <button class="btn btn-primary" type="button" data-lfm-action="finish" data-user="${escapeHtml(u.user)}">Finish</button>`
-          : `<button class="btn" type="button" data-lfm-action="connect" data-user="${escapeHtml(u.user)}" ${ready ? '' : 'disabled'}>Connect</button>`;
-      return `<div class="set-row"><div class="set-info"><span class="set-info-t">${escapeHtml(u.user)}</span><span class="set-info-d">${detail}</span>${notice}</div><div class="set-ctrl">${actions}</div></div>`;
-    }).join('') : '<div class="radio-empty">Listeners appear here after they sign in through Octo. You can also connect one by name below.</div>';
+    lfmLastUsers = users;
+    list.innerHTML = users.length ? users.map(u => lfmRow(u, ready)).join('')
+      : '<div class="radio-empty">Listeners appear here once they have used Octo. You can also connect one by name below.</div>';
     const add = document.getElementById('lfm-scrobble-add');
     if (add) add.disabled = !ready;
+    // Keep waiting on every Connect the server still holds, and stop for the rest.
+    const waiting = new Set(users.filter(u => u.awaitingApproval && !u.connected).map(u => u.user.toLowerCase()));
+    for (const u of users) if (waiting.has(u.user.toLowerCase())) lfmWatch(u.user);
+    for (const key of [...lfmPolls.keys()]) if (!waiting.has(key)) lfmStopWatching(key);
   } catch (e) {
     list.innerHTML = `<div class="radio-empty">Scrobbling status unavailable: ${escapeHtml(e.message)}</div>`;
   }
 }
 
+function lfmRow(u, ready) {
+  const name = escapeHtml(u.user);
+  const waiting = u.awaitingApproval && !u.connected && u.approvalUrl;
+  let detail;
+  let actions;
+  if (u.connected) {
+    const sent = u.lastSent
+      ? `<span class="set-info-d">Last sent: ${escapeHtml(u.lastSent.title)} by ${escapeHtml(u.lastSent.artist)}, ${lfmAgo(u.lastSent.playedAtUtc)}.</span>`
+      : '';
+    detail = `<span class="set-info-d lfm-state"><span class="status-dot ok"></span>Connected as <strong>${escapeHtml(u.lastFmUser || 'a Last.fm account')}</strong>.</span>${sent}`;
+    actions = `<button class="btn btn-ghost" type="button" data-lfm-action="disconnect" data-user="${name}">Disconnect</button>`;
+  } else if (waiting) {
+    detail = `<span class="set-info-d lfm-state"><span class="status-dot pending"></span>Waiting for Last.fm. Allow access in the tab that opened; this updates by itself.</span>
+      <span class="set-info-d lfm-hint">Signed in to Last.fm as someone else? Sign in as ${name} there first, or copy the link and send it to them.</span>`;
+    actions = `<a class="btn btn-primary" href="${escapeHtml(u.approvalUrl)}" target="lastfm-${name}" rel="noopener">Open Last.fm</a>
+      <button class="btn btn-ghost" type="button" data-lfm-action="copy" data-user="${name}">Copy link</button>
+      <button class="btn btn-ghost" type="button" data-lfm-action="cancel" data-user="${name}">Cancel</button>`;
+  } else {
+    detail = '<span class="set-info-d">Not connected.</span>';
+    actions = `<button class="btn" type="button" data-lfm-action="connect" data-user="${name}" ${ready ? '' : 'disabled title="Save the API key and shared secret first"'}>Connect</button>`;
+  }
+  const notice = u.notice ? `<span class="set-info-d lfm-user-notice">${escapeHtml(u.notice)}</span>` : '';
+  return `<div class="set-row lfm-user"><div class="set-info"><span class="set-info-t">${name}</span>${detail}${notice}</div><div class="set-ctrl lfm-actions">${actions}</div></div>`;
+}
+
+function lfmWatch(user) {
+  const key = user.toLowerCase();
+  if (lfmPolls.has(key)) return;
+  lfmPolls.set(key, setInterval(() => lfmTryFinish(user), LFM_POLL_MS));
+}
+
+function lfmStopWatching(key) {
+  clearInterval(lfmPolls.get(key));
+  lfmPolls.delete(key);
+}
+
+// One quiet check: 409 means Last.fm has not seen the approval yet, so keep waiting.
+async function lfmTryFinish(user) {
+  const key = user.toLowerCase();
+  if (lfmChecking.has(key)) return;
+  lfmChecking.add(key);
+  try {
+    const r = await api('/api/admin/lastfm/scrobble/finish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }),
+    });
+    if (r.status === 409) return;
+    const d = await r.json().catch(() => ({}));
+    lfmStopWatching(key);
+    const tab = lfmTabs.get(key);
+    lfmTabs.delete(key);
+    if (r.ok) {
+      try { tab?.close(); } catch { /* not ours to close any more */ }
+      toast(`${user} is connected to Last.fm as ${d.lastFmUser || 'their account'}.`, 'ok');
+    } else {
+      toast(d.error || `Connecting ${user} failed.`, 'error');
+    }
+    await loadLastFmScrobbling();
+  } catch {
+    // A check that did not get through is tried again on the next tick.
+  } finally {
+    lfmChecking.delete(key);
+  }
+}
+
 async function lastFmScrobbleAction(action, user, button) {
   if (!user) return;
+  const key = user.toLowerCase();
+  if (action === 'copy') {
+    const url = lfmLastUsers.find(u => u.user.toLowerCase() === key)?.approvalUrl;
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); toast('Link copied. It works for an hour.', 'ok'); }
+    catch { prompt('Copy this link:', url); }
+    return;
+  }
   if (action === 'disconnect'
       && !confirm(`Stop scrobbling outside plays for “${user}”? Their Last.fm history is untouched.`)) return;
+  // The tab has to open inside the click or the browser blocks it; Last.fm's page goes into it
+  // once Octo has the link.
+  let tab = null;
+  if (action === 'connect') {
+    tab = window.open('', `lastfm-${user}`);
+    try {
+      tab?.document.write('<title>Last.fm</title><p style="font:15px system-ui;padding:32px;color:#555">Opening Last.fm…</p>');
+    } catch { /* already showing Last.fm */ }
+  }
   if (button) button.disabled = true;
   try {
     const r = await api(`/api/admin/lastfm/scrobble/${action}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }),
     });
     const d = await r.json().catch(() => ({}));
-    if (r.status === 409) { toast(d.error || 'Last.fm has not seen the approval yet.', 'error'); return; }
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     if (action === 'connect') {
-      lfmApprovalLinks.set(user.toLowerCase(), d.url);
-      toast('Open Last.fm, allow access, then press Finish.');
-    } else if (action === 'finish') {
-      lfmApprovalLinks.delete(user.toLowerCase());
-      toast(`${user} is connected as ${d.lastFmUser || 'their Last.fm account'}.`);
-      // Saved settings reach Octo a moment after the file is written.
-      await new Promise(resolve => setTimeout(resolve, 600));
-    } else {
-      toast(d.message || 'Disconnected.');
-      await new Promise(resolve => setTimeout(resolve, 600));
+      if (tab && !tab.closed) {
+        // Last.fm's page gets no hold on this one.
+        try { tab.opener = null; } catch { /* ignore */ }
+        tab.location.href = d.url;
+        lfmTabs.set(key, tab);
+      } else {
+        toast('Your browser kept the Last.fm tab from opening. Use Open Last.fm.', 'error');
+      }
+      lfmWatch(user);
+    } else if (action === 'cancel') {
+      lfmStopWatching(key);
+      try { lfmTabs.get(key)?.close(); } catch { /* ignore */ }
+      lfmTabs.delete(key);
+    } else if (action === 'disconnect') {
+      toast(d.message || 'Disconnected.', 'ok');
     }
     await loadLastFmScrobbling();
   } catch (e) {
-    toast(`${action === 'disconnect' ? 'Disconnect' : 'Connect'} failed: ${e.message}`, 'error');
+    try { tab?.close(); } catch { /* ignore */ }
+    const verb = { disconnect: 'Disconnect', cancel: 'Cancel' }[action] || 'Connect';
+    toast(`${verb} failed: ${e.message}`, 'error');
   } finally {
     if (button) button.disabled = false;
   }
@@ -1887,8 +2045,14 @@ document.getElementById('lfm-scrobble-add')?.addEventListener('click', async eve
   const user = input?.value.trim();
   if (!user) { input?.focus(); return; }
   await lastFmScrobbleAction('connect', user, event.currentTarget);
-  if (lfmApprovalLinks.has(user.toLowerCase())) input.value = '';
+  if (lfmPolls.has(user.toLowerCase())) input.value = '';
 });
+// Coming back from the Last.fm tab: check straight away rather than on the next tick.
+function lfmCheckNow() {
+  for (const u of lfmLastUsers) if (lfmPolls.has(u.user.toLowerCase())) lfmTryFinish(u.user);
+}
+window.addEventListener('focus', lfmCheckNow);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) lfmCheckNow(); });
 
 // ────────────────────────────────────────────────────────────────
 // Notifications: send a test through every configured transport

@@ -14,8 +14,18 @@ namespace Octo.Services.LastFm;
 public sealed record LastFmTrack(string Artist, string Title, string? Album, int? DurationSeconds);
 
 /// <summary>One Navidrome user as the dashboard's Last.fm scrobbling card shows them.</summary>
+/// <param name="ApprovalUrl">The last.fm page that approves Octo, while a Connect is waiting on it.</param>
+/// <param name="LastSent">The latest play Last.fm took for this listener since Octo started.</param>
 public sealed record LastFmScrobbleUser(string User, bool Connected, string? LastFmUser,
-    bool AwaitingApproval, string? Notice);
+    bool AwaitingApproval, string? Notice, string? ApprovalUrl = null, LastFmSentPlay? LastSent = null);
+
+/// <summary>A play Last.fm accepted, as the dashboard shows it.</summary>
+public sealed record LastFmSentPlay(string Artist, string Title, DateTime PlayedAtUtc);
+
+/// <summary>What Last.fm said of an API key and shared secret, for the dashboard to show beside
+/// each field. <paramref name="Key"/> is ok, invalid, missing or unreachable;
+/// <paramref name="Secret"/> is ok, invalid, same-as-key, missing or unchecked.</summary>
+public sealed record LastFmCredentialCheck(string Key, string Secret, string? Message = null);
 
 /// <summary>A Last.fm refusal the dashboard can show as it is.</summary>
 public sealed class LastFmScrobbleException(string message, int code = 0) : Exception(message)
@@ -86,6 +96,11 @@ public sealed class LastFmScrobbleService
     private readonly ConcurrentDictionary<string, DateTime> _refusedAt = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (string Token, DateTime Expires)> _pendingApprovals =
         new(StringComparer.OrdinalIgnoreCase);
+    // A session Finish has just written. settings.json reaches the running settings a moment
+    // after the write, and until then the listener would read as not connected, so the session
+    // is used from here until the reloaded settings carry the same key.
+    private readonly ConcurrentDictionary<string, LastFmUserSession> _justSaved = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, LastFmSentPlay> _lastSent = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _notices = new(StringComparer.OrdinalIgnoreCase);
 
     public LastFmScrobbleService(IHttpClientFactory httpClientFactory,
@@ -198,7 +213,7 @@ public sealed class LastFmScrobbleService
         if (string.IsNullOrWhiteSpace(token))
             throw new LastFmScrobbleException(reply.Ok ? "Last.fm sent no token." : Describe(reply), reply.Error);
         _pendingApprovals[user] = (token, Now + TokenLifetime);
-        return $"{AuthUrl}?api_key={Uri.EscapeDataString(settings.ApiKey.Trim())}&token={Uri.EscapeDataString(token)}";
+        return ApprovalUrl(settings, token);
     }
 
     /// <summary>Finishes linking once the admin has approved Octo on last.fm, and saves the
@@ -243,6 +258,7 @@ public sealed class LastFmScrobbleService
             sessions[user] = new JsonObject { ["SessionKey"] = key, ["LastFmUser"] = name };
             return true;
         });
+        _justSaved[user] = session;
         _pendingApprovals.TryRemove(user, out _);
         _revokedKeys.TryRemove(key, out _);
         _refusedAt.TryRemove(key, out _);
@@ -257,6 +273,46 @@ public sealed class LastFmScrobbleService
         return session;
     }
 
+    /// <summary>Forgets a Connect that is still waiting on its approval.</summary>
+    public void CancelConnect(string username)
+    {
+        if (!string.IsNullOrWhiteSpace(username)) _pendingApprovals.TryRemove(username.Trim(), out _);
+    }
+
+    /// <summary>
+    /// Asks Last.fm whether an API key and shared secret work together, before the dashboard saves
+    /// them. A blank argument means the saved value. One signed auth.getSession with a token that
+    /// was never issued answers all three: error 10 is an unknown key, 13 a signature the secret
+    /// does not make for that key, and 4 (the token) means both are right. auth.getToken would
+    /// not do: Last.fm hands out a token whatever the signature.
+    /// </summary>
+    public async Task<LastFmCredentialCheck> CheckCredentialsAsync(string? apiKey, string? apiSecret,
+        CancellationToken cancellationToken)
+    {
+        var settings = _settings.CurrentValue;
+        var key = (string.IsNullOrWhiteSpace(apiKey) ? settings.ApiKey : apiKey).Trim();
+        var secret = (string.IsNullOrWhiteSpace(apiSecret) ? settings.ApiSecret : apiSecret).Trim();
+        if (key.Length == 0) return new("missing", secret.Length == 0 ? "missing" : "unchecked");
+        // The two look alike, and the key is the one Last.fm shows first, so this is the likely mix-up.
+        var secretState = secret.Length == 0 ? "missing"
+            : string.Equals(secret, key, StringComparison.OrdinalIgnoreCase) ? "same-as-key" : null;
+
+        var reply = await CallAsync(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["method"] = "auth.getSession",
+            ["api_key"] = key,
+            ["token"] = "00000000000000000000000000000000",
+        }, secretState is null ? secret : "", cancellationToken);
+        return reply.Error switch
+        {
+            10 or 26 => new("invalid", secretState ?? "unchecked", reply.Message),
+            13 => new("ok", secretState ?? "invalid"),
+            4 or 14 or 15 => new("ok", secretState ?? "ok"),
+            0 when reply.Ok => new("ok", secretState ?? "ok"),
+            _ => new("unreachable", secretState ?? "unchecked", Describe(reply)),
+        };
+    }
+
     /// <summary>
     /// Stops scrobbling for this user and forgets the session. Returns false when the session
     /// was not in settings.json, which means the environment sets it: it stops now, and comes back
@@ -265,13 +321,15 @@ public sealed class LastFmScrobbleService
     public bool Disconnect(string username)
     {
         var user = RequireUsername(username);
-        if (_settings.CurrentValue.SessionFor(user) is { } current)
+        if (SavedSession(_settings.CurrentValue, user) is { } current)
         {
             _revokedKeys[current.SessionKey] = 0;
             _refusedAt.TryRemove(current.SessionKey, out _);
         }
+        _justSaved.TryRemove(user, out _);
         _pendingApprovals.TryRemove(user, out _);
         _notices.TryRemove(user, out _);
+        _lastSent.TryRemove(user, out _);
         lock (_gate)
         {
             _queues.Remove(user);
@@ -288,7 +346,8 @@ public sealed class LastFmScrobbleService
     {
         var settings = _settings.CurrentValue;
         var now = Now;
-        return knownUsers.Concat(settings.UserSessions.Keys).Concat(_pendingApprovals.Keys).Concat(_notices.Keys)
+        return knownUsers.Concat(settings.UserSessions.Keys).Concat(_justSaved.Keys)
+            .Concat(_pendingApprovals.Keys).Concat(_notices.Keys)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Select(name => name.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -296,10 +355,13 @@ public sealed class LastFmScrobbleService
             .Select(name =>
             {
                 var session = ActiveSession(settings, name);
+                var waiting = _pendingApprovals.TryGetValue(name, out var pending) && pending.Expires > now;
                 return new LastFmScrobbleUser(name, session is not null,
                     session is null ? null : NullIfEmpty(session.LastFmUser),
-                    _pendingApprovals.TryGetValue(name, out var pending) && pending.Expires > now,
-                    _notices.TryGetValue(name, out var notice) ? notice : null);
+                    waiting,
+                    _notices.TryGetValue(name, out var notice) ? notice : null,
+                    waiting && IsReadyWith(settings) ? ApprovalUrl(settings, pending.Token) : null,
+                    session is not null && _lastSent.TryGetValue(name, out var sent) ? sent : null);
             })
             .ToList();
     }
@@ -450,6 +512,11 @@ public sealed class LastFmScrobbleService
                 Forget(user, batch);
             }
             Accepted(user, session.SessionKey);
+            if ((Number(attributes?["accepted"]) ?? batch.Count) > 0)
+            {
+                var latest = batch.MaxBy(play => play.PlayedAtUtc)!;
+                _lastSent[user] = new LastFmSentPlay(latest.Track.Artist.Trim(), latest.Track.Title.Trim(), latest.PlayedAtUtc);
+            }
             return;
         }
 
@@ -587,9 +654,20 @@ public sealed class LastFmScrobbleService
     }
 
     /// <summary>The listener's session unless Last.fm has revoked it. It may be resting.</summary>
-    private LastFmUserSession? SavedSession(LastFmSettings settings, string username) =>
-        settings.SessionFor(username) is { } session && !_revokedKeys.ContainsKey(session.SessionKey)
-            ? session : null;
+    private LastFmUserSession? SavedSession(LastFmSettings settings, string username)
+    {
+        var session = settings.SessionFor(username);
+        if (_justSaved.TryGetValue(username.Trim(), out var fresh))
+        {
+            // The reload has caught up once the settings carry the same key.
+            if (session?.SessionKey == fresh.SessionKey) _justSaved.TryRemove(username.Trim(), out _);
+            else session = fresh;
+        }
+        return session is not null && !_revokedKeys.ContainsKey(session.SessionKey) ? session : null;
+    }
+
+    private static string ApprovalUrl(LastFmSettings settings, string token) =>
+        $"{AuthUrl}?api_key={Uri.EscapeDataString(settings.ApiKey.Trim())}&token={Uri.EscapeDataString(token)}";
 
     /// <summary>The listener's session when it may be used right now: not revoked, and not
     /// resting after a refusal.</summary>

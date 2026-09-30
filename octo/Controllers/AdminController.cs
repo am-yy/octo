@@ -238,6 +238,33 @@ public class AdminController : ControllerBase
 
     public sealed class LastFmScrobbleUserRequest { public string User { get; set; } = string.Empty; }
 
+    public sealed class LastFmCredentialsRequest
+    {
+        public string? ApiKey { get; set; }
+        public string? ApiSecret { get; set; }
+    }
+
+    /// <summary>Checks an API key and shared secret with Last.fm before Save writes them. A blank
+    /// or placeholder value means the saved one, so the page can check a secret it never sees.</summary>
+    [HttpPost("lastfm/check")]
+    public async Task<IActionResult> CheckLastFmCredentials([FromBody] LastFmCredentialsRequest request)
+    {
+        if (_lastFmScrobbles is null) return NotFound(new { error = "Last.fm scrobbling is not available." });
+        static string? Typed(string? value) => value == SecretPlaceholder ? null : value;
+        var check = await _lastFmScrobbles.CheckCredentialsAsync(
+            Typed(request.ApiKey), Typed(request.ApiSecret), HttpContext.RequestAborted);
+        return Ok(new { key = check.Key, secret = check.Secret, message = check.Message });
+    }
+
+    /// <summary>Stops waiting on a Connect nobody is going to approve.</summary>
+    [HttpPost("lastfm/scrobble/cancel")]
+    public IActionResult CancelLastFmConnect([FromBody] LastFmScrobbleUserRequest request)
+    {
+        if (_lastFmScrobbles is null) return NotFound(new { error = "Last.fm scrobbling is not available." });
+        _lastFmScrobbles.CancelConnect(request.User ?? "");
+        return Ok(new { ok = true });
+    }
+
     /// <summary>Step one of connecting: the page on last.fm where the admin, signed in as the
     /// listener, approves Octo.</summary>
     [HttpPost("lastfm/scrobble/connect")]

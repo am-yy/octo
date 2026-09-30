@@ -556,26 +556,41 @@
         </header>
 
         <div id="discovery-off-banner" class="notice notice-warn" hidden>
-          <strong>Discovery is off.</strong> Octo needs a free Last.fm API key to find and recommend music. Without it, search and radio only return what's already in your library.
-          <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">Create a key →</a> then paste it below and Save.
+          <strong>Discovery is off.</strong> Octo needs a free Last.fm API key to find and recommend music. Without it, search and radio only return what's already in your library. The steps are below.
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Account</h3></div>
-          <form data-section="lastfm" class="set-card">
-            <div class="set-row stack">
+          <div class="set-head">
+            <h3 class="set-title">Account</h3>
+            <p class="set-desc">Octo talks to Last.fm through a free API app of your own. Save checks both values with Last.fm first.</p>
+          </div>
+          <form data-section="lastfm" class="set-card" id="lastfm-account-form">
+            <div class="set-row stack lfm-guide" id="lfm-setup-guide" hidden>
               <div class="set-info">
-                <div class="set-info-t">API key</div>
-                <div class="set-info-d">Required for discovery, and otherwise optional. Without it, search shows your library plus albums from Deezer, and radio falls back to Navidrome. Search and radio use a new key right away; cover art from Last.fm picks it up after a restart.</div>
+                <div class="set-info-t">Make your Last.fm API app</div>
+                <ol class="lfm-steps">
+                  <li>Signed in to Last.fm, open <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">Create an API account</a>.</li>
+                  <li>Any name will do, such as Octo. Leave <em>Callback URL</em> and <em>Application homepage</em> empty.</li>
+                  <li>Last.fm then shows an <strong>API key</strong> and, under it, a <strong>Shared secret</strong>. Paste both here and press Save.</li>
+                </ol>
+                <div class="set-info-d">Already made one? Your apps are listed on <a href="https://www.last.fm/api/accounts" target="_blank" rel="noopener">API accounts</a>. If yours shows no shared secret, make a new one.</div>
               </div>
-              <input class="set-input" id="f-lastfm-key" name="LastFm.ApiKey" type="password" autocomplete="new-password" placeholder="32-char hex string" />
             </div>
             <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t">Shared secret <span class="set-opt">optional</span></div>
-                <div class="set-info-d">Shown beside the API key on the same Last.fm page. Only scrobbling needs it. Once saved it is never shown again.</div>
+                <div class="set-info-t">API key</div>
+                <div class="set-info-d">Turns on discovery: outside songs in search, and radio. Without it, search shows your library plus albums from Deezer.</div>
               </div>
-              <input class="set-input" id="f-lastfm-secret" name="LastFm.ApiSecret" type="password" autocomplete="new-password" placeholder="32-char hex string" />
+              <input class="set-input" id="f-lastfm-key" name="LastFm.ApiKey" type="password" autocomplete="new-password" placeholder="32 letters and numbers" spellcheck="false" />
+              <div class="lfm-check" id="lfm-key-check" role="status" hidden></div>
+            </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Shared secret <span class="set-opt">for scrobbling</span></div>
+                <div class="set-info-d">The line under the API key on Last.fm. Once saved it is never shown again.</div>
+              </div>
+              <input class="set-input" id="f-lastfm-secret" name="LastFm.ApiSecret" type="password" autocomplete="new-password" placeholder="32 letters and numbers" spellcheck="false" />
+              <div class="lfm-check" id="lfm-secret-check" role="status" hidden></div>
             </div>
           </form>
         </div>
@@ -599,8 +614,8 @@
             <div id="lfm-scrobble-users" aria-live="polite"><div class="radio-empty">Loading…</div></div>
             <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t">Connect a listener</div>
-                <div class="set-info-d">Their Navidrome username, as they sign in. Connect gives you a Last.fm page: open it signed in as that person, allow access, then come back and press Finish.</div>
+                <div class="set-info-t">Connect someone else</div>
+                <div class="set-info-d">Their Navidrome username, exactly as they sign in. Connect opens Last.fm to approve Octo; this page notices on its own when that is done.</div>
               </div>
               <div class="lfm-connect-row">
                 <input class="set-input" id="lfm-scrobble-new-user" type="text" autocomplete="off" spellcheck="false" placeholder="Navidrome username" aria-label="Navidrome username to connect" />

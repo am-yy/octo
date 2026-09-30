@@ -448,6 +448,124 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         Assert.Empty(_lastFm.Calls);
     }
 
+    // ---- The dashboard's Connect flow -----------------------------------------------------------
+    // The settings monitor here never reloads from the file, which is the moment right after Finish
+    // on a real server: settings.json has the session, the running settings do not yet.
+
+    [Fact]
+    public async Task Finish_ShowsTheListenerConnectedBeforeTheSettingsReload()
+    {
+        await _service.BeginConnectAsync("bob", CancellationToken.None);
+        _lastFm.Approved = true;
+        await _service.FinishConnectAsync("bob", CancellationToken.None);
+
+        var bob = Assert.Single(_service.Users([]), user => user.User == "bob");
+        Assert.True(bob.Connected);
+        Assert.Equal("lfm-alice", bob.LastFmUser);
+        Assert.True(_service.IsEnabledFor("bob"));
+    }
+
+    [Fact]
+    public async Task Disconnect_RightAfterFinish_IsNotConnected()
+    {
+        await _service.BeginConnectAsync("bob", CancellationToken.None);
+        _lastFm.Approved = true;
+        await _service.FinishConnectAsync("bob", CancellationToken.None);
+
+        _service.Disconnect("bob");
+
+        Assert.DoesNotContain(_service.Users(["bob"]), user => user.Connected && user.User == "bob");
+        Assert.False(_service.IsEnabledFor("bob"));
+    }
+
+    [Fact]
+    public async Task AWaitingConnect_CarriesItsApprovalLink_UntilCancelled()
+    {
+        var url = await _service.BeginConnectAsync("bob", CancellationToken.None);
+
+        var bob = Assert.Single(_service.Users([]), user => user.User == "bob");
+        Assert.True(bob.AwaitingApproval);
+        Assert.Equal(url, bob.ApprovalUrl);
+
+        _service.CancelConnect("bob");
+
+        Assert.DoesNotContain(_service.Users([]), user => user.User == "bob");
+        await Assert.ThrowsAsync<LastFmScrobbleException>(() => _service.FinishConnectAsync("bob", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task LastSent_IsThePlayLastFmTook()
+    {
+        var playedAt = DateTime.UtcNow.AddMinutes(-3);
+        _service.Scrobble("alice", Song, playedAt);
+        await WhenIdle();
+
+        var sent = Assert.Single(_service.Users([]), user => user.User == "alice").LastSent;
+        Assert.NotNull(sent);
+        Assert.Equal(("Bladee", "Be Nice 2 Me"), (sent.Artist, sent.Title));
+        Assert.Equal(playedAt, sent.PlayedAtUtc, TimeSpan.FromSeconds(1));
+    }
+
+    // ---- Checking a key and secret before they are saved -----------------------------------------
+
+    [Fact]
+    public async Task Check_TheSavedPair_IsOk()
+    {
+        var check = await _service.CheckCredentialsAsync(null, null, CancellationToken.None);
+
+        Assert.Equal(("ok", "ok"), (check.Key, check.Secret));
+        var call = Assert.Single(_lastFm.CallsTo("auth.getSession"));
+        Assert.False(_lastFm.Approved);
+        Assert.Equal(FakeLastFm.ApiKey, call["api_key"]);
+    }
+
+    [Fact]
+    public async Task Check_ASecretFromAnotherApp_IsInvalid()
+    {
+        var check = await _service.CheckCredentialsAsync(null, "not-the-secret", CancellationToken.None);
+
+        Assert.Equal(("ok", "invalid"), (check.Key, check.Secret));
+    }
+
+    [Fact]
+    public async Task Check_TheKeyPastedAsTheSecret_SaysSo()
+    {
+        var check = await _service.CheckCredentialsAsync(FakeLastFm.ApiKey, FakeLastFm.ApiKey.ToUpperInvariant(), CancellationToken.None);
+
+        Assert.Equal(("ok", "same-as-key"), (check.Key, check.Secret));
+    }
+
+    [Fact]
+    public async Task Check_AKeyLastFmDoesNotKnow_IsInvalid()
+    {
+        _lastFm.Failures.Enqueue(10);
+
+        var check = await _service.CheckCredentialsAsync("ffffffffffffffffffffffffffffffff", null, CancellationToken.None);
+
+        Assert.Equal(("invalid", "unchecked"), (check.Key, check.Secret));
+    }
+
+    [Fact]
+    public async Task Check_LastFmDown_IsUnreachable_NotInvalid()
+    {
+        _lastFm.Failures.Enqueue(0);
+
+        var check = await _service.CheckCredentialsAsync(null, null, CancellationToken.None);
+
+        Assert.Equal(("unreachable", "unchecked"), (check.Key, check.Secret));
+    }
+
+    [Fact]
+    public async Task Check_NoKeyAtAll_IsMissing_AndAsksNothing()
+    {
+        _settings.Set(new LastFmSettings());
+
+        var check = await _service.CheckCredentialsAsync(null, null, CancellationToken.None);
+
+        Assert.Equal(("missing", "missing"), (check.Key, check.Secret));
+        Assert.Empty(_lastFm.Calls);
+    }
+
     private Task WhenIdle() => Until(() => _service.Outstanding == 0);
 
     internal static async Task Until(Func<bool> condition)
@@ -673,6 +791,8 @@ public sealed class LastFmScrobbleAdminTests
     [InlineData("/api/admin/lastfm/scrobble/connect")]
     [InlineData("/api/admin/lastfm/scrobble/finish")]
     [InlineData("/api/admin/lastfm/scrobble/disconnect")]
+    [InlineData("/api/admin/lastfm/scrobble/cancel")]
+    [InlineData("/api/admin/lastfm/check")]
     public async Task Writes_WithoutTheAdminHeader_AreRefused(string url)
     {
         await using var factory = new ScrobbleAdminFactory();
@@ -726,6 +846,23 @@ public sealed class LastFmScrobbleAdminTests
         disconnect.EnsureSuccessStatusCode();
         Assert.DoesNotContain("sk-alice", File.ReadAllText(factory.SettingsPath));
         Assert.False(factory.Services.GetRequiredService<LastFmScrobbleService>().IsEnabledFor("alice"));
+    }
+
+    /// <summary>The page never sees a saved secret, only the placeholder; checking with it checks the
+    /// stored one. A typed secret is checked as typed.</summary>
+    [Fact]
+    public async Task Check_WithThePlaceholder_ChecksTheStoredSecret()
+    {
+        await using var factory = new ScrobbleAdminFactory();
+        using var client = factory.AdminClient();
+
+        using var saved = await client.PostAsync("/api/admin/lastfm/check",
+            Json(new { apiKey = FakeLastFm.ApiKey, apiSecret = AdminController.SecretPlaceholder }));
+        using var typed = await client.PostAsync("/api/admin/lastfm/check",
+            Json(new { apiKey = FakeLastFm.ApiKey, apiSecret = "typed-wrong" }));
+
+        Assert.Equal("ok", JsonDocument.Parse(await saved.Content.ReadAsStringAsync()).RootElement.GetProperty("secret").GetString());
+        Assert.Equal("invalid", JsonDocument.Parse(await typed.Content.ReadAsStringAsync()).RootElement.GetProperty("secret").GetString());
     }
 
     /// <summary>The Raw editor writes back what it was shown. The masked session and secret must come

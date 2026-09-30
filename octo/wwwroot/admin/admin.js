@@ -10,6 +10,19 @@ function api(url, options = {}) {
   return fetch(url, { credentials: 'same-origin', ...options, headers });
 }
 
+// Every icon is one symbol in icons.svg: Phosphor glyphs as i-name, brand marks as b-name. The
+// sprite is put in the page itself, because a <use> pointing into another file cannot paint a
+// brand's gradient in every browser. Until it arrives an icon is an empty box of the right size.
+fetch('/admin/icons.svg')
+  .then(r => (r.ok ? r.text() : ''))
+  .then(svg => { if (svg) document.body.insertAdjacentHTML('afterbegin', svg); })
+  .catch(() => {});
+
+function icon(name, extraClass = '') {
+  const cls = name.startsWith('b-') ? 'icon brand' : 'icon';
+  return `<svg class="${cls}${extraClass ? ` ${extraClass}` : ''}" aria-hidden="true"><use href="#${name}"/></svg>`;
+}
+
 // ────────────────────────────────────────────────────────────────
 // Sidebar nav: tab switching
 // ────────────────────────────────────────────────────────────────
@@ -376,9 +389,7 @@ function ensureSaveBar(form) {
     <span class="unsaved-status" aria-live="polite"></span>
     <span class="saved-status"></span>
     <span class="restart-hint">
-      <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="8" cy="8" r="6"/><path d="M8 5v3M8 10.5v.5"/>
-      </svg>
+      ${icon('i-arrow-clockwise')}
       Restart required for one or more changes
     </span>
   `;
@@ -532,9 +543,9 @@ document.querySelectorAll('form[data-section]').forEach(form => {
 // Heart acquisition is a short priority chain, not a workflow graph. Keep all
 // sources visible so disabling one never destroys the user's chosen order.
 const heartSourceMeta = {
-  Soulseek: { title: 'Soulseek', detail: 'Lossless FLAC from slskd peers' },
-  YouTube: { title: 'YouTube', detail: 'Lossy MP3 from the yt-dlp shim' },
-  Lidarr: { title: 'Lidarr', detail: 'Album automation through your Lidarr server' },
+  Soulseek: { title: 'Soulseek', detail: 'Lossless FLAC from slskd peers', mark: 'b-slskd' },
+  YouTube: { title: 'YouTube', detail: 'Lossy MP3 from the yt-dlp shim', mark: 'b-youtube' },
+  Lidarr: { title: 'Lidarr', detail: 'Album automation through your Lidarr server', mark: 'b-lidarr' },
 };
 let heartSourceSteps = [];
 let draggedHeartSourceRow = null;
@@ -577,11 +588,11 @@ function renderHeartSourceOrder(steps = heartSourceSteps) {
         <button type="button" class="source-drag" draggable="true"
                 aria-label="Drag ${meta.title} to reorder. Use arrow keys to move it."
                 title="Drag to reorder; arrow keys also work">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3h1M10 3h1M5 8h1M10 8h1M5 13h1M10 13h1"/></svg>
+          ${icon('i-dots-six-vertical')}
         </button>
         <span class="source-step" aria-hidden="true">${index + 1}</span>
         <span class="source-copy">
-          <span class="source-title">${meta.title}</span>
+          <span class="source-title">${icon(meta.mark)}${meta.title}</span>
           <span class="source-detail">${meta.detail}</span>
         </span>
         <span class="source-heart-controls" role="group" aria-label="${meta.title} heart types">
@@ -591,7 +602,7 @@ function renderHeartSourceOrder(steps = heartSourceSteps) {
                 <span class="source-info" tabindex="0" role="img"
                       aria-label="A song heart asks Lidarr to acquire the entire album. Enable this if you want Lidarr to handle single-song requests anyway."
                       data-tooltip="A song heart asks Lidarr to acquire the entire album. Enable this if you want Lidarr to handle single-song requests anyway.">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 4.8v.1"/></svg>
+                  ${icon('i-info')}
                 </span>` : ''}
             </span>
             <label class="switch source-kind-switch">
@@ -842,7 +853,7 @@ function renderGenreMappings(rules = genreRules) {
         <button type="button" class="source-drag" draggable="true"
                 aria-label="Drag rule ${index + 1} to reorder. Use arrow keys to move it."
                 title="Drag to reorder; arrow keys also work">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3h1M10 3h1M5 8h1M10 8h1M5 13h1M10 13h1"/></svg>
+          ${icon('i-dots-six-vertical')}
         </button>
         <span class="source-step" aria-hidden="true">${index + 1}</span>
         <input class="set-input" data-genre-field="Pattern" value="${escapeGenreAttr(rule.Pattern)}"
@@ -857,7 +868,7 @@ function renderGenreMappings(rules = genreRules) {
           <input type="checkbox" data-genre-field="Enabled" aria-label="Enable rule ${index + 1}" ${rule.Enabled ? 'checked' : ''} />
           <span class="sw-track"></span><span class="sw-thumb"></span>
         </label>
-        <button class="btn btn-ghost" type="button" data-genre-remove aria-label="Remove rule ${index + 1}">Remove</button>
+        <button class="btn btn-ghost btn-icon" type="button" data-genre-remove aria-label="Remove rule ${index + 1}" title="Remove this rule">${icon('i-trash')}</button>
       </div>`).join('');
   syncGenreMappingsInput(false);
 }
@@ -2354,8 +2365,9 @@ detectBtn?.addEventListener('click', async () => {
   const urlInput = document.getElementById('f-subsonic-url');
   const result = document.getElementById('detect-server-result');
   detectBtn.disabled = true;
-  const original = detectBtn.textContent;
-  detectBtn.textContent = 'Scanning…';
+  const label = detectBtn.querySelector('span') ?? detectBtn;
+  const original = label.textContent;
+  label.textContent = 'Scanning…';
   if (result) { result.hidden = false; result.textContent = 'Scanning the local network…'; }
   try {
     const r = await api('/api/admin/discover-servers', { cache: 'no-store' });
@@ -2384,7 +2396,7 @@ detectBtn?.addEventListener('click', async () => {
     if (result) result.textContent = 'Scan failed: ' + (e?.message || 'unknown error');
   } finally {
     detectBtn.disabled = false;
-    detectBtn.textContent = original;
+    label.textContent = original;
   }
 });
 
@@ -2774,7 +2786,7 @@ function renderLyricsSources(saved) {
         <button type="button" class="source-drag" draggable="true"
                 aria-label="Drag ${esc(meta.title)} to reorder. Use arrow keys to move it."
                 title="Drag to reorder; arrow keys also work">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3h1M10 3h1M5 8h1M10 8h1M5 13h1M10 13h1"/></svg>
+          ${icon('i-dots-six-vertical')}
         </button>
         <span class="source-step" aria-hidden="true">${index + 1}</span>
         <span class="source-copy">

@@ -1,0 +1,63 @@
+{
+  "phosphor": {
+    "regular": [
+      "arrow-clockwise",
+      "arrow-counter-clockwise",
+      "arrow-square-out",
+      "arrows-clockwise",
+      "bell",
+      "brackets-curly",
+      "caret-down",
+      "caret-right",
+      "check",
+      "check-circle",
+      "circle-dashed",
+      "circle-notch",
+      "clock",
+      "copy",
+      "dots-six-vertical",
+      "folder",
+      "folder-open",
+      "hard-drives",
+      "heart",
+      "info",
+      "key",
+      "magnifying-glass",
+      "paper-plane-tilt",
+      "playlist",
+      "plus",
+      "pulse",
+      "radio",
+      "sign-in",
+      "sliders-horizontal",
+      "stack",
+      "tag",
+      "trash",
+      "tray-arrow-down",
+      "warning",
+      "warning-circle",
+      "wrench",
+      "x",
+      "x-circle"
+    ],
+    "fill": [
+      "check-circle",
+      "info",
+      "warning-circle",
+      "x-circle"
+    ]
+  },
+  "brands": [
+    "acoustid",
+    "deezer",
+    "discord",
+    "lastfm",
+    "lidarr",
+    "listenbrainz",
+    "musicbrainz",
+    "navidrome",
+    "ntfy",
+    "slskd",
+    "youtube"
+  ]
+}

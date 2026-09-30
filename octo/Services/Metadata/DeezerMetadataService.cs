@@ -44,9 +44,11 @@ public class DeezerMetadataService : IDisposable
     public record AlbumTrack(string Title, string Artist, int? Duration,
         int? TrackPosition, int? DiscNumber, string? Isrc);
 
-    /// <summary>An album plus its full tracklist.</summary>
+    /// <summary>An album plus its full tracklist. RecordType is the catalog's own word for it:
+    /// album, ep, single or compile.</summary>
     public record AlbumDetail(string DeezerId, string Title, string Artist,
-        string? CoverUrl, int? Year, string? Genre, string? Label, List<AlbumTrack> Tracks);
+        string? CoverUrl, int? Year, string? Genre, string? Label, List<AlbumTrack> Tracks,
+        string? RecordType = null);
 
     private const string Base = "https://api.deezer.com";
     private const int MaxCache = 4096;
@@ -634,6 +636,7 @@ public class DeezerMetadataService : IDisposable
         try
         {
             string title = "", artist = "", genre = "", label = "", cover = "";
+            string? recordType = null;
             int? year = null;
             // Declared out here on purpose: the document below is disposed before the
             // tracklist call, and this is what tells an empty tracklist apart from an
@@ -650,6 +653,7 @@ public class DeezerMetadataService : IDisposable
                     title = Str(root, "title") ?? "";
                     cover = Str(root, "cover_xl") ?? Str(root, "cover_medium") ?? "";
                     label = Str(root, "label") ?? "";
+                    recordType = Str(root, "record_type");
                     var rd = Str(root, "release_date");
                     if (!string.IsNullOrEmpty(rd) && rd.Length >= 4 && int.TryParse(rd[..4], out var yr))
                         year = yr;
@@ -722,7 +726,7 @@ public class DeezerMetadataService : IDisposable
                 string.IsNullOrEmpty(cover) ? null : cover, year,
                 string.IsNullOrEmpty(genre) ? null : genre,
                 string.IsNullOrEmpty(label) ? null : label,
-                tracks);
+                tracks, recordType);
         }
         catch (Exception ex)
         {

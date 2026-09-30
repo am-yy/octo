@@ -344,4 +344,31 @@ public class SoulseekMetadataServiceTests
         Assert.Equal("https://cdn/us.jpg", artists[0].ImageUrl);
         Assert.Equal("222", _registry.Lookup(artists[0].Id)!.ExternalArtistId);
     }
+
+    [Fact]
+    public async Task OutsideAlbums_SayWhatKindOfReleaseTheyAre()
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = AlbumSearchJson,
+            ["/album/1/tracks"] = AlbumTracksJson,
+            // The album's own record calls it an EP, and opening it says so.
+            ["/album/1"] = AlbumDetailJson.Replace(@"""id"":1,", @"""id"":1,""record_type"":""ep"","),
+            ["/search/artist"] = @"{""data"":[{""id"":444,""name"":""Test Artist""}]}",
+            ["/artist/444/albums"] = @"{""data"":[
+                {""id"":5,""title"":""A Single"",""record_type"":""single"",""release_date"":""2020-01-01"",""nb_tracks"":1},
+                {""id"":6,""title"":""Odd One"",""record_type"":""mixtape"",""release_date"":""2019-01-01"",""nb_tracks"":9}]}",
+        });
+
+        var found = Assert.Single(await svc.SearchAlbumsAsync("test", 10));
+        Assert.Equal(["Album"], found.ReleaseTypes);
+
+        var opened = await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, found.Id);
+        Assert.Equal(["EP"], opened!.ReleaseTypes);
+
+        var page = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, OutsideArtist("Test Artist"));
+        Assert.Equal(["Single"], page.Single(a => a.Title == "A Single").ReleaseTypes);
+        // A type OpenSubsonic has no name for is left unsaid rather than guessed.
+        Assert.Empty(page.Single(a => a.Title == "Odd One").ReleaseTypes);
+    }
 }

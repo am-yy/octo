@@ -4013,6 +4013,16 @@ public class SubsonicController : ControllerBase
             ["updatedAt"] = "2020-01-01T00:00:00Z",
         };
         if (!string.IsNullOrEmpty(a.Genre)) o["genre"] = a.Genre;
+        // Navidrome's own album JSON carries the release types among its tags, in the tag's
+        // lowercase words, and a Navidrome-mode client groups an artist's page by them.
+        if (a.ReleaseTypes.Count > 0)
+        {
+            o["tags"] = new JsonObject
+            {
+                ["releasetype"] = new JsonArray(a.ReleaseTypes
+                    .Select(type => (JsonNode?)JsonValue.Create(type.ToLowerInvariant())).ToArray()),
+            };
+        }
         return o;
     }
 

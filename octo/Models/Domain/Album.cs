@@ -13,6 +13,12 @@ public class Album
     public int? SongCount { get; set; }
     public string? CoverArtUrl { get; set; }
     public string? Genre { get; set; }
+
+    /// <summary>
+    /// OpenSubsonic's release types, such as "Album", "EP" or "Single". What lets a client
+    /// group an artist's page the way the catalog does, without guessing from a track count.
+    /// </summary>
+    public List<string> ReleaseTypes { get; set; } = new();
     public bool IsLocal { get; set; }
     public string? ExternalProvider { get; set; }
     public string? ExternalId { get; set; }

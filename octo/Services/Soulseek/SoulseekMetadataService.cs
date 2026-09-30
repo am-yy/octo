@@ -505,6 +505,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Year = hit.Year,
                 SongCount = hit.TrackCount,
                 CoverArtUrl = hit.CoverUrl,
+                ReleaseTypes = ReleaseTypes(hit.RecordType),
                 IsLocal = false,
                 ExternalProvider = ProviderName,
                 ExternalId = albumId,
@@ -659,6 +660,7 @@ public class SoulseekMetadataService : IMusicMetadataService
         album.Year = detail.Year ?? album.Year;
         album.Genre = detail.Genre;
         album.CoverArtUrl = detail.CoverUrl ?? album.CoverArtUrl;
+        album.ReleaseTypes = ReleaseTypes(detail.RecordType);
         // Defence in depth: the Deezer layer no longer returns a tracklist-less album,
         // but if one ever gets through, reporting zero is worse than saying nothing.
         if (detail.Tracks.Count > 0) album.SongCount = detail.Tracks.Count;
@@ -842,6 +844,11 @@ public class SoulseekMetadataService : IMusicMetadataService
             ?? MostFollowed(candidates);
     }
 
+    /// <summary>A catalog record type as OpenSubsonic's release types: one, or none when the
+    /// catalog gave no type it has a name for.</summary>
+    private static List<string> ReleaseTypes(string? recordType) =>
+        DeezerMetadataService.ReleaseType(recordType) is { } type ? [type] : [];
+
     /// <summary>How many of an artist's releases the library holds, by the matcher's key.</summary>
     private static int Shared(IEnumerable<DeezerMetadataService.AlbumHit> releases, IReadOnlySet<string> owned) =>
         releases.Count(release => owned.Contains(SongIdentity.Key(release.Title)));
@@ -920,6 +927,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Year = release.Year,
                 SongCount = count ?? release.TrackCount,
                 CoverArtUrl = release.CoverUrl,
+                ReleaseTypes = ReleaseTypes(release.RecordType),
                 IsLocal = false,
                 ExternalProvider = ProviderName,
                 ExternalId = albumId,

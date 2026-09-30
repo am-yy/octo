@@ -264,6 +264,7 @@ public partial class SubsonicResponseBuilder
             // BuildAlbumFields, which renders the album ROWS in a search, has always sent
             // it; this builds the album DETAIL and did not, so the two disagreed.
             ["created"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+            ["releaseTypes"] = album.ReleaseTypes.ToArray(),
         };
         if (album.ArtistId is not null) fields["artistId"] = album.ArtistId;
         if (album.Year is int albumYear) fields["year"] = albumYear;
@@ -289,6 +290,7 @@ public partial class SubsonicResponseBuilder
                 new XAttribute("version", SubsonicVersion),
                 new XElement(ns + "album",
                     Attributes(fields),
+                    TextLists(fields, ns),
                     album.Songs.Select(s => ConvertSongToXml(s, ns))
                 )
             )
@@ -842,6 +844,10 @@ public partial class SubsonicResponseBuilder
             ["created"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
             ["mediaType"] = "album",
             ["displayArtist"] = album.Artist ?? "",
+            // OpenSubsonic asks for the list even when it is empty, so a client knows the server
+            // speaks it. Only an outside album comes through here; a library album keeps the
+            // types Navidrome gave it.
+            ["releaseTypes"] = album.ReleaseTypes.ToArray(),
             ["sortName"] = (album.Title ?? "").ToLowerInvariant(),
             ["isExternal"] = !album.IsLocal,
         };
@@ -883,7 +889,10 @@ public partial class SubsonicResponseBuilder
     /// Converts an Album domain model to Subsonic XML format.
     /// </summary>
     public XElement ConvertAlbumToXml(Album album, XNamespace ns)
-        => new(ns + "album", Attributes(BuildAlbumFields(album)));
+    {
+        var fields = BuildAlbumFields(album);
+        return new(ns + "album", Attributes(fields), TextLists(fields, ns));
+    }
 
     /// <summary>
     /// Converts an Artist domain model to Subsonic XML format.

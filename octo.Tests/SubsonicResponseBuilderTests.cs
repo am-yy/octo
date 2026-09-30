@@ -513,4 +513,49 @@ public class SubsonicResponseBuilderTests
 
         Assert.Equal("0", element.Attribute("duration")?.Value);
     }
+
+    // ---- OpenSubsonic releaseTypes ------------------------------------------------------
+    // What lets a client group an artist's page into albums, EPs and singles.
+
+    [Fact]
+    public void AlbumRow_CarriesItsReleaseTypesInBothFormats()
+    {
+        var album = new Album { Id = "al1", Title = "Live Set", Artist = "A", ReleaseTypes = ["EP"] };
+
+        var json = JsonSerializer.Serialize(_builder.ConvertAlbumToJson(album));
+        Assert.Equal(["EP"], JsonDocument.Parse(json).RootElement.GetProperty("releaseTypes")
+            .EnumerateArray().Select(t => t.GetString()));
+
+        // A list of text is one element per value in XML, the way the upstream server writes it.
+        var ns = XNamespace.Get("http://subsonic.org/restapi");
+        var xml = _builder.ConvertAlbumToXml(album, ns);
+        Assert.Equal(["EP"], xml.Elements(ns + "releaseTypes").Select(e => e.Value));
+        Assert.Null(xml.Attribute("releaseTypes"));
+    }
+
+    [Fact]
+    public void AlbumRow_WithNoKnownType_SendsAnEmptyList()
+    {
+        // OpenSubsonic asks for the field even when empty, so a client knows it is supported.
+        var album = new Album { Id = "al1", Title = "Mystery", Artist = "A" };
+
+        var json = JsonSerializer.Serialize(_builder.ConvertAlbumToJson(album));
+        Assert.Equal(0, JsonDocument.Parse(json).RootElement.GetProperty("releaseTypes").GetArrayLength());
+        var ns = XNamespace.Get("http://subsonic.org/restapi");
+        Assert.Empty(_builder.ConvertAlbumToXml(album, ns).Elements(ns + "releaseTypes"));
+    }
+
+    [Fact]
+    public void CreateAlbumResponse_CarriesItsReleaseTypesInBothFormats()
+    {
+        var album = new Album { Id = "al1", Title = "Hit", Artist = "A", ReleaseTypes = ["Single"] };
+
+        var json = JsonSerializer.Serialize(Assert.IsType<JsonResult>(_builder.CreateAlbumResponse("json", album)).Value);
+        Assert.Equal(["Single"], JsonDocument.Parse(json).RootElement.GetProperty("subsonic-response")
+            .GetProperty("album").GetProperty("releaseTypes").EnumerateArray().Select(t => t.GetString()));
+
+        var doc = XDocument.Parse(Assert.IsType<ContentResult>(_builder.CreateAlbumResponse("xml", album)).Content!);
+        var ns = doc.Root!.GetDefaultNamespace();
+        Assert.Equal(["Single"], doc.Root.Element(ns + "album")!.Elements(ns + "releaseTypes").Select(e => e.Value));
+    }
 }

@@ -86,8 +86,8 @@ public sealed class MergedFormatTests
             if (path.EndsWith("/rest/getArtist", StringComparison.Ordinal))
             {
                 return json
-                    ? Json("""{"subsonic-response":{"status":"ok","version":"1.16.1","artist":{"id":"ar-1","name":"Test Artist","albumCount":1,"album":[{"id":"al-1","name":"Test Album","artist":"Test Artist","songCount":2}]}}}""")
-                    : Xml("""<subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1"><artist id="ar-1" name="Test Artist" albumCount="1"><album id="al-1" name="Test Album"/></artist></subsonic-response>""");
+                    ? Json("""{"subsonic-response":{"status":"ok","version":"1.16.1","artist":{"id":"ar-1","name":"Test Artist","albumCount":1,"album":[{"id":"al-1","name":"Test Album","artist":"Test Artist","songCount":2,"releaseTypes":["album","compilation"]}]}}}""")
+                    : Xml("""<subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1"><artist id="ar-1" name="Test Artist" albumCount="1"><album id="al-1" name="Test Album"><releaseTypes>album</releaseTypes><releaseTypes>compilation</releaseTypes></album></artist></subsonic-response>""");
             }
             // Navidrome's native API, for a library artist only.
             if (path == "/api/artist/ar-1")
@@ -384,6 +384,23 @@ public sealed class MergedFormatTests
     }
 
     [Fact]
+    public async Task NativeArtist_AlbumsSayWhatKindOfReleaseTheyAre()
+    {
+        // Navidrome's native album keeps its release types among its tags, lowercase, and
+        // Feishin groups an artist's page by them.
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+        var id = RegisterOutsideArtist(factory);
+
+        using var list = JsonDocument.Parse(await client.GetStringAsync($"/api/album?_start=0&_end=-1&artist_id={id}"));
+        var types = list.RootElement.EnumerateArray().ToDictionary(a => a.GetProperty("name").GetString()!,
+            a => a.GetProperty("tags").GetProperty("releasetype").EnumerateArray().Select(t => t.GetString()!).ToList());
+
+        Assert.Equal(["album"], types["Other Album"]);
+        Assert.Equal(["single"], types["A Single"]);
+    }
+
+    [Fact]
     public async Task NativeArtist_ALibraryArtistStillComesFromNavidrome()
     {
         await using var factory = new WebFactory();
@@ -413,6 +430,29 @@ public sealed class MergedFormatTests
             list.RootElement.EnumerateArray().Select(a => a.GetProperty("name").GetString()));
         Assert.Equal("al-9", list.RootElement[0].GetProperty("id").GetString());
         Assert.Equal("2", response.Headers.GetValues("X-Total-Count").Single());
+    }
+
+    [Fact]
+    public async Task GetArtist_EveryAlbumSaysWhatKindOfReleaseItIs()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+
+        using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&f=json&id=ar-1"));
+        var types = json.RootElement.GetProperty("subsonic-response").GetProperty("artist").GetProperty("album")
+            .EnumerateArray().ToDictionary(a => a.GetProperty("name").GetString()!,
+                a => a.GetProperty("releaseTypes").EnumerateArray().Select(t => t.GetString()!).ToList());
+
+        // The library's album keeps what Navidrome said, word for word.
+        Assert.Equal(["album", "compilation"], types["Test Album"]);
+        // The outside ones say what the catalog calls them, in OpenSubsonic's words.
+        Assert.Equal(["Album"], types["Other Album"]);
+        Assert.Equal(["Single"], types["A Single"]);
+
+        var xml = XDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&id=ar-1"));
+        var xmlTypes = xml.Root!.Element(Ns + "artist")!.Elements(Ns + "album").ToDictionary(
+            a => (string)a.Attribute("name")!, a => a.Elements(Ns + "releaseTypes").Select(e => e.Value).ToList());
+        Assert.Equal(types, xmlTypes);
     }
 
     [Fact]

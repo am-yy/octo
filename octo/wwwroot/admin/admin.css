@@ -411,6 +411,7 @@ section[data-pane].active { display: block; }
 /* A destructive action: soft red words, the glaze under them. */
 .btn-danger { color: var(--destructive); }
 .btn-danger:hover { color: #ff6961; }
+.btn-danger:disabled, .btn-danger:disabled:hover { color: var(--text-muted); }
 
 /* A square button holding only an icon. */
 .btn-icon { width: var(--h-m); padding: 0; }

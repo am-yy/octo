@@ -1202,7 +1202,7 @@ function renderGenreBackfill(run) {
   status.innerHTML = `
     <div class="set-info">
       <div class="set-info-t">${esc(label)}${run.dryRun ? '' : ' (writing)'}</div>
-      <div class="set-info-d">${esc(counts)}${run.reason ? ` — ${esc(run.reason)}` : ''}</div>
+      <div class="set-info-d">${esc(counts)}${run.reason ? `. ${esc(run.reason)}` : ''}</div>
     </div>`;
 
   if (!run.preview?.length) {
@@ -1641,7 +1641,7 @@ async function loadRawConfig(force = false) {
 }
 
 if (rawForm) {
-  // Live JSON validation as the user types — surface errors before save.
+  // Live JSON validation as the user types, so errors show before save.
   rawEditor.addEventListener('input', () => {
     rawDirty = true;
     const val = rawEditor.value.trim();
@@ -1754,7 +1754,7 @@ document.getElementById('restart-btn').addEventListener('click', async () => {
   toast('Restart triggered. Waiting for service…');
 
   try { await api('/api/admin/restart', { method: 'POST' }); }
-  catch { /* expected — connection drops */ }
+  catch { /* expected: the connection drops */ }
 
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
@@ -2192,7 +2192,7 @@ document.getElementById('btn-check-listenbrainz')?.addEventListener('click', asy
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-    box.textContent = !d.configured ? d.detail : d.valid ? `Valid · ${d.userName}` : `Not valid — ${d.detail}`;
+    box.textContent = !d.configured ? d.detail : d.valid ? `Valid · ${d.userName}` : `Not valid: ${d.detail}`;
     box.classList.toggle('notice-error', !d.valid);
   } catch (e) {
     box.textContent = `Check failed: ${e.message}`;
@@ -2214,7 +2214,7 @@ document.getElementById('btn-test-notification')?.addEventListener('click', asyn
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     const parts = (d.results || []).map(s =>
-      `${s.sink}: ${!s.configured ? 'not configured' : s.ok ? 'OK' : 'failed — ' + s.detail}`);
+      `${s.sink}: ${!s.configured ? 'not configured' : s.ok ? 'OK' : 'failed: ' + s.detail}`);
     box.textContent = parts.length ? parts.join('  ·  ') : 'No transports registered.';
   } catch (e) {
     box.textContent = 'Test failed: ' + (e?.message || 'unknown error');
@@ -2368,7 +2368,7 @@ function askCredentials() {
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       }
     };
-    // Clicking the backdrop dismisses, but only the backdrop itself — a drag
+    // Clicking the backdrop dismisses, but only the backdrop itself: a drag
     // that starts inside the card must not count as an outside click.
     const onBackdrop = (e) => { if (e.target === modal) onCancel(); };
 
@@ -2509,7 +2509,7 @@ detectBtn?.addEventListener('click', async () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// Fetched songs — running download log
+// Fetched songs: the running download log
 // ────────────────────────────────────────────────────────────────
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -2620,7 +2620,7 @@ async function loadFetched({ withAcquisitions = true } = {}) {
       return `<div class="dl-item">
         ${art}
         <div class="dl-main">
-          <div class="dl-title">${escapeHtml(d.artist)} <span class="dl-dash">—</span> ${escapeHtml(d.title)}</div>
+          <div class="dl-title">${escapeHtml(d.artist)} <span class="dl-dash">·</span> ${escapeHtml(d.title)}</div>
           <div class="dl-path" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</div>
         </div>
         <div class="dl-side">
@@ -2636,7 +2636,7 @@ async function loadFetched({ withAcquisitions = true } = {}) {
 document.getElementById('fetched-refresh')?.addEventListener('click', loadFetched);
 
 // ────────────────────────────────────────────────────────────────
-// Segmented controls — buttons built from a hidden <select> they proxy to,
+// Segmented controls: buttons built from a hidden <select> they proxy to,
 // so the load/save logic keeps reading the select's name + value.
 // ────────────────────────────────────────────────────────────────
 function buildSegments() {

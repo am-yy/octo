@@ -50,7 +50,7 @@ public sealed class MergedFormatTests
                 if (path == "/album/1")
                     return Json("""{"id":1,"title":"Test Album","release_date":"2001-01-01","artist":{"name":"Test Artist"}}""");
                 if (path.StartsWith("/search/artist", StringComparison.Ordinal))
-                    return Json("""{"data":[{"id":7,"name":"Test Artist"}]}""");
+                    return Json("""{"data":[{"id":7,"name":"Test Artist","picture_xl":"https://cdn/test-artist.jpg"}]}""");
                 // The catalog's own shape: no artist and no track counts on this listing.
                 if (path.StartsWith("/artist/7/albums", StringComparison.Ordinal))
                     return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","release_date":"2001-01-01"},{"id":2,"title":"Other Album","record_type":"album","release_date":"2005-05-05"},{"id":3,"title":"A Single","record_type":"single","release_date":"2006-01-01"}]}""");
@@ -80,6 +80,18 @@ public sealed class MergedFormatTests
                 return json
                     ? Json("""{"subsonic-response":{"status":"ok","version":"1.16.1","artist":{"id":"ar-1","name":"Test Artist","albumCount":1,"album":[{"id":"al-1","name":"Test Album","artist":"Test Artist","songCount":2}]}}}""")
                     : Xml("""<subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1"><artist id="ar-1" name="Test Artist" albumCount="1"><album id="al-1" name="Test Album"/></artist></subsonic-response>""");
+            }
+            // Navidrome's native API, for a library artist only.
+            if (path == "/api/artist/ar-1")
+                return Json("""{"id":"ar-1","name":"Test Artist","albumCount":1,"songCount":2,"size":1}""");
+            if (path == "/api/album" && query["artist_id"] == "ar-1")
+            {
+                var answer = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""[{"id":"al-1","name":"Test Album","albumArtistId":"ar-1"}]""", Encoding.UTF8, "application/json"),
+                };
+                answer.Headers.Add("X-Total-Count", "1");
+                return Task.FromResult(answer);
             }
             if (path.EndsWith("/rest/ping", StringComparison.Ordinal))
                 return Json("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""");
@@ -288,6 +300,84 @@ public sealed class MergedFormatTests
         Assert.NotEmpty(jsonAlbums);
         Assert.Equal(jsonAlbums, xmlAlbums);
         Assert.Equal("Test Artist", (string?)artist.Attribute("name"));
+    }
+
+    private static string RegisterOutsideArtist(WebFactory factory) =>
+        factory.Services.GetRequiredService<Octo.Services.Soulseek.ExternalIdRegistry>().Register(
+            new Octo.Services.Soulseek.SoulseekRouting
+            {
+                Kind = Octo.Services.Soulseek.RoutingKind.Artist,
+                Artist = "Test Artist",
+            });
+
+    [Fact]
+    public async Task NativeArtist_AnOutsideArtistOpensWithTheirAlbums()
+    {
+        // Feishin in Navidrome mode opens an artist page with /api/artist/{id} and asks for
+        // the albums with /api/album?artist_id=. Relayed, an outside id reached Navidrome,
+        // which has no such artist, and the page never loaded.
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+        var id = RegisterOutsideArtist(factory);
+
+        using var detailResponse = await client.GetAsync($"/api/artist/{id}");
+        detailResponse.EnsureSuccessStatusCode();
+        using var detail = JsonDocument.Parse(await detailResponse.Content.ReadAsStringAsync());
+        var artist = detail.RootElement;
+        Assert.Equal(id, artist.GetProperty("id").GetString());
+        Assert.Equal("Test Artist", artist.GetProperty("name").GetString());
+        Assert.Equal(2, artist.GetProperty("albumCount").GetInt32());
+        Assert.Equal(2, artist.GetProperty("stats").GetProperty("albumartist").GetProperty("albumCount").GetInt32());
+        Assert.Equal(0, artist.GetProperty("size").GetInt32());
+        Assert.Equal("https://cdn/test-artist.jpg", artist.GetProperty("largeImageUrl").GetString());
+
+        // Feishin's own request for the page: the whole discography, _end=-1.
+        using var listResponse = await client.GetAsync(
+            $"/api/album?_end=-1&_order=DESC&_sort=max_year&_start=0&artist_id={id}&missing=false");
+        listResponse.EnsureSuccessStatusCode();
+        Assert.Equal("2", listResponse.Headers.GetValues("X-Total-Count").Single());
+        using var list = JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        var albums = list.RootElement.EnumerateArray().ToList();
+        Assert.Equal(["Other Album", "Test Album"], albums.Select(a => a.GetProperty("name").GetString()));
+        Assert.All(albums, a =>
+        {
+            Assert.Equal(id, a.GetProperty("albumArtistId").GetString());
+            Assert.Equal("Test Artist", a.GetProperty("albumArtist").GetString());
+        });
+        Assert.Equal(9, albums[0].GetProperty("songCount").GetInt32());
+
+        // Each album opens natively too.
+        using var opened = await client.GetAsync($"/api/album/{albums[0].GetProperty("id").GetString()}");
+        opened.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task NativeArtist_AlbumsHonourThePageAsked()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+        var id = RegisterOutsideArtist(factory);
+
+        using var response = await client.GetAsync($"/api/album?_start=1&_end=2&artist_id={id}");
+        response.EnsureSuccessStatusCode();
+        using var page = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(["Test Album"], page.RootElement.EnumerateArray().Select(a => a.GetProperty("name").GetString()));
+        Assert.Equal("2", response.Headers.GetValues("X-Total-Count").Single());
+    }
+
+    [Fact]
+    public async Task NativeArtist_ALibraryArtistStillComesFromNavidrome()
+    {
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync("/api/artist/ar-1"));
+        Assert.Equal(1, detail.RootElement.GetProperty("size").GetInt32());
+
+        using var response = await client.GetAsync("/api/album?_start=0&_end=-1&artist_id=ar-1");
+        using var list = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(["al-1"], list.RootElement.EnumerateArray().Select(a => a.GetProperty("id").GetString()));
     }
 
     [Fact]

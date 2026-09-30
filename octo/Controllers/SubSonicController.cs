@@ -3371,6 +3371,13 @@ public class SubsonicController : ControllerBase
         var nativeAlbum = await TryServeNativeExternalAlbumAsync(endpoint);
         if (nativeAlbum != null) return nativeAlbum;
 
+        // Native artist page for an outside artist: the artist (id in the path again) and
+        // its albums, which the client asks for by artist_id, a key HasExternalId never reads.
+        var nativeArtist = await TryServeNativeExternalArtistAsync(endpoint);
+        if (nativeArtist != null) return nativeArtist;
+        var nativeArtistAlbums = await TryServeNativeArtistAlbumsAsync(endpoint, parameters);
+        if (nativeArtistAlbums != null) return nativeArtistAlbums;
+
         // Native album search, the twin of the search3 album injection.
         var nativeAlbumSearch = await TryInjectNativeAlbumSearchAsync(endpoint, parameters);
         if (nativeAlbumSearch != null) return nativeAlbumSearch;
@@ -3852,6 +3859,118 @@ public class SubsonicController : ControllerBase
         Response.ContentType = "application/json";
         await Response.Body.WriteAsync(bytes);
         return new EmptyResult();
+    }
+
+    /// <summary>
+    /// Native artist detail: GET /api/artist/{id} for one of Octo's artist ids. A
+    /// Navidrome-mode client opens an artist page with this. Relayed, Navidrome has no such
+    /// artist, the relay fails, and the page waits forever. A library artist falls through.
+    /// </summary>
+    private async Task<IActionResult?> TryServeNativeExternalArtistAsync(string endpoint)
+    {
+        const string prefix = "api/artist/";
+        if (!endpoint.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        var id = endpoint[prefix.Length..].Trim('/');
+        if (string.IsNullOrEmpty(id) || id.Contains('/')) return null; // leaf id only
+
+        if (_idRegistry.Lookup(id)?.Kind != RoutingKind.Artist) return null;
+
+        var artist = await _metadataService.GetArtistAsync(SoulseekMetadataService.ProviderName, id);
+        if (artist == null) return null;
+        // The counts come from the same list the page shows, so they agree with it. The
+        // catalog's answers are cached, so the page asking for that list too costs little.
+        var albums = await OutsideArtistAlbumsAsync(id, artist.Name);
+
+        var bytes = Encoding.UTF8.GetBytes(BuildNativeArtistObject(artist, albums).ToJsonString());
+        Response.StatusCode = 200;
+        Response.ContentType = "application/json";
+        await Response.Body.WriteAsync(bytes);
+        return new EmptyResult();
+    }
+
+    /// <summary>
+    /// Native albums by artist: GET /api/album?artist_id={outside artist id}, the list an
+    /// artist page shows. The rows are the same albums getArtist lists for that artist.
+    /// </summary>
+    private async Task<IActionResult?> TryServeNativeArtistAlbumsAsync(
+        string endpoint, Dictionary<string, string> parameters)
+    {
+        if (!string.Equals(endpoint, "api/album", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var artistId = parameters.GetValueOrDefault("artist_id", "").Trim();
+        if (string.IsNullOrEmpty(artistId)) return null;
+        var routing = _idRegistry.Lookup(artistId);
+        if (routing?.Kind != RoutingKind.Artist) return null;
+
+        var albums = await OutsideArtistAlbumsAsync(artistId, routing.Artist ?? "");
+
+        // Feishin asks for a whole discography with _end=-1, so an end that is not past the
+        // start means the rest of the list rather than nothing.
+        var start = parameters.TryGetValue("_start", out var startStr)
+            && int.TryParse(startStr, out var s) && s > 0 ? Math.Min(s, albums.Count) : 0;
+        var end = parameters.TryGetValue("_end", out var endStr)
+            && int.TryParse(endStr, out var e) && e > start ? Math.Min(e, albums.Count) : albums.Count;
+
+        var arr = new JsonArray();
+        foreach (var album in albums.Skip(start).Take(end - start))
+            arr.Add(BuildNativeAlbumObject(album, 1));
+
+        var bytes = Encoding.UTF8.GetBytes(arr.ToJsonString());
+        Response.StatusCode = 200;
+        Response.Headers["X-Total-Count"] = albums.Count.ToString();
+        Response.ContentType = "application/json";
+        await Response.Body.WriteAsync(bytes);
+        return new EmptyResult();
+    }
+
+    /// <summary>
+    /// An outside artist's albums, each naming the artist and linking back to the artist's
+    /// own id, as getArtist fills them: the catalog's listing carries neither.
+    /// </summary>
+    private async Task<List<Album>> OutsideArtistAlbumsAsync(string artistId, string artistName)
+    {
+        var albums = await _metadataService.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, artistId);
+        foreach (var album in albums)
+        {
+            if (string.IsNullOrEmpty(album.Artist)) album.Artist = artistName;
+            if (string.IsNullOrEmpty(album.ArtistId)) album.ArtistId = artistId;
+        }
+        return albums;
+    }
+
+    /// <summary>
+    /// Serializes one outside Artist into Navidrome's native artist JSON shape. Counts go
+    /// out both flat (older Navidrome) and under "stats" by role (newer Navidrome), since
+    /// clients read one or the other. The image URLs are the three getArtistInfo2 gives; a
+    /// client that draws the artist through getCoverArt with the id is served by Octo too.
+    /// </summary>
+    private static JsonObject BuildNativeArtistObject(Artist artist, IReadOnlyList<Album> albums)
+    {
+        var songCount = albums.Sum(a => a.SongCount ?? 0);
+        JsonObject Stats() => new() { ["albumCount"] = albums.Count, ["songCount"] = songCount, ["size"] = 0 };
+
+        var o = new JsonObject
+        {
+            ["id"] = artist.Id,
+            ["name"] = artist.Name,
+            ["albumCount"] = albums.Count,
+            ["songCount"] = songCount,
+            ["size"] = 0,
+            ["stats"] = new JsonObject { ["albumartist"] = Stats(), ["artist"] = Stats() },
+            ["playCount"] = 0,
+            ["missing"] = false,
+            // Fixed old timestamp, same reasoning as BuildNativeSongObject.
+            ["createdAt"] = "2020-01-01T00:00:00Z",
+            ["updatedAt"] = "2020-01-01T00:00:00Z",
+        };
+        if (!string.IsNullOrEmpty(artist.ImageUrl))
+        {
+            o["smallImageUrl"] = artist.ImageUrl;
+            o["mediumImageUrl"] = artist.ImageUrl;
+            o["largeImageUrl"] = artist.ImageUrl;
+        }
+        return o;
     }
 
     /// <summary>

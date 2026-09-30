@@ -187,25 +187,26 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
     }
 
     /// <summary>Error 9 is Last.fm saying the listener revoked Octo. The session stops at once and
-    /// the dashboard says why, but one refusal is not enough to delete what the admin saved.</summary>
+    /// the dashboard says why, but one refusal is not enough to delete what the admin saved, nor
+    /// the plays: the refused one and any new ones wait out the grace.</summary>
     [Fact]
     public async Task InvalidSession_PausesTheUser_AndKeepsTheSavedSession()
     {
         _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
 
         _service.Scrobble("alice", Song, DateTime.UtcNow);
-        await WhenIdle();
+        await Until(() => Assert.Single(_service.Users([]), user => user.User == "alice").Notice is not null);
 
-        Assert.False(_service.IsEnabledFor("alice"));
         Assert.Equal("sk-alice", SavedSession("alice"));
         var alice = Assert.Single(_service.Users([]), user => user.User == "alice");
         Assert.False(alice.Connected);
         Assert.Contains("Connect again", alice.Notice);
 
-        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        _service.Scrobble("alice", Song with { Title = "Later" }, DateTime.UtcNow);
         _service.NowPlaying("alice", Song);
-        await WhenIdle();
+        await Task.Delay(100);
         Assert.Single(_lastFm.Calls);
+        Assert.Equal(2, _service.Outstanding);
     }
 
     /// <summary>After the grace the session is tried once more. Refused again, it is removed.</summary>
@@ -214,19 +215,24 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
     {
         _service.RefusalGrace = TimeSpan.FromMilliseconds(150);
         _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
-        _service.Scrobble("alice", Song, DateTime.UtcNow);
-        await WhenIdle();
-        Assert.Equal("sk-alice", SavedSession("alice"));
-
-        await Until(() => _service.IsEnabledFor("alice"));
         _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _lastFm.Hold = _ => _lastFm.Calls.Count > 1 ? second.Task : Task.CompletedTask;
         _service.Scrobble("alice", Song, DateTime.UtcNow);
+
+        // The kept play is what tries the session again, once the grace is over.
+        await Until(() => _lastFm.Calls.Count == 2);
+        Assert.Equal("sk-alice", SavedSession("alice"));
+        second.SetResult();
         await WhenIdle();
 
         Assert.Equal(2, _lastFm.CallsTo("track.scrobble").Count);
+        Assert.True(_lastFm.CallTimes[1] - _lastFm.CallTimes[0] >= _service.RefusalGrace);
         Assert.Null(SavedSession("alice"));
         await Task.Delay(200);
         Assert.False(_service.IsEnabledFor("alice"));
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        Assert.Equal(0, _service.Outstanding);
         Assert.Contains("Connect again", Assert.Single(_service.Users([]), user => user.User == "alice").Notice);
     }
 
@@ -239,11 +245,10 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         _service.Scrobble("alice", Song, DateTime.UtcNow);
         await WhenIdle();
 
-        await Until(() => _service.IsEnabledFor("alice"));
-        _service.Scrobble("alice", Song, DateTime.UtcNow);
-        await WhenIdle();
-
-        Assert.Equal(2, _lastFm.CallsTo("track.scrobble").Count);
+        // The play refused with the session was kept, and went once the grace was over.
+        var calls = _lastFm.CallsTo("track.scrobble");
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(calls[0]["timestamp[0]"], calls[1]["timestamp[0]"]);
         Assert.Equal("sk-alice", SavedSession("alice"));
         var alice = Assert.Single(_service.Users([]), user => user.User == "alice");
         Assert.True(alice.Connected);
@@ -310,7 +315,49 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
         await WhenIdle();
 
         Assert.Equal("track.updateNowPlaying", Assert.Single(_lastFm.Calls)["method"]);
-        Assert.False(_service.IsEnabledFor("alice"));
+        Assert.False(Assert.Single(_service.Users([]), user => user.User == "alice").Connected);
+    }
+
+    /// <summary>A refusal by Now Playing rests the session too: a play finished meanwhile waits
+    /// for the grace rather than going with it, and goes after it.</summary>
+    [Fact]
+    public async Task InvalidSession_OnNowPlaying_PlaysWaitOutTheGrace()
+    {
+        _service.RefusalGrace = TimeSpan.FromMilliseconds(150);
+        _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        _service.NowPlaying("alice", Song);
+        await WhenIdle();
+
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await WhenIdle();
+
+        var times = _lastFm.CallTimes;
+        Assert.Equal(2, times.Count);
+        Assert.Single(_lastFm.CallsTo("track.scrobble"));
+        Assert.True(times[1] - times[0] >= _service.RefusalGrace);
+    }
+
+    /// <summary>One listener's plays waiting out a refusal do not hold back another's.</summary>
+    [Fact]
+    public async Task ARestingListener_DoesNotHoldBackAnother()
+    {
+        _settings.Set(new LastFmSettings
+        {
+            ApiKey = FakeLastFm.ApiKey, ApiSecret = FakeLastFm.Secret,
+            UserSessions = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["alice"] = new LastFmUserSession { SessionKey = "sk-alice", LastFmUser = "lfm-alice" },
+                ["bob"] = new LastFmUserSession { SessionKey = "sk-bob", LastFmUser = "lfm-bob" },
+            },
+        });
+        _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
+        _service.Scrobble("alice", Song, DateTime.UtcNow);
+        await Until(() => _lastFm.Calls.Count == 1 && _service.Users([]).Single(user => user.User == "alice").Notice is not null);
+
+        _service.Scrobble("bob", Song, DateTime.UtcNow);
+        await Until(() => _service.Outstanding == 1);
+
+        Assert.Equal(["sk-alice", "sk-bob"], _lastFm.CallsTo("track.scrobble").Select(call => call["sk"]));
     }
 
     [Fact]
@@ -450,13 +497,16 @@ public sealed class LastFmScrobbleEndpointTests
         using var client = fixture.CreateClient();
         fixture.Handler.LastFm.Failures.Enqueue(LastFmScrobbleService.ErrorInvalidSession);
 
+        var service = fixture.Services.GetRequiredService<LastFmScrobbleService>();
+        bool Refused() => service.Users([]).Single(user => user.User == "bob").Notice is not null;
+
         await client.GetStringAsync($"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true");
-        await WhenIdle(fixture);
+        await LastFmScrobbleServiceTests.Until(Refused);
         await client.GetStringAsync($"/rest/scrobble?u=bob&t=token&s=salt&f=json&id={id}&submission=true");
-        await WhenIdle(fixture);
+        await Task.Delay(100);
 
         Assert.Single(fixture.Handler.LastFm.Calls);
-        Assert.False(fixture.Services.GetRequiredService<LastFmScrobbleService>().IsEnabledFor("bob"));
+        Assert.False(service.Users([]).Single(user => user.User == "bob").Connected);
     }
 
     /// <summary>One submission for several ids is for all of them, as Navidrome reads it: two songs

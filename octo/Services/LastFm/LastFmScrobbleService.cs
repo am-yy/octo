@@ -70,6 +70,9 @@ public sealed class LastFmScrobbleService
     private DateTime _pausedUntil = DateTime.MinValue;
     private int _rateLimitStrikes;
     private bool _draining;
+    // Cuts the drain's wait short when a play arrives, so one listener resting for an hour
+    // does not hold back everyone else's.
+    private readonly SemaphoreSlim _wake = new(0, 1);
     private int _nowPlayingInFlight;
 
     // A session Last.fm refused, or one disconnected on the dashboard. Settings reload a moment
@@ -77,8 +80,9 @@ public sealed class LastFmScrobbleService
     // is what stops the key being used again in the meantime.
     private readonly ConcurrentDictionary<string, byte> _revokedKeys = new(StringComparer.Ordinal);
     // When Last.fm first refused a session with error 9. The session rests until the grace is
-    // over; only a second refusal after that removes it from settings.json, since one error 9
-    // has been known to be Last.fm's hiccup rather than the listener revoking Octo.
+    // over, its plays kept and still queued; only a second refusal after that removes it from
+    // settings.json and drops them, since one error 9 has been known to be Last.fm's hiccup
+    // rather than the listener revoking Octo.
     private readonly ConcurrentDictionary<string, DateTime> _refusedAt = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (string Token, DateTime Expires)> _pendingApprovals =
         new(StringComparer.OrdinalIgnoreCase);
@@ -115,18 +119,19 @@ public sealed class LastFmScrobbleService
     /// <summary>True when the API key and shared secret are both saved, which Connect needs.</summary>
     public bool IsReady => IsReadyWith(_settings.CurrentValue);
 
-    /// <summary>True when this listener's outside plays would be sent to Last.fm.</summary>
+    /// <summary>True when this listener's outside plays would be sent to Last.fm. A session
+    /// resting after one refusal still counts: its plays wait for it.</summary>
     public bool IsEnabledFor(string username)
     {
         var settings = _settings.CurrentValue;
-        return settings.ScrobbleExternalPlays && IsReadyWith(settings) && ActiveSession(settings, username) is not null;
+        return settings.ScrobbleExternalPlays && IsReadyWith(settings) && SavedSession(settings, username) is not null;
     }
 
     /// <summary>Tells Last.fm what the listener has just started. Not retried: by the time a
     /// retry landed the song would be over.</summary>
     public void NowPlaying(string username, LastFmTrack track)
     {
-        if (!IsEnabledFor(username) || !Usable(track)) return;
+        if (!IsEnabledFor(username) || ActiveSession(_settings.CurrentValue, username) is null || !Usable(track)) return;
         Interlocked.Increment(ref _nowPlayingInFlight);
         _ = Task.Run(async () =>
         {
@@ -158,7 +163,11 @@ public sealed class LastFmScrobbleService
                 queue.RemoveAt(0);
             }
             queue.Add(new PendingScrobble(track, DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc), chosenByUser));
-            if (_draining) return;
+            if (_draining)
+            {
+                if (_wake.CurrentCount == 0) _wake.Release();
+                return;
+            }
             _draining = true;
         }
         _ = Task.Run(DrainAsync);
@@ -233,6 +242,12 @@ public sealed class LastFmScrobbleService
         _revokedKeys.TryRemove(key, out _);
         _refusedAt.TryRemove(key, out _);
         _notices.TryRemove(user, out _);
+        lock (_gate)
+        {
+            // Plays that waited on a refused session go with the new one straight away.
+            _retryAt.Remove(user);
+            if (_draining && _wake.CurrentCount == 0) _wake.Release();
+        }
         _logger.LogInformation("Last.fm connected for {User} as {LastFmUser}", user, name);
         return session;
     }
@@ -252,7 +267,11 @@ public sealed class LastFmScrobbleService
         }
         _pendingApprovals.TryRemove(user, out _);
         _notices.TryRemove(user, out _);
-        lock (_gate) _queues.Remove(user);
+        lock (_gate)
+        {
+            _queues.Remove(user);
+            _retryAt.Remove(user);
+        }
         var removed = RemoveSavedSession(user, onlyKey: null);
         _logger.LogInformation("Last.fm disconnected for {User}", user);
         return removed;
@@ -343,7 +362,7 @@ public sealed class LastFmScrobbleService
             }
             if (batch.Count == 0)
             {
-                await Task.Delay(wait);
+                await _wake.WaitAsync(wait);
                 continue;
             }
             try { await SendBatchAsync(user, batch); }
@@ -374,11 +393,17 @@ public sealed class LastFmScrobbleService
     private async Task SendBatchAsync(string user, List<PendingScrobble> batch)
     {
         var settings = _settings.CurrentValue;
-        var session = ActiveSession(settings, user);
+        var session = SavedSession(settings, user);
         if (!settings.ScrobbleExternalPlays || !IsReadyWith(settings) || session is null)
         {
             // Disconnected, or switched off, while these waited.
             lock (_gate) Forget(user, batch);
+            return;
+        }
+        if (RestingUntil(session.SessionKey) is { } resting)
+        {
+            // Refused once, by a scrobble or a Now Playing: the plays wait out the grace.
+            lock (_gate) _retryAt[user] = resting;
             return;
         }
 
@@ -420,8 +445,22 @@ public sealed class LastFmScrobbleService
         switch (reply.Error)
         {
             case ErrorInvalidSession:
-                lock (_gate) _queues.Remove(user);
                 MarkDisconnected(user, session.SessionKey, reply.Message);
+                lock (_gate)
+                {
+                    if (_revokedKeys.ContainsKey(session.SessionKey))
+                    {
+                        // Refused again after the grace: the listener did revoke Octo.
+                        _queues.Remove(user);
+                        _retryAt.Remove(user);
+                    }
+                    else
+                    {
+                        // The first refusal. The plays stay queued and nothing is sent for this
+                        // listener until the grace is over.
+                        _retryAt[user] = RestingUntil(session.SessionKey) ?? DateTime.UtcNow + RefusalGrace;
+                    }
+                }
                 return;
             case ErrorRateLimited:
                 lock (_gate) Pause();
@@ -475,10 +514,11 @@ public sealed class LastFmScrobbleService
 
     /// <summary>
     /// Last.fm no longer accepts this session, which is what happens when the listener removes
-    /// Octo from their Last.fm applications. The first refusal stops the session in memory and
-    /// the dashboard says why; the saved session is kept, because Last.fm has been known to say
-    /// this once and mean nothing by it. After <see cref="RefusalGrace"/> the session is tried
-    /// again, and a second refusal then removes it from settings.json for good.
+    /// Octo from their Last.fm applications. The first refusal rests the session in memory and
+    /// the dashboard says why; the saved session is kept, and so are the listener's plays, which
+    /// keep queueing, because Last.fm has been known to say this once and mean nothing by it.
+    /// After <see cref="RefusalGrace"/> the session is tried again, and a second refusal then
+    /// removes it from settings.json for good.
     /// </summary>
     private void MarkDisconnected(string user, string sessionKey, string detail)
     {
@@ -496,7 +536,7 @@ public sealed class LastFmScrobbleService
         }
         _refusedAt.TryAdd(sessionKey, now);
         _notices[user] = $"Last.fm refused this connection on {now:yyyy-MM-dd HH:mm} UTC{why}"
-                         + ". Scrobbling for this listener is paused. Octo tries once more after an hour and"
+                         + ". Scrobbling for this listener is paused and their plays wait. Octo tries once more after an hour and"
                          + " removes the connection if Last.fm still refuses it. Connect again to resume now.";
         _logger.LogWarning("Last.fm refused the session for {User}; scrobbling for them is paused", user);
     }
@@ -535,10 +575,21 @@ public sealed class LastFmScrobbleService
         }
     }
 
-    private LastFmUserSession? ActiveSession(LastFmSettings settings, string username) =>
+    /// <summary>The listener's session unless Last.fm has revoked it. It may be resting.</summary>
+    private LastFmUserSession? SavedSession(LastFmSettings settings, string username) =>
         settings.SessionFor(username) is { } session && !_revokedKeys.ContainsKey(session.SessionKey)
-        && !(_refusedAt.TryGetValue(session.SessionKey, out var refused) && DateTime.UtcNow - refused < RefusalGrace)
             ? session : null;
+
+    /// <summary>The listener's session when it may be used right now: not revoked, and not
+    /// resting after a refusal.</summary>
+    private LastFmUserSession? ActiveSession(LastFmSettings settings, string username) =>
+        SavedSession(settings, username) is { } session && RestingUntil(session.SessionKey) is null ? session : null;
+
+    /// <summary>When a session Last.fm refused once may be tried again, or null when it is not
+    /// resting.</summary>
+    private DateTime? RestingUntil(string sessionKey) =>
+        _refusedAt.TryGetValue(sessionKey, out var refused) && DateTime.UtcNow - refused < RefusalGrace
+            ? refused + RefusalGrace : null;
 
     private async Task<Reply> CallAsync(Dictionary<string, string> parameters, string secret,
         CancellationToken cancellationToken)

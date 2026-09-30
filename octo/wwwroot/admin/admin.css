@@ -747,6 +747,8 @@ input[type="number"].set-input { max-width: 160px; }
 .field { display: flex; flex-direction: column; gap: var(--s-m); }
 .field > label { font-size: var(--t-table); font-weight: 500; color: var(--ink); }
 .field-help { font-size: var(--t-meta); color: var(--text-muted); line-height: 1.6; }
+.field-help p { margin: 0 0 var(--s-s); }
+.field-help p:last-child { margin: 0; }
 .field-error { color: var(--bad); font-size: var(--t-meta); line-height: 1.5; }
 
 /* ── Save bar: the foot of a settings card ── */
@@ -783,12 +785,12 @@ input[type="number"].set-input { max-width: 160px; }
 
 /* Clean, the Save button is quiet; with changes it is the accent button, the card's edge warms,
  * and Undo appears. */
-.form-actions:not(.unsaved) button[type="submit"]:not(:disabled) {
+form[data-section] .form-actions:not(.unsaved) button[type="submit"]:not(:disabled) {
   background: var(--accent-tonal);
   font-weight: 500;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.38), 0 1px 2px rgba(0, 0, 0, 0.18);
 }
-.form-actions:not(.unsaved) button[type="submit"]:not(:disabled):hover { background-color: #34383a; }
+form[data-section] .form-actions:not(.unsaved) button[type="submit"]:not(:disabled):hover { background-color: #34383a; }
 .form-actions:not(.unsaved) .form-undo { display: none; }
 form.set-card.unsaved { border-color: var(--warn-line); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 0 0 3px rgba(255, 149, 0, 0.06); }
 .form-actions .unsaved-status { display: inline-flex; align-items: center; gap: var(--s-s); }

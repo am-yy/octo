@@ -1717,16 +1717,16 @@
         <header class="page-header">
           <div>
             <h1>Raw config</h1>
-            <p>Edit the settings file directly. Same JSON the form-by-form UI writes to — useful for power-users who'd rather hand-write a section than click through tabs, or for diffing/copying config across hosts.</p>
+            <p>The settings file itself, for editing by hand or copying between servers.</p>
           </div>
         </header>
 
-        <div class="info-card">
-          <h3 class="info-card-title">File path</h3>
-          <p>The file lives at <code id="raw-config-path">/app/config/settings.json</code> inside the container. The host bind-mount is at <code>./octo-config/settings.json</code> next to your <code>docker-compose.yml</code> — you can <code>vim</code>/<code>nano</code> it there too. Changes hot-reload within ~500ms; settings flagged restart-required still need a restart.</p>
-        </div>
+        <div class="notice notice-warn"><strong>Passwords and keys show here in plain text</strong>, except the Navidrome admin password. Don't screenshot or share this page.</div>
 
-        <div class="notice notice-warn">Passwords and keys show here in plain text, except the Navidrome admin password. Don't screenshot or share this page.</div>
+        <div class="info-card">
+          <h3 class="info-card-title">Where the file lives</h3>
+          <p><code id="raw-config-path">/app/config/settings.json</code> inside the container, and <code>./octo-config/settings.json</code> beside your <code>docker-compose.yml</code> on the host, where any editor works too. Changes apply within a second; settings marked <span class="restart-badge restart-badge-inline">Restart</span> need a restart.</p>
+        </div>
 
         <form id="raw-form" class="settings-card">
           <h3 class="settings-card-title">settings.json</h3>
@@ -1734,15 +1734,14 @@
             <label for="raw-editor">JSON content</label>
             <textarea id="raw-editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="{}"></textarea>
             <div class="field-help">
-              Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>YouTube</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Leave <code>"(saved, not shown)"</code> as it is to keep what is stored: the admin password, the Last.fm shared secret, and each Last.fm session key.
-              Radio remains inside <code>LastFm</code>; pinned rows are the ordered <code>LastFm.DiscoveryStations</code> array and should be edited as complete objects with stable <code>Id</code>, <code>Name</code>, <code>Enabled</code>, and <code>Tags</code> fields.
-              Anything you set here overrides the corresponding env var until removed.
+              <p>Leave <code>"(saved, not shown)"</code> as it is to keep what is stored: the admin password, the Last.fm shared secret and each Last.fm session key. Anything set here wins over the matching environment variable until it is removed.</p>
+              <p>Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>YouTube</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Radio lives in <code>LastFm</code>; pinned stations are the ordered <code>LastFm.DiscoveryStations</code> array, each a whole object with a stable <code>Id</code>, <code>Name</code>, <code>Enabled</code> and <code>Tags</code>.</p>
             </div>
           </div>
           <div id="raw-error" class="raw-error" hidden></div>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save file</button>
-            <button type="button" class="btn btn-ghost" id="raw-reload">Reload from disk</button>
+            <button type="button" class="btn btn-ghost" id="raw-reload"><svg class="icon" aria-hidden="true"><use href="#i-arrows-clockwise"/></svg><span>Reload from disk</span></button>
             <span class="saved-status" id="raw-saved-status"></span>
           </div>
         </form>
@@ -1753,21 +1752,21 @@
         <header class="page-header">
           <div>
             <h1>Config sources</h1>
-            <p>What value the app actually sees for each setting, after merging env vars and the settings file. Settings marked <span class="restart-badge restart-badge-inline">Restart</span> take effect after Octo restarts; everything else applies within about a second of saving. Anything waiting on a restart is listed at the top of every page.</p>
+            <p>The value Octo actually uses for each setting, after the environment and the settings file.</p>
           </div>
         </header>
 
         <div class="info-card">
-          <h3 class="info-card-title">Resolution order (highest first)</h3>
+          <h3 class="info-card-title">Which one wins, first to last</h3>
           <ol class="ordered-list">
-            <li><code>settings.json</code> — what the admin UI writes to. Highest priority.</li>
-            <li>Environment variables — set in <code>docker-compose.yml</code> / <code>.env</code> at container startup.</li>
-            <li><code>appsettings.json</code> — built-in defaults shipped with the image.</li>
+            <li><code>settings.json</code>, which this dashboard writes.</li>
+            <li>Environment variables, from <code>docker-compose.yml</code> or <code>.env</code>, read when the container starts.</li>
+            <li><code>appsettings.json</code>, the defaults that ship with Octo.</li>
           </ol>
         </div>
 
         <div class="settings-card">
-          <h3 class="settings-card-title">Effective values</h3>
+          <h3 class="settings-card-title">Values in use</h3>
           <div class="config-table" id="config-table">
             <div class="config-row config-row-head">
               <span>Key</span>
@@ -1783,27 +1782,27 @@
         <header class="page-header">
           <div>
             <h1>About</h1>
-            <p>What this is and where things live.</p>
+            <p>What Octo is, which version is running, and where its settings live.</p>
           </div>
         </header>
 
         <div class="info-card">
-          <p>Octo is a Subsonic API proxy that augments your existing Navidrome library with discovery and on-demand downloading. Search includes external recommendations alongside your local songs; "Radio" on any song fans out via Last.fm and previews via YouTube; heart music you don't own and Octo acquires it through Soulseek, YouTube or your existing Lidarr server.</p>
+          <p>Octo sits in front of your Navidrome library and adds discovery and downloads to it. Search shows songs you don't own beside your own. Radio on any song finds more through Last.fm and plays previews from YouTube. Heart a song you don't own and Octo fetches it through Soulseek, YouTube or your own Lidarr.</p>
         </div>
 
         <div class="info-card">
           <h3 class="info-card-title">Version</h3>
-          <p>You are running Octo <code id="meta-version">unknown</code>. Include this in any bug report. Releases are dated, so <code>2026.07.29</code> is the release cut on that day.</p>
+          <p>This is Octo <code id="meta-version">unknown</code>. Please include it in any bug report. Releases are named by date, so <code>2026.07.29</code> is the release cut that day.</p>
         </div>
 
         <div class="info-card">
           <h3 class="info-card-title">Settings file</h3>
-          <p>Anything you change in this UI is persisted to <code id="meta-config-path">/app/config/settings.json</code>. That file overrides env vars on next read. Editing it by hand also works — changes hot-reload.</p>
+          <p>Everything changed here is saved to <code id="meta-config-path">/app/config/settings.json</code>, which wins over environment variables. Editing it by hand works too, and changes apply within a second.</p>
         </div>
 
         <div class="info-card">
-          <h3 class="info-card-title">Hot-reload vs restart</h3>
-          <p>Settings marked <span class="restart-badge restart-badge-inline">Restart</span> take effect after Octo restarts; everything else applies within about a second of saving. Anything waiting on a restart is listed at the top of every page, and the <strong>Restart</strong> button in the sidebar applies it.</p>
+          <h3 class="info-card-title">When a restart is needed</h3>
+          <p>Settings marked <span class="restart-badge restart-badge-inline">Restart</span> take effect after Octo restarts; everything else applies within about a second of saving. Anything waiting on a restart is listed at the top of every page, and <strong>Restart</strong> in the sidebar applies it.</p>
         </div>
       </section>
     </main>

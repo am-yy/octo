@@ -402,13 +402,9 @@ public sealed class LastFmRadioControllerTests
             .GetProperty("internetRadioStations").GetProperty("internetRadioStation")
             .EnumerateArray().Single(item => item.GetProperty("name").GetString() == "Your Mix")
             .GetProperty("streamUrl").GetString()!;
-        // The starter this keeps is the one the listing warmed. On a slow machine the
-        // refresh could land before it was ready, leaving only the refreshed songs.
-        for (var attempt = 0; attempt < 500
-             && fixture.Transcoder.Calls < LastFmRadioStreamService.ReadyPoolSize; attempt++)
-            await Task.Delay(10);
-        Assert.Equal(LastFmRadioStreamService.ReadyPoolSize, fixture.Transcoder.Calls);
-
+        // The listing answered only once its starter was ready and attached to this URL.
+        // The refreshed songs resolve and play, but every new transcode waits at the gate,
+        // so the first bytes can only come from the starter the listing published.
         fixture.InstallStation(" Refreshed");
         fixture.Transcoder.ResetStarted();
         fixture.Transcoder.BeforeWriteGate = NewGate();
@@ -662,6 +658,11 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
         _enableIcyMetadata = enableIcyMetadata;
         _starterPublishTimeoutSeconds = starterPublishTimeoutSeconds;
         Directory.CreateDirectory(_directory);
+        // No external match is an empty list, as the real services answer. Moq's default
+        // for a List is null, which turned every unmatched song into a NullReferenceException.
+        Metadata.Setup(service => service.SearchSongsByArtistTitleAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int?>()))
+            .ReturnsAsync([]);
         Metadata.Setup(service => service.PrewarmYouTubeIdsAsync(
                 It.IsAny<IEnumerable<Octo.Models.Domain.Song>>(), It.IsAny<int>(),
                 It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
@@ -851,10 +852,14 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
             // Answer with the recording that was asked for. This fake used to answer "New Artist
             // One - New Song One" with "Artist One - Song One", which only matched because radio
             // compared artists by substring, the bug that played a different owned song.
+            // The same goes for a refreshed station's "Song Two Refreshed": answering "Song Two"
+            // only matched while titles were compared by prefix, and now resolves nowhere.
             var prefix = search.StartsWith("New ", StringComparison.OrdinalIgnoreCase) ? "New " : "";
-            var id = "local-" + (prefix.Length > 0 ? "new-" : "") + ordinal;
+            var suffix = search.EndsWith(" Refreshed", StringComparison.OrdinalIgnoreCase) ? " Refreshed" : "";
+            var id = "local-" + (prefix.Length > 0 ? "new-" : "") + ordinal
+                + (suffix.Length > 0 ? "-refreshed" : "");
             var artist = prefix + "Artist " + char.ToUpperInvariant(ordinal[0]) + ordinal[1..];
-            var title = prefix + "Song " + char.ToUpperInvariant(ordinal[0]) + ordinal[1..];
+            var title = prefix + "Song " + char.ToUpperInvariant(ordinal[0]) + ordinal[1..] + suffix;
             return Result(OkJson($"\"searchResult3\":{{\"song\":[{{\"id\":\"{id}\",\"artist\":\"{artist}\",\"title\":\"{title}\",\"album\":\"Album\",\"duration\":180}}]}}"));
         }
         if (path.Equals("rest/getPlaylists", StringComparison.OrdinalIgnoreCase))

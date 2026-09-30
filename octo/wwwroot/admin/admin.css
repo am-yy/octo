@@ -129,6 +129,32 @@
     inset 0 -1px 0 rgba(0, 0, 0, 0.14);
   --shadow-raised: 0 8px 40px rgba(0, 0, 0, 0.55);
   --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.45);
+  /* The names the dashboard used before it took the apps' tokens, kept as aliases so a rule
+   * written with them still draws in the same system. New rules use the names above. */
+  --bg-0: var(--page);
+  --bg-1: var(--page);
+  --bg-2: var(--surface);
+  --bg-3: var(--surface);
+  --bg-4: var(--accent-selected);
+  --border: var(--glass-edge);
+  --border-strong: rgba(151, 177, 185, 0.22);
+  --fg: var(--ink);
+  --fg-soft: var(--text-secondary);
+  --fg-mute: var(--text-muted);
+  --fg-faint: var(--text-faint);
+  --accent-soft: var(--accent-wash);
+  --accent-ring: rgba(151, 177, 185, 0.30);
+  --good-glow: var(--good-wash);
+  --warn-glow: var(--warn-wash);
+  --bad-glow: var(--bad-wash);
+  --r-1: var(--r-row);
+  --r-2: var(--r-control);
+  --r-3: var(--r-panel);
+  --t-fast: var(--t-hover);
+  --t-med: var(--t-card);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elev-2: var(--shadow-float);
+  --elev-3: var(--shadow-raised);
 }
 
 /* ────────────────────────────────────────────────────────────── */

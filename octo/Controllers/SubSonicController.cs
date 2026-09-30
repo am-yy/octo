@@ -2729,8 +2729,9 @@ public class SubsonicController : ControllerBase
     /// we registered, fire-and-forget yt-dlp resolution for the next 8
     /// unresolved external songs so a fast-skip user always has 8 ready ahead.
     ///
-    /// We always relay to Navidrome too, because real scrobbling (last-played
-    /// stats, the Now Playing panel) is the upstream's job.
+    /// Library songs are relayed to Navidrome too, because real scrobbling
+    /// (last-played stats, the Now Playing panel) is the upstream's job. Outside
+    /// songs are not: Navidrome has no such media to record.
     /// </summary>
     [HttpGet, HttpPost]
     [Route("rest/scrobble")]
@@ -2755,14 +2756,31 @@ public class SubsonicController : ControllerBase
             }
         }
 
-        // Always pass through so Navidrome's last-played/Now Playing stays accurate.
+        // Library songs pass through so Navidrome's last-played/Now Playing stays accurate.
+        // An outside id is not Navidrome's: relayed, it logs "data not found" on every play
+        // and records nothing (#60). So only library ids go upstream, each keeping its
+        // own submission and time when the client sent one per id.
+        var library = Enumerable.Range(0, ids.Count)
+            .Where(index => !_localLibraryService.ParseSongId(ids[index]).isExternal).ToList();
+        IEnumerable<string> LibraryOnly(IReadOnlyList<string> values) =>
+            values.Count == ids.Count ? library.Select(index => values[index]) : values;
         try
         {
             var relayParameters = parameters
                 .Where(pair => pair.Key is not ("id" or "submission" or "time")).ToList();
-            relayParameters.AddRange(ids.Select(value => new KeyValuePair<string, string>("id", value)));
-            relayParameters.AddRange(submissions.Select(value => new KeyValuePair<string, string>("submission", value)));
-            relayParameters.AddRange(times.Select(value => new KeyValuePair<string, string>("time", value)));
+            if (ids.Count > 0 && library.Count == 0)
+            {
+                // Nothing for Navidrome to record, but its answer was also the credential
+                // check that gates learning below. A ping checks the same credentials and
+                // answers in the very shape a scrobble does, failures included.
+                var check = await _proxyService.RelayAsync("rest/ping", relayParameters);
+                if (IsSuccessfulSubsonicResponse(check.Body, format))
+                    await LearnFromScrobblesAsync(ids, submissions, times, parameters);
+                return File(check.Body, check.ContentType ?? $"application/{format}");
+            }
+            relayParameters.AddRange(LibraryOnly(ids).Select(value => new KeyValuePair<string, string>("id", value)));
+            relayParameters.AddRange(LibraryOnly(submissions).Select(value => new KeyValuePair<string, string>("submission", value)));
+            relayParameters.AddRange(LibraryOnly(times).Select(value => new KeyValuePair<string, string>("time", value)));
             var result = await _proxyService.RelayAsync("rest/scrobble", relayParameters);
             if (IsSuccessfulSubsonicResponse(result.Body, format))
                 await LearnFromScrobblesAsync(ids, submissions, times, parameters);

@@ -175,6 +175,78 @@ public sealed class LastFmRadioControllerTests
     }
 
     [Fact]
+    public async Task OutsideSongScrobble_IsNotRelayedToNavidrome_ButStillLearned()
+    {
+        // Issue #60: Navidrome has no such media, logs "data not found" per play, and answers
+        // ok anyway. Octo answers for it; the play still reaches radio and ListenBrainz.
+        await using var fixture = new RadioWebFactory();
+        var registry = fixture.Services.GetRequiredService<ExternalIdRegistry>();
+        var externalId = registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 151 });
+        using var client = fixture.CreateClient();
+
+        foreach (var format in new[] { "json", "xml" })
+        {
+            using var nowPlaying = await client.GetAsync(
+                $"/rest/scrobble?u=alice&t=token&s=salt&f={format}&id={externalId}&submission=false");
+            nowPlaying.EnsureSuccessStatusCode();
+            var body = await nowPlaying.Content.ReadAsStringAsync();
+            Assert.Contains(format == "json" ? "\"status\":\"ok\"" : "status=\"ok\"", body);
+        }
+        using var played = await client.GetAsync(
+            $"/rest/scrobble?u=alice&t=token&s=salt&f=json&id={externalId}&submission=true");
+        played.EnsureSuccessStatusCode();
+
+        Assert.Equal(0, fixture.Handler.ScrobbleRelays);
+        Assert.Single(fixture.State.GetUser("alice").Plays);
+        Assert.Single(fixture.Handler.ListenBrainzSubmissions);
+    }
+
+    [Fact]
+    public async Task ScrobbleBatch_RelaysOnlyLibrarySongs_WithTheirOwnTimes()
+    {
+        await using var fixture = new RadioWebFactory();
+        var registry = fixture.Services.GetRequiredService<ExternalIdRegistry>();
+        var externalId = registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 151 });
+        using var client = fixture.CreateClient();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var (first, second) = ((now - 300_000).ToString(), now.ToString());
+
+        using var response = await client.PostAsync("/rest/scrobble", new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string,string>("u", "alice"), new("t", "token"), new("s", "salt"), new("f", "json"),
+            new("id", externalId), new("id", "one"),
+            new("submission", "true"), new("submission", "true"),
+            new("time", first), new("time", second),
+        }));
+        response.EnsureSuccessStatusCode();
+
+        Assert.Equal(["one"], fixture.Handler.RelayedScrobbleIds);
+        Assert.Equal([second], fixture.Handler.RelayedScrobbleTimes);
+        Assert.Equal(2, fixture.State.GetUser("alice").Plays.Count);
+        Assert.Single(fixture.Handler.ListenBrainzSubmissions);
+    }
+
+    [Fact]
+    public async Task OutsideSongScrobble_WithWrongCredentials_LearnsAndSubmitsNothing()
+    {
+        // Navidrome's answer to the relayed scrobble was the only credential check. With no
+        // relay, a ping has to stand in, or anyone could post listens under any name.
+        await using var fixture = new RadioWebFactory();
+        var registry = fixture.Services.GetRequiredService<ExternalIdRegistry>();
+        var externalId = registry.Register(new SoulseekRouting
+            { Kind = RoutingKind.Song, Artist = "Phonk", Title = "Zericxxn - Raya", Duration = 151 });
+        using var client = fixture.CreateClient();
+
+        var body = await client.GetStringAsync($"/rest/scrobble?u=bad&f=json&id={externalId}&submission=true");
+
+        Assert.Contains("failed", body);
+        Assert.Empty(fixture.State.GetUser("bad").Plays);
+        Assert.Empty(fixture.Handler.ListenBrainzSubmissions);
+    }
+
+    [Fact]
     public async Task AuthenticationFailure_DoesNotExposeStationsOrLearnScrobbles()
     {
         await using var fixture = new RadioWebFactory();
@@ -803,6 +875,8 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
 internal sealed class RadioUpstreamHandler : HttpMessageHandler
 {
     public IReadOnlyList<string> RelayedScrobbleIds { get; private set; } = [];
+    public IReadOnlyList<string> RelayedScrobbleTimes { get; private set; } = [];
+    public int ScrobbleRelays { get; private set; }
     public bool ReturnLocalMatches { get; set; } = true;
     public List<(string Authorization, string Body)> ListenBrainzSubmissions { get; } = [];
 
@@ -835,7 +909,11 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
         if (username == "bad") return Result(format == "xml" ? FailedXml() : FailedJson());
 
         if (path.Equals("rest/scrobble", StringComparison.OrdinalIgnoreCase))
+        {
+            ScrobbleRelays++;
             RelayedScrobbleIds = query.GetValues("id") ?? [];
+            RelayedScrobbleTimes = query.GetValues("time") ?? [];
+        }
         if (path.Equals("rest/getSong", StringComparison.OrdinalIgnoreCase))
         {
             var id = query["id"] ?? "song";

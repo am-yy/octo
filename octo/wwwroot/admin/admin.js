@@ -393,6 +393,10 @@ function revertForm(form) {
   updateDiscoveryBanner();
   syncSegments(false);
   form.querySelector('.form-actions')?.classList.remove('dirty');
+  // The card now holds exactly what was saved. A list drawn again from its tidied JSON can differ
+  // from the rows on screen at save time (a trimmed space, a switched-off source moved last), so
+  // this is the new picture of "unchanged", or the card would stay marked unsaved.
+  form.dataset.saved = formFingerprint(form);
   updateDirty(form);
 }
 

@@ -804,10 +804,11 @@ input[type="number"].set-input { max-width: 160px; }
   gap: var(--s-s);
 }
 .form-actions.dirty .restart-hint { display: inline-flex; }
-.form-actions.dirty .saved-status { display: none; }
+.form-actions.dirty .saved-status:not(.error):not(.busy) { display: none; }
 .form-actions .unsaved-status { font-size: var(--t-meta); color: var(--warn); }
 .form-actions .unsaved-status:empty { display: none; }
-.form-actions.unsaved .saved-status { display: none; }
+/* Only the tick hides while there are changes: a save in progress or an error must show. */
+.form-actions.unsaved .saved-status:not(.error):not(.busy) { display: none; }
 
 /* Clean, the Save button is quiet; with changes it is the accent button, the card's edge warms,
  * and Undo appears. */

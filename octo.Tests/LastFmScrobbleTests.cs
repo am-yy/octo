@@ -175,15 +175,87 @@ public sealed class LastFmScrobbleServiceTests : IDisposable
     {
         _lastFm.Failures.Enqueue(LastFmScrobbleService.ErrorRateLimited);
 
+        // The pause runs on a clock the test moves, so a slow machine cannot end it early.
+        var clock = new ManualClock();
+        _service.Time = clock;
+
         _service.Scrobble("alice", Song, DateTime.UtcNow);
-        await Until(() => _lastFm.Calls.Count == 1);
-        await Task.Delay(100);
+        // Refused, and the queue now waits out the pause.
+        await Until(() => clock.Waiting == 1);
+        // A play and a Now Playing arriving meanwhile wait too.
+        _service.Scrobble("alice", Song with { Title = "Song 2" }, DateTime.UtcNow);
+        _service.NowPlaying("alice", Song);
+        await Until(() => _service.Outstanding == 2);
+        clock.Advance(_service.RateLimitPause - TimeSpan.FromTicks(1));
+        Assert.Equal(1, clock.Waiting);
         Assert.Single(_lastFm.Calls);
+
+        clock.Advance(TimeSpan.FromTicks(1));
         await WhenIdle();
 
-        Assert.Equal(2, _lastFm.CallsTo("track.scrobble").Count);
-        var times = _lastFm.CallTimes;
-        Assert.True(times[1] - times[0] >= TimeSpan.FromMilliseconds(250));
+        var calls = _lastFm.Calls;
+        Assert.Equal(["track.scrobble", "track.scrobble"], calls.Select(call => call["method"]));
+        // The refused play went again, with the one that waited behind it.
+        Assert.Equal(["Be Nice 2 Me", "Song 2"], [calls[1]["track[0]"], calls[1]["track[1]"]]);
+    }
+
+    /// <summary>A clock that moves only when told, with the timers Task.Delay sets on it.</summary>
+    private sealed class ManualClock : TimeProvider
+    {
+        private readonly object _lock = new();
+        private readonly List<Timer> _timers = [];
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+        public override DateTimeOffset GetUtcNow() { lock (_lock) return _now; }
+
+        /// <summary>Timers set and not yet fired.</summary>
+        public int Waiting { get { lock (_lock) return _timers.Count; } }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new Timer(this, callback, state);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+
+        public void Advance(TimeSpan by)
+        {
+            List<Timer> due;
+            lock (_lock)
+            {
+                _now += by;
+                due = _timers.Where(timer => timer.Due <= _now).ToList();
+                foreach (var timer in due) _timers.Remove(timer);
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+
+        private sealed class Timer(ManualClock clock, TimerCallback callback, object? state) : ITimer
+        {
+            public DateTimeOffset Due { get; private set; }
+
+            public void Fire() => callback(state);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (clock._lock)
+                {
+                    clock._timers.Remove(this);
+                    if (dueTime == Timeout.InfiniteTimeSpan) return true;
+                    Due = clock._now + dueTime;
+                    clock._timers.Add(this);
+                }
+                return true;
+            }
+
+            public void Dispose() { lock (clock._lock) clock._timers.Remove(this); }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     /// <summary>Error 9 is Last.fm saying the listener revoked Octo. The session stops at once and
@@ -816,6 +888,8 @@ internal sealed class FakeLastFm : HttpMessageHandler
     public Func<Dictionary<string, string>, Task>? Hold { get; set; }
 
     public IReadOnlyList<Dictionary<string, string>> Calls { get { lock (_lock) return _calls.ToList(); } }
+
+    /// <summary>When each call arrived, on the real clock.</summary>
     public IReadOnlyList<DateTime> CallTimes { get { lock (_lock) return _times.ToList(); } }
 
     public IReadOnlyList<Dictionary<string, string>> CallsTo(string method) =>

@@ -107,6 +107,11 @@ public sealed class LastFmScrobbleService
     /// <summary>How long a session Last.fm refused rests before it is tried once more.</summary>
     internal TimeSpan RefusalGrace { get; set; } = TimeSpan.FromHours(1);
 
+    /// <summary>The clock every pause and wait is measured on. Tests move it by hand.</summary>
+    internal TimeProvider Time { get; set; } = TimeProvider.System;
+
+    private DateTime Now => Time.GetUtcNow().UtcDateTime;
+
     /// <summary>Plays queued or being sent, and Now Playing calls still out. Tests wait on it.</summary>
     internal int Outstanding
     {
@@ -152,7 +157,7 @@ public sealed class LastFmScrobbleService
     {
         if (!IsEnabledFor(username) || !Usable(track)) return;
         if (track.DurationSeconds is > 0 and < 30) return;
-        if (DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc) < DateTime.UtcNow - OldestPlay) return;
+        if (DateTime.SpecifyKind(playedAtUtc, DateTimeKind.Utc) < Now - OldestPlay) return;
         var user = username.Trim();
         lock (_gate)
         {
@@ -192,7 +197,7 @@ public sealed class LastFmScrobbleService
         var token = reply.Body?["token"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(token))
             throw new LastFmScrobbleException(reply.Ok ? "Last.fm sent no token." : Describe(reply), reply.Error);
-        _pendingApprovals[user] = (token, DateTime.UtcNow + TokenLifetime);
+        _pendingApprovals[user] = (token, Now + TokenLifetime);
         return $"{AuthUrl}?api_key={Uri.EscapeDataString(settings.ApiKey.Trim())}&token={Uri.EscapeDataString(token)}";
     }
 
@@ -204,7 +209,7 @@ public sealed class LastFmScrobbleService
         var settings = _settings.CurrentValue;
         if (!IsReadyWith(settings))
             throw new LastFmScrobbleException("Save the Last.fm API key and shared secret first.");
-        if (!_pendingApprovals.TryGetValue(user, out var pending) || pending.Expires < DateTime.UtcNow)
+        if (!_pendingApprovals.TryGetValue(user, out var pending) || pending.Expires < Now)
         {
             _pendingApprovals.TryRemove(user, out _);
             throw new LastFmScrobbleException("Start with Connect. An approval link lasts an hour.");
@@ -282,7 +287,7 @@ public sealed class LastFmScrobbleService
     public IReadOnlyList<LastFmScrobbleUser> Users(IEnumerable<string> knownUsers)
     {
         var settings = _settings.CurrentValue;
-        var now = DateTime.UtcNow;
+        var now = Now;
         return knownUsers.Concat(settings.UserSessions.Keys).Concat(_pendingApprovals.Keys).Concat(_notices.Keys)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Select(name => name.Trim())
@@ -319,7 +324,7 @@ public sealed class LastFmScrobbleService
     {
         var settings = _settings.CurrentValue;
         var session = ActiveSession(settings, user);
-        lock (_gate) if (DateTime.UtcNow < _pausedUntil) return;
+        lock (_gate) if (Now < _pausedUntil) return;
         if (session is null) return;
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -352,7 +357,7 @@ public sealed class LastFmScrobbleService
             TimeSpan wait;
             lock (_gate)
             {
-                var now = DateTime.UtcNow;
+                var now = Now;
                 (user, batch, wait) = NextBatch(now);
                 if (batch.Count == 0 && wait <= TimeSpan.Zero)
                 {
@@ -362,7 +367,13 @@ public sealed class LastFmScrobbleService
             }
             if (batch.Count == 0)
             {
-                await _wake.WaitAsync(wait);
+                // A new play wakes the loop early; otherwise it rests until the pause ends,
+                // timed on the service's clock.
+                using (var rest = new CancellationTokenSource(wait, Time))
+                {
+                    try { await _wake.WaitAsync(rest.Token); }
+                    catch (OperationCanceledException) { }
+                }
                 continue;
             }
             try { await SendBatchAsync(user, batch); }
@@ -458,7 +469,7 @@ public sealed class LastFmScrobbleService
                     {
                         // The first refusal. The plays stay queued and nothing is sent for this
                         // listener until the grace is over.
-                        _retryAt[user] = RestingUntil(session.SessionKey) ?? DateTime.UtcNow + RefusalGrace;
+                        _retryAt[user] = RestingUntil(session.SessionKey) ?? Now + RefusalGrace;
                     }
                 }
                 return;
@@ -482,7 +493,7 @@ public sealed class LastFmScrobbleService
                     }
                     var delay = TimeSpan.FromTicks(Math.Min(LongestRetryWait.Ticks,
                         RetryDelay.Ticks * (1L << Math.Min(attempts - 1, 10))));
-                    _retryAt[user] = DateTime.UtcNow + delay;
+                    _retryAt[user] = Now + delay;
                 }
                 return;
             default:
@@ -509,7 +520,7 @@ public sealed class LastFmScrobbleService
         _rateLimitStrikes++;
         var pause = TimeSpan.FromTicks(Math.Min(LongestPause.Ticks,
             RateLimitPause.Ticks * (1L << Math.Min(_rateLimitStrikes - 1, 10))));
-        _pausedUntil = DateTime.UtcNow + pause;
+        _pausedUntil = Now + pause;
     }
 
     /// <summary>
@@ -522,7 +533,7 @@ public sealed class LastFmScrobbleService
     /// </summary>
     private void MarkDisconnected(string user, string sessionKey, string detail)
     {
-        var now = DateTime.UtcNow;
+        var now = Now;
         var why = string.IsNullOrWhiteSpace(detail) ? "" : $" ({detail.Trim()})";
         if (_refusedAt.TryGetValue(sessionKey, out var first) && now - first >= RefusalGrace)
         {
@@ -588,7 +599,7 @@ public sealed class LastFmScrobbleService
     /// <summary>When a session Last.fm refused once may be tried again, or null when it is not
     /// resting.</summary>
     private DateTime? RestingUntil(string sessionKey) =>
-        _refusedAt.TryGetValue(sessionKey, out var refused) && DateTime.UtcNow - refused < RefusalGrace
+        _refusedAt.TryGetValue(sessionKey, out var refused) && Now - refused < RefusalGrace
             ? refused + RefusalGrace : null;
 
     private async Task<Reply> CallAsync(Dictionary<string, string> parameters, string secret,

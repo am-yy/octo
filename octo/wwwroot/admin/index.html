@@ -277,12 +277,15 @@
         <header class="page-header">
           <div>
             <h1>Library folder</h1>
-            <p>Where Octo writes downloaded songs and how it organizes them on disk.</p>
+            <p>Where Octo saves the songs it downloads, and how it names them.</p>
           </div>
         </header>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Storage</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Storage</h3>
+            <p class="set-desc">Octo saves into Navidrome's own music folder whenever it can see it.</p>
+          </div>
           <form data-section="library" class="set-card">
             <!-- Where downloads actually land, stated plainly. Filled by admin.js
                  from /api/admin/library-status; hidden until it answers. -->
@@ -295,21 +298,24 @@
             <div class="set-row stack" id="library-pick-row" hidden>
               <div class="set-info">
                 <div class="set-info-t">Navidrome library</div>
-                <div class="set-info-d">This server has more than one library. Pick the one Octo should download into; otherwise it uses whichever Navidrome lists first.</div>
+                <div class="set-info-d">This server has more than one library. Pick the one Octo downloads into.</div>
+                <div class="set-info-more">Left on the first choice, Octo uses whichever library Navidrome lists first.</div>
               </div>
               <select class="set-input" id="f-library-path" name="Subsonic.LibraryPath" data-restart="true" disabled></select>
             </div>
             <div class="set-row">
               <div class="set-info">
-                <div class="set-info-t">Auto-detect download path from Navidrome</div>
-                <div class="set-info-d">Octo asks Navidrome where its music folder is and writes there, so downloads always land where Navidrome scans. Only adopts a path Octo can see; otherwise it uses the field below.</div>
+                <div class="set-info-t">Follow Navidrome's music folder</div>
+                <div class="set-info-d">Octo asks Navidrome where its music is and saves there, so downloads land where Navidrome looks.</div>
+                <div class="set-info-more">Octo only adopts a folder it can see from its own container; otherwise it uses the download path below.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-autodetect-path" name="Subsonic.AutoDetectDownloadPath" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t">Download path <span class="set-opt">override / fallback</span></div>
-                <div class="set-info-d">Path INSIDE the Octo container where downloaded files land (default /music, backed by the DOWNLOAD_PATH bind mount). To move the library on the host, change DOWNLOAD_PATH in .env instead; a host path like E:\Media\Music does not work here. With auto-detect on, this is only used until Navidrome's folder is detected.</div>
+                <div class="set-info-t">Download path <span class="set-opt">fallback</span></div>
+                <div class="set-info-d">The folder inside Octo's container where songs are saved, <code>/music</code> by default.</div>
+                <div class="set-info-more">It is backed by the <code>DOWNLOAD_PATH</code> bind mount. To move your library on the host, change <code>DOWNLOAD_PATH</code> in <code>.env</code> instead: a host path like <code>E:\Media\Music</code> does not work here. While Octo follows Navidrome's folder, this is only used until that folder is found.</div>
               </div>
               <div class="field-inline">
                 <input class="set-input" id="f-download-path" name="Library.DownloadPath" data-restart="true" placeholder="/music" />
@@ -321,12 +327,15 @@
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">File layout</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">File layout</h3>
+            <p class="set-desc">How downloaded songs are named and filed on disk.</p>
+          </div>
           <form data-section="subsonic-storage" class="set-card">
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Folder structure</div>
-                <div class="set-info-d">Flat is <code>Artist - Title.flac</code>; By artist is <code>Artist/Title.flac</code>; Organized is <code>Artist/Album/01 - Title.flac</code>.</div>
+                <div class="set-info-d">Flat is <code>Artist - Title.flac</code>, By artist is <code>Artist/Title.flac</code>, Organized is <code>Artist/Album/01 - Title.flac</code>.</div>
               </div>
               <div class="set-ctrl">
                 <div class="seg" data-seg-for="f-folder-structure"><span class="seg-thumb"></span></div>
@@ -340,7 +349,7 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Use local staging</div>
-                <div class="set-info-d">Required when the download path is a cloud/FUSE mount (rclone, pCloud).</div>
+                <div class="set-info-d">Needed when the download folder is a cloud or network mount, such as rclone or pCloud.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-local-staging" name="Subsonic.UseLocalStaging" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -431,17 +440,21 @@
         <header class="page-header">
           <div>
             <h1>Music server</h1>
-            <p>Navidrome, or another Subsonic-compatible server. Octo sits in front of it. Required.</p>
+            <p>The Navidrome server Octo sits in front of. Octo needs this before anything else.</p>
           </div>
         </header>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Connection</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Connection</h3>
+            <p class="set-desc">Where Navidrome is, and an admin sign-in for the jobs that need one.</p>
+          </div>
           <form data-section="subsonic" class="set-card">
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">Navidrome URL</div>
-                <div class="set-info-d">Leave blank to let Octo find it on the network at first run. "Detect on network" scans your LAN now. Use a LAN IP, not localhost, from inside a container.</div>
+                <div class="set-info-d">Leave it blank and Octo looks for Navidrome on your network when it starts.</div>
+                <div class="set-info-more">Detect on network looks right now. From inside a container, use the server's network address, not localhost. Any Subsonic-compatible server works here too.</div>
               </div>
               <div class="set-inline">
                 <input class="set-input" id="f-subsonic-url" name="Subsonic.Url" data-restart="true" placeholder="http://192.168.1.10:4533" />
@@ -451,24 +464,28 @@
             </div>
             <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t">Admin credentials <span class="set-opt">optional</span></div>
-                <div class="set-info-d">Lets Octo detect the music folder and run authenticated rescans on its own, and library actions need them. Leave blank to have Octo learn an admin token from a client sign-in instead. A saved password is never shown here; leave it as it is to keep it.</div>
+                <div class="set-info-t">Admin sign-in <span class="set-opt">optional</span></div>
+                <div class="set-info-d">A Navidrome admin account, for finding the music folder, rescans and library actions.</div>
+                <div class="set-info-more">Leave it blank and Octo learns an admin token the next time an admin signs in from a music app. A saved password is never shown here; leave the field as it is to keep it.</div>
               </div>
               <div class="set-grid2">
-                <input class="set-input" id="f-admin-user" name="Subsonic.AdminUsername" placeholder="admin username" autocomplete="off" aria-label="Navidrome admin username" />
-                <input class="set-input" id="f-admin-pass" name="Subsonic.AdminPassword" type="password" placeholder="••••••••" autocomplete="new-password" aria-label="Navidrome admin password" />
+                <input class="set-input" id="f-admin-user" name="Subsonic.AdminUsername" placeholder="Admin username" autocomplete="off" aria-label="Navidrome admin username" />
+                <input class="set-input" id="f-admin-pass" name="Subsonic.AdminPassword" type="password" placeholder="Password" autocomplete="new-password" aria-label="Navidrome admin password" />
               </div>
             </div>
           </form>
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Behavior</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Search and discovery</h3>
+            <p class="set-desc">What Octo adds to search results and to apps that keep a copy of your library.</p>
+          </div>
           <form data-section="subsonic-behavior" class="set-card">
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t"><svg class="icon brand" aria-hidden="true"><use href="#b-deezer"/></svg>Explicit content</div>
-                <div class="set-info-d">Filter external results by explicit-content tag (Deezer metadata).</div>
+                <div class="set-info-d">Which songs from outside your library to show, by Deezer's explicit tag.</div>
               </div>
               <div class="set-ctrl">
                 <div class="seg" data-seg-for="f-explicit"><span class="seg-thumb"></span></div>
@@ -481,39 +498,44 @@
             </div>
             <div class="set-row">
               <div class="set-info">
-                <div class="set-info-t">External playlist search</div>
-                <div class="set-info-d">Discover and download playlists from streaming providers.</div>
+                <div class="set-info-t">Playlists from streaming services</div>
+                <div class="set-info-d">Find playlists on streaming services in search, and download them.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-playlists" name="Subsonic.EnableExternalPlaylists" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Discovery for offline-search apps</div>
-                <div class="set-info-d">Apps like Symfonium copy your library to the phone and search only that copy, so a search never reaches Octo. With this on, the copy also gets your radio stations' tracks that you don't own yet. They show up in search, play as previews, and heart to download like any other song. Run a full sync in the app to pick up changes.</div>
+                <div class="set-info-d">Adds your stations' songs you don't own yet to apps that search their own copy of your library.</div>
+                <div class="set-info-more">Apps like Symfonium copy your library to the phone and search only that copy, so their searches never reach Octo. With this on, the copy also holds your radio stations' songs you don't own yet: they show up in search, play as previews, and download when hearted. Run a full sync in the app to pick up changes.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-sync-catalog" name="Subsonic.EnableSyncCatalog" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
-            <div class="set-row stack">
-              <div class="set-info">
-                <div class="set-info-t">Offline-search apps</div>
-                <div class="set-info-d">The client names that get those tracks, separated by commas. Only list apps that search offline: any app listed here shows the tracks in its library views.</div>
+            <details class="set-more">
+              <summary>More settings</summary>
+              <div class="set-row stack">
+                <div class="set-info">
+                  <div class="set-info-t">Offline-search apps</div>
+                  <div class="set-info-d">The app names that get those songs, separated by commas.</div>
+                  <div class="set-info-more">Only list apps that search offline: an app listed here also shows the songs in its library views.</div>
+                </div>
+                <input class="set-input" id="f-sync-catalog-clients" name="Subsonic.SyncCatalogClients" placeholder="Symfonium" />
               </div>
-              <input class="set-input" id="f-sync-catalog-clients" name="Subsonic.SyncCatalogClients" placeholder="Symfonium" />
-            </div>
-            <div class="set-row">
-              <div class="set-info">
-                <div class="set-info-t">Tracks per user <span class="set-opt">50–5000</span></div>
-                <div class="set-info-d">The most station tracks added to one user's copy.</div>
+              <div class="set-row">
+                <div class="set-info">
+                  <div class="set-info-t">Songs per listener <span class="set-opt">50 to 5000</span></div>
+                  <div class="set-info-d">The most station songs added to one listener's copy.</div>
+                </div>
+                <input class="set-input" id="f-sync-catalog-max" name="Subsonic.SyncCatalogMaxSongs" type="number" min="50" max="5000" />
               </div>
-              <input class="set-input" id="f-sync-catalog-max" name="Subsonic.SyncCatalogMaxSongs" type="number" min="50" max="5000" />
-            </div>
-            <div class="set-row stack">
-              <div class="set-info">
-                <div class="set-info-t">Playlists directory</div>
-                <div class="set-info-d">Where downloaded playlists are written, relative to the library root.</div>
+              <div class="set-row stack">
+                <div class="set-info">
+                  <div class="set-info-t">Playlists folder</div>
+                  <div class="set-info-d">Where downloaded playlists are saved, inside your library folder.</div>
+                </div>
+                <input class="set-input" id="f-playlists-dir" name="Subsonic.PlaylistsDirectory" placeholder="playlists" />
               </div>
-              <input class="set-input" id="f-playlists-dir" name="Subsonic.PlaylistsDirectory" placeholder="playlists" />
-            </div>
+            </details>
           </form>
         </div>
       </section>

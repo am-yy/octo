@@ -2254,9 +2254,9 @@ async function refreshLibraryStatus() {
     } else if (s.autoDetect) {
       bits.push('Waiting on Navidrome to report its music folder. Until then the path below is used.');
     } else {
-      bits.push('Auto-detect is off, so the path below is used verbatim.');
+      bits.push("Following Navidrome's folder is off, so the download path below is used as it is.");
     }
-    bits.push(`Downloads go to <code>${esc(s.effectiveDownloadPath || '(unset)')}</code>${s.writable ? '' : ' — <strong>not writable by Octo</strong>'}.`);
+    bits.push(`Downloads go to <code>${esc(s.effectiveDownloadPath || '(unset)')}</code>${s.writable ? '' : ', but <strong>Octo cannot write there</strong>'}.`);
     if (!s.rescanAuthenticated) {
       bits.push('No Navidrome admin identity yet, so the rescan after a download may not run. Set admin credentials, or sign in once from a client.');
     }
@@ -2416,7 +2416,7 @@ function renderBrowse(data, result, input) {
     ? `<code>${esc(data.path)}</code>${tracks} ${data.writable ? '' : '<strong>(Octo cannot write here)</strong>'}`
     : 'Drives';
   const note = data.containerised
-    ? '<div class="detect-tag">Octo runs in a container, so this is what it can see — the host\'s own drives are not visible unless mounted.</div>'
+    ? '<div class="detect-tag">Octo runs in a container, so this is what it can see. The host\'s own drives show only if they are mounted.</div>'
     : '';
   const useBtn = data.path && data.exists
     ? `<button type="button" class="btn" id="browse-use" data-path="${esc(data.path)}">Use this folder</button>`
@@ -2480,7 +2480,7 @@ detectBtn?.addEventListener('click', async () => {
     const servers = data.servers || [];
     if (!servers.length) {
       if (result) result.innerHTML =
-        'No server found on this network. If Octo runs in a Docker bridge network it cannot see your LAN — use host networking, or enter the URL manually.';
+        'No server found on this network. On a Docker bridge network Octo cannot see your LAN, so use host networking or type the URL in.';
     } else if (servers.length === 1) {
       urlInput.value = servers[0].url;
       urlInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2489,7 +2489,7 @@ detectBtn?.addEventListener('click', async () => {
     } else {
       const rows = servers.map(s =>
         `<button type="button" class="btn btn-ghost detect-pick" data-url="${esc(s.url)}">${esc(s.url)} <span class="detect-tag">${esc(s.type || 'subsonic')} ${esc(s.serverVersion || '')}</span></button>`).join('');
-      if (result) result.innerHTML = `Found ${servers.length} servers — pick one:<div class="detect-list">${rows}</div>`;
+      if (result) result.innerHTML = `Found ${servers.length} servers. Pick one:<div class="detect-list">${rows}</div>`;
       result.querySelectorAll('.detect-pick').forEach(b =>
         b.addEventListener('click', () => {
           urlInput.value = b.dataset.url;

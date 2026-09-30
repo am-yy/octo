@@ -910,6 +910,9 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
     public int TokenInfoCalls => Volatile.Read(ref _tokenInfoCalls);
     private int _tokenInfoCalls;
 
+    /// <summary>How long tokenInfo takes to answer.</summary>
+    public TimeSpan TokenInfoDelay { get; set; }
+
     /// <summary>How many getSong calls fail with a 503 before they answer again.</summary>
     public int GetSongFailures { get; set; }
 
@@ -948,9 +951,12 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
         if (path.Equals("rest/tokenInfo", StringComparison.OrdinalIgnoreCase))
         {
             Interlocked.Increment(ref _tokenInfoCalls);
-            return Result(TokenInfoFails || query["apiKey"] is not { } key
+            var answer = Result(TokenInfoFails || query["apiKey"] is not { } key
                 ? FailedJson()
                 : OkJson($"\"tokenInfo\":{{\"username\":\"{ApiKeys[key]}\"}}"));
+            return TokenInfoDelay > TimeSpan.Zero
+                ? Task.Delay(TokenInfoDelay).ContinueWith(_ => answer).Unwrap()
+                : answer;
         }
 
         if (path.Equals("rest/scrobble", StringComparison.OrdinalIgnoreCase))

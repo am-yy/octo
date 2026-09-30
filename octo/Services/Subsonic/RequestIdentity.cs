@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,19 +16,31 @@ namespace Octo.Services.Subsonic;
 /// extension) with the same key, and the answer is kept for a few minutes.
 ///
 /// Callers ask only once the request's credentials have already been accepted upstream, so an
-/// unknown key never costs more than the one call that refuses it. The key itself is never
-/// stored or logged: the kept answer is filed under a SHA-256 of it.
+/// unknown key never costs more than the one call that refuses it. When tokenInfo fails or
+/// will not say, that too is kept, briefly, so a Navidrome without it is not asked on every
+/// request; and requests with one key arriving together make one call between them. The key
+/// itself is never stored or logged: the kept answer is filed under a SHA-256 of it.
 /// </summary>
 public sealed class RequestIdentity
 {
     /// <summary>How long a key's username is kept. A key can be revoked, so not for long.</summary>
     internal static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(5);
 
+    /// <summary>How long a key tokenInfo could not name is left unasked. Short: the next
+    /// answer may well be different, and until then the request is simply nobody's.</summary>
+    internal TimeSpan UnnamedLifetime { get; set; } = TimeSpan.FromSeconds(30);
+
     /// <summary>Keys remembered at once. A household has a handful; this only bounds a flood.</summary>
     internal const int Capacity = 512;
 
     private readonly ILogger<RequestIdentity> _logger;
     private readonly MemoryCache _names = new(new MemoryCacheOptions { SizeLimit = Capacity });
+
+    /// <summary>tokenInfo calls still out, by key hash, for the requests that arrive meanwhile.</summary>
+    private readonly ConcurrentDictionary<string, Lazy<Task<string?>>> _asking = new(StringComparer.Ordinal);
+
+    /// <summary>What was learned of one key: its owner, or null when Navidrome would not say.</summary>
+    private sealed record Answer(string? Username);
 
     public RequestIdentity(ILogger<RequestIdentity> logger)
     {
@@ -48,32 +61,53 @@ public sealed class RequestIdentity
         if (parameters.GetValueOrDefault("apiKey") is not { Length: > 0 } apiKey) return null;
 
         var slot = Fingerprint(apiKey);
-        if (_names.TryGetValue(slot, out string? known)) return known;
+        if (_names.TryGetValue(slot, out Answer? known)) return known!.Username;
 
         var ask = new Dictionary<string, string> { ["apiKey"] = apiKey, ["f"] = "json" };
         foreach (var name in new[] { "v", "c" })
             if (parameters.GetValueOrDefault(name) is { Length: > 0 } value) ask[name] = value;
+        // One call per key however many requests wait on it. It is not tied to any one of
+        // them, so a request that gives up does not fail the others.
+        var asking = _asking.GetOrAdd(slot, _ => new Lazy<Task<string?>>(() => AskAsync(slot, ask, relay)));
         try
         {
-            var (body, _) = await relay.RelayAsync("rest/tokenInfo", ask).WaitAsync(cancellationToken);
-            var owner = TokenInfoUsername(body);
-            if (owner is null)
+            return await asking.Value.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> AskAsync(string slot, Dictionary<string, string> ask, SubsonicProxyService relay)
+    {
+        try
+        {
+            // Answered while this call was being set up.
+            if (_names.TryGetValue(slot, out Answer? known)) return known!.Username;
+            string? owner;
+            try
             {
-                _logger.LogDebug("Navidrome did not say whose API key this request used");
-                return null;
+                var (body, _) = await relay.RelayAsync("rest/tokenInfo", ask);
+                owner = TokenInfoUsername(body);
+                if (owner is null) _logger.LogDebug("Navidrome did not say whose API key this request used");
             }
-            _names.Set(slot, owner, new MemoryCacheEntryOptions
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException
+                                           or OctoNotConfiguredException)
+            {
+                _logger.LogDebug("Could not ask Navidrome whose API key this request used: {Reason}", ex.GetType().Name);
+                owner = null;
+            }
+            _names.Set(slot, new Answer(owner), new MemoryCacheEntryOptions
             {
                 Size = 1,
-                AbsoluteExpirationRelativeToNow = Lifetime,
+                AbsoluteExpirationRelativeToNow = owner is null ? UnnamedLifetime : Lifetime,
             });
             return owner;
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException
-                                       or OctoNotConfiguredException)
+        finally
         {
-            _logger.LogDebug("Could not ask Navidrome whose API key this request used: {Reason}", ex.GetType().Name);
-            return null;
+            _asking.TryRemove(slot, out _);
         }
     }
 

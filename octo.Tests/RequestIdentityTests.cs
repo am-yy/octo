@@ -151,6 +151,60 @@ public sealed class RequestIdentityTests
         Assert.Null(RequestIdentity.TokenInfoUsername(Bytes("<subsonic-response status=\"ok\"/>")));
     }
 
+    /// <summary>A Navidrome whose tokenInfo will not say is not asked again on every request.</summary>
+    [Fact]
+    public async Task ApiKey_NavidromeWouldNotName_IsNotAskedAgainStraightAway()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        fixture.Handler.TokenInfoFails = true;
+        var id = RegisterOutsideSong(fixture);
+        using var client = fixture.CreateClient();
+
+        for (var i = 0; i < 3; i++)
+            await client.GetStringAsync($"/rest/scrobble?apiKey=bob-key&v=1.16.1&c=x&f=json&id={id}&submission=false");
+
+        Assert.Equal(1, fixture.Handler.TokenInfoCalls);
+        Assert.Empty(fixture.Handler.LastFm.Calls);
+    }
+
+    /// <summary>Only briefly, though: once the wait is over the key is asked about again.</summary>
+    [Fact]
+    public async Task ApiKey_NavidromeWouldNotName_IsAskedAgainAfterAWhile()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        fixture.Services.GetRequiredService<RequestIdentity>().UnnamedLifetime = TimeSpan.FromMilliseconds(1);
+        fixture.Handler.TokenInfoFails = true;
+        var id = RegisterOutsideSong(fixture);
+        using var client = fixture.CreateClient();
+        var url = $"/rest/scrobble?apiKey=bob-key&v=1.16.1&c=x&f=json&id={id}&submission=false";
+
+        await client.GetStringAsync(url);
+        await Task.Delay(50);
+        fixture.Handler.TokenInfoFails = false;
+        await client.GetStringAsync(url);
+        await WhenIdle(fixture);
+
+        Assert.Equal(2, fixture.Handler.TokenInfoCalls);
+        Assert.Single(fixture.Handler.LastFm.CallsTo("track.updateNowPlaying"));
+    }
+
+    /// <summary>Requests with one key arriving together make one tokenInfo call between them.</summary>
+    [Fact]
+    public async Task ApiKey_RequestsArrivingTogether_AskOnce()
+    {
+        await using var fixture = new RadioWebFactory(lastFmScrobbling: true);
+        fixture.Handler.TokenInfoDelay = TimeSpan.FromMilliseconds(300);
+        var id = RegisterOutsideSong(fixture);
+        using var client = fixture.CreateClient();
+
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
+            client.GetStringAsync($"/rest/scrobble?apiKey=bob-key&v=1.16.1&c=x&f=json&id={id}&submission=false")));
+        await WhenIdle(fixture);
+
+        Assert.Equal(1, fixture.Handler.TokenInfoCalls);
+        Assert.Equal(4, fixture.Handler.LastFm.CallsTo("track.updateNowPlaying").Count);
+    }
+
     private static string Search(int offset, int count, string auth) =>
         $"/rest/search3.view?query=paging&songCount={count}&songOffset={offset}&albumCount=0&artistCount=0" +
         $"{auth}&v=1.16.1&c=Test&f=json";

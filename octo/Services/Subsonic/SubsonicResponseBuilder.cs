@@ -836,6 +836,7 @@ public partial class SubsonicResponseBuilder
             ["artist"] = album.Artist ?? "",
             ["artistId"] = artistId,
             ["songCount"] = album.SongCount ?? 0,
+            ["duration"] = album.Songs.Sum(s => s.Duration ?? 0),
             ["genre"] = album.Genre ?? "",
             ["coverArt"] = album.Id,
             ["created"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),

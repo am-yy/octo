@@ -94,6 +94,14 @@ public sealed class LidarrClient
             ?? throw new InvalidOperationException($"Lidarr could not unambiguously match '{artist} - {album}'.");
     }
 
+    /// <summary>The candidate for a MusicBrainz release group id, or null when Lidarr does not know it.</summary>
+    public async Task<LidarrAlbumCandidate?> ResolveAlbumByForeignIdAsync(string foreignAlbumId, CancellationToken ct = default)
+    {
+        var rows = await GetArrayAsync($"/api/v1/album/lookup?term={Uri.EscapeDataString("lidarr:" + foreignAlbumId)}", ct);
+        return rows.Select(ParseAlbum).FirstOrDefault(x =>
+            string.Equals(x.ForeignAlbumId, foreignAlbumId, StringComparison.OrdinalIgnoreCase));
+    }
+
     internal static LidarrAlbumCandidate? SelectBestAlbum(
         IReadOnlyList<LidarrAlbumCandidate> candidates, string artist, string album, int? year)
     {

@@ -52,6 +52,56 @@ public sealed class MusicBrainzClient
         return doc is null ? null : ParseIsrcs(doc.RootElement);
     }
 
+    /// <summary>
+    /// The release group of the oldest official studio album a song appears on, or of a
+    /// soundtrack when no studio album has it. Null when MusicBrainz knows neither.
+    /// </summary>
+    public async Task<string?> FindStudioAlbumAsync(string artist, string title, CancellationToken ct)
+    {
+        var plainTitle = SongIdentity.StripFeatures(title);
+        // Words, not a phrase: "They Dont Care About Us" has to find "They Don't Care About Us".
+        var words = new string(plainTitle.Select(c => char.IsLetterOrDigit(c) ? c : ' ').ToArray()).Trim();
+        if (string.IsNullOrWhiteSpace(artist) || words.Length == 0) return null;
+        var query = $"recording:({words}) AND artist:\"{Escape(artist)}\" AND primarytype:album AND status:official";
+        using var doc = await GetAsync($"recording/?query={Uri.EscapeDataString(query)}&fmt=json&limit=50", "studio album search", ct);
+        return doc is null ? null : PickStudioAlbum(doc.RootElement, plainTitle);
+    }
+
+    internal static string? PickStudioAlbum(JsonElement root, string title)
+    {
+        if (!root.TryGetProperty("recordings", out var recordings) || recordings.ValueKind != JsonValueKind.Array)
+            return null;
+        var wanted = SongIdentity.Key(title);
+        string? groupId = null, groupDate = null;
+        var groupRank = int.MaxValue;
+        foreach (var recording in recordings.EnumerateArray())
+        {
+            if (!recording.TryGetProperty("title", out var recordingTitle)
+                || SongIdentity.Key(recordingTitle.GetString()) != wanted
+                || !recording.TryGetProperty("releases", out var releases)) continue;
+            foreach (var release in releases.EnumerateArray())
+            {
+                if (!release.TryGetProperty("release-group", out var group)
+                    || !group.TryGetProperty("primary-type", out var type) || type.GetString() != "Album") continue;
+                var secondary = group.TryGetProperty("secondary-types", out var s) && s.ValueKind == JsonValueKind.Array
+                    ? s.EnumerateArray().Select(x => x.GetString()).ToList() : [];
+                var rank = secondary.Count == 0 ? 0 : secondary is ["Soundtrack"] ? 1 : -1;
+                if (rank < 0 || rank > groupRank) continue;
+
+                var date = release.TryGetProperty("date", out var d) && !string.IsNullOrEmpty(d.GetString())
+                    ? d.GetString() : null;
+                if (rank < groupRank || groupId is null
+                    || (date is not null && (groupDate is null || string.CompareOrdinal(date, groupDate) < 0)))
+                {
+                    groupId = group.GetProperty("id").GetString();
+                    groupDate = date;
+                    groupRank = rank;
+                }
+            }
+        }
+        return groupId;
+    }
+
     /// <summary>The "isrcs" list of a recording lookup, each one normalised; invalid ones dropped.</summary>
     internal static IReadOnlyList<string> ParseIsrcs(JsonElement root) =>
         root.TryGetProperty("isrcs", out var isrcs) && isrcs.ValueKind == JsonValueKind.Array

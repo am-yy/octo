@@ -134,6 +134,7 @@ public sealed class LidarrClient
                 resource["monitored"] = true;
                 await SendJsonAsync(HttpMethod.Put, $"/api/v1/album/{albumId}", resource, ct);
             }
+            await EnsureArtistMonitoredAsync(resource["artist"] as JsonObject, ct);
         }
         else
         {
@@ -164,15 +165,18 @@ public sealed class LidarrClient
                 artist["monitored"] = true;
                 artist["monitorNewItems"] = "none";
                 artist["tags"] = new JsonArray();
+                // "none" would unmonitor the artist and, after its first refresh, this album too.
                 artist["addOptions"] = new JsonObject
                 {
-                    ["monitor"] = "none",
+                    ["monitor"] = "unknown",
+                    ["albumsToMonitor"] = new JsonArray(candidate.ForeignAlbumId),
                     ["searchForMissingAlbums"] = false,
                 };
             }
 
             var added = await SendJsonAsync(HttpMethod.Post, "/api/v1/album", resource, ct);
             albumId = Int(added, "id");
+            await EnsureArtistMonitoredAsync(existingArtist, ct);
         }
 
         await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
@@ -181,6 +185,16 @@ public sealed class LidarrClient
             ["albumIds"] = new JsonArray(albumId),
         }, ct);
         return albumId;
+    }
+
+    /// <summary>Lidarr neither upgrades nor re-searches albums of an unmonitored artist.</summary>
+    private async Task EnsureArtistMonitoredAsync(JsonObject? artist, CancellationToken ct)
+    {
+        if (artist is null || artist["monitored"]?.GetValue<bool>() != false) return;
+        var id = Int(artist, "id");
+        var full = await GetObjectAsync($"/api/v1/artist/{id}", ct);
+        full["monitored"] = true;
+        await SendJsonAsync(HttpMethod.Put, $"/api/v1/artist/{id}", full, ct);
     }
 
     public async Task<IReadOnlyList<LidarrImportedTrack>> GetAlbumTracksAsync(int albumId, CancellationToken ct = default)

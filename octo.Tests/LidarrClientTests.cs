@@ -121,6 +121,8 @@ public class LidarrClientTests
         Assert.Equal(3, add["artist"]!["qualityProfileId"]!.GetValue<int>());
         Assert.Equal(4, add["artist"]!["metadataProfileId"]!.GetValue<int>());
         Assert.Equal("none", add["artist"]!["monitorNewItems"]!.GetValue<string>());
+        Assert.Equal("unknown", add["artist"]!["addOptions"]!["monitor"]!.GetValue<string>());
+        Assert.Equal("mbid", add["artist"]!["addOptions"]!["albumsToMonitor"]![0]!.GetValue<string>());
         var command = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command").Body!;
         Assert.Contains("AlbumSearch", command);
         Assert.Contains("42", command);
@@ -150,6 +152,31 @@ public class LidarrClientTests
         Assert.Equal("/existing/Artist", add["artist"]!["path"]!.GetValue<string>());
         Assert.Equal(9, add["artist"]!["qualityProfileId"]!.GetValue<int>());
         Assert.Equal(10, add["artist"]!["metadataProfileId"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task UnmonitoredExistingArtistIsMonitoredAndOtherwiseUnchanged()
+    {
+        var handler = new Handler
+        {
+            Respond = req => (req.Method.Method, req.RequestUri!.AbsolutePath) switch
+            {
+                ("GET", "/api/v1/album") =>
+                    "[{\"id\":12,\"foreignAlbumId\":\"mbid\",\"monitored\":true,\"artist\":{\"id\":7,\"monitored\":false}}]",
+                ("GET", "/api/v1/artist/7") =>
+                    "{\"id\":7,\"monitored\":false,\"monitorNewItems\":\"none\",\"qualityProfileId\":9}",
+                ("PUT", "/api/v1/artist/7") => "{\"id\":7,\"monitored\":true}",
+                ("POST", "/api/v1/command") => "{\"id\":9}",
+                _ => "[]",
+            },
+        };
+
+        await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020));
+
+        var update = JsonNode.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Put).Body!)!;
+        Assert.True(update["monitored"]!.GetValue<bool>());
+        Assert.Equal("none", update["monitorNewItems"]!.GetValue<string>());
+        Assert.Equal(9, update["qualityProfileId"]!.GetValue<int>());
     }
 
     [Fact]

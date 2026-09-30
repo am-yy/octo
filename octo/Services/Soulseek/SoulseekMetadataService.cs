@@ -646,13 +646,15 @@ public class SoulseekMetadataService : IMusicMetadataService
         var detail = await _deezer.GetAlbumDetailAsync(deezerAlbumId);
         // An album with no resolvable tracklist must still render, so fall through with
         // whatever we already have rather than failing the request.
+        // No songs are filed in here: Deezer knows this album and only failed to answer
+        // this time, and a partial list would be taken for the whole album by a client
+        // that caches what it syncs.
         if (detail is null)
         {
-            ListSongsFiledUnder(album, routing, placeholder, artistId);
             _logger.LogWarning(
                 "getAlbum '{Artist} - {Album}' ({Id}): Deezer album {DeezerId} returned no usable detail "
-                + "(see the deezer warning above for why); listing the {Count} song(s) filed under it",
-                routing.Artist, placeholder, externalId, deezerAlbumId, album.Songs.Count);
+                + "(see the deezer warning above for why); returning album without a tracklist",
+                routing.Artist, placeholder, externalId, deezerAlbumId);
             return album;
         }
 

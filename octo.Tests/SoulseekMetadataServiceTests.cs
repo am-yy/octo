@@ -166,6 +166,25 @@ public class SoulseekMetadataServiceTests
     }
 
     [Fact]
+    public async Task GetAlbumAsync_DeezerKnowsTheAlbumButFailsToAnswer_ListsNoFiledSongs()
+    {
+        // A partial list during a Deezer outage would be cached as the whole album by a
+        // client that syncs, so the songs filed under it are only a stand-in when Deezer
+        // has no such album at all.
+        var svc = BuildService(new() { ["/search/album"] = AlbumSearchJson });
+        var albumId = (await svc.SearchAlbumsAsync("test", 10)).Single().Id;
+        _registry.Register(new SoulseekRouting
+        {
+            Kind = RoutingKind.Song, Artist = "Test Artist", Title = "Track One", Album = "Test Album", Duration = 200,
+        });
+
+        var album = await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, albumId);
+
+        Assert.NotNull(album);
+        Assert.Empty(album!.Songs);
+    }
+
+    [Fact]
     public async Task GetAlbumAsync_UnknownId_ReturnsNull()
     {
         var svc = BuildService(new());

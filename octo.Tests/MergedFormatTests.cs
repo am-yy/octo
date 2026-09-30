@@ -58,9 +58,10 @@ public sealed class MergedFormatTests
                     return Json("""{"data":[{"id":8,"name":"Test Artist Orchestra","nb_fan":90000,"picture_xl":"https://cdn/orchestra.jpg"},{"id":9,"name":"Test Artist","nb_fan":5000,"picture_xl":"https://cdn/somebody-else.jpg"},{"id":7,"name":"Test Artist","nb_fan":10,"picture_xl":"https://cdn/test-artist.jpg"}]}""");
                 if (path.StartsWith("/artist/9/albums", StringComparison.Ordinal))
                     return Json("""{"data":[{"id":90,"title":"Somebody Else's Record","record_type":"album","release_date":"2010-01-01"}]}""");
-                // The catalog's own shape: no artist and no track counts on this listing.
+                // The catalog's own shape: no artist and no track counts on this listing. An EP
+                // shares the album's title, and would open as the album (or the album as it).
                 if (path.StartsWith("/artist/7/albums", StringComparison.Ordinal))
-                    return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","release_date":"2001-01-01"},{"id":2,"title":"Other Album","record_type":"album","release_date":"2005-05-05"},{"id":3,"title":"A Single","record_type":"single","release_date":"2006-01-01"}]}""");
+                    return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","release_date":"2001-01-01"},{"id":2,"title":"Other Album","record_type":"album","release_date":"2005-05-05"},{"id":3,"title":"A Single","record_type":"single","release_date":"2006-01-01"},{"id":4,"title":"Other Album","record_type":"ep","release_date":"2004-04-04"}]}""");
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             }
 
@@ -264,10 +265,12 @@ public sealed class MergedFormatTests
         // The listing has no track count; the album's own record fills it in.
         Assert.Equal(9, outside.GetProperty("songCount").GetInt32());
 
-        // And the outside album opens.
+        // And the outside album opens, as the album rather than the EP of its name.
         using var opened = JsonDocument.Parse(await client.GetStringAsync(
             $"/rest/getAlbum.view?{Auth}&f=json&id={outside.GetProperty("id").GetString()}"));
         Assert.Equal("Other Album", opened.RootElement.GetProperty("subsonic-response").GetProperty("album").GetProperty("name").GetString());
+        var registry = factory.Services.GetRequiredService<Octo.Services.Soulseek.ExternalIdRegistry>();
+        Assert.Equal("2", registry.Lookup(outside.GetProperty("id").GetString()!)!.ExternalAlbumId);
     }
 
     [Fact]

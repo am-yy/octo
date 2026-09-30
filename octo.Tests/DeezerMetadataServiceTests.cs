@@ -12,7 +12,8 @@ public class DeezerMetadataServiceTests
     /// <summary>Builds a service whose HTTP layer answers from a url-substring to body map.
     /// Any url with no match returns 404, which exercises the best-effort paths.</summary>
     private static DeezerMetadataService BuildService(Dictionary<string, string> routes,
-        string language = "en", List<HttpRequestMessage>? capture = null)
+        string language = "en", List<HttpRequestMessage>? capture = null,
+        ILogger<DeezerMetadataService>? logger = null)
     {
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
@@ -40,7 +41,7 @@ public class DeezerMetadataServiceTests
 
         return new DeezerMetadataService(factory.Object,
             TestOptions.Monitor(new MetadataSettings { Language = language }),
-            new Mock<ILogger<DeezerMetadataService>>().Object);
+            logger ?? new Mock<ILogger<DeezerMetadataService>>().Object);
     }
 
     /// <summary>Deezer reports throttling as HTTP 200 with this body, which is the whole
@@ -739,4 +740,54 @@ public class DeezerMetadataServiceTests
     [InlineData(null, null)]
     public void ReleaseType_UsesOpenSubsonicNames(string? recordType, string? expected)
         => Assert.Equal(expected, DeezerMetadataService.ReleaseType(recordType));
+
+    [Theory]
+    [InlineData("album", "ep", "single")]
+    [InlineData("single", "ep", "album")]
+    [InlineData("ep", "album", "single")]
+    public async Task GetArtistAlbumsAsync_OneTitleIsOneRow_TheAlbumKept(string first, string second, string third)
+    {
+        // An album and its own EP or single can share a title. An outside album's id is made
+        // from the artist and title, so both rows would open one release: whichever came last.
+        var json = $@"{{""data"":[
+            {{""id"":1,""title"":""Same Name"",""record_type"":""{first}"",""release_date"":""2020-01-01""}},
+            {{""id"":2,""title"":""Same Name"",""record_type"":""{second}"",""release_date"":""2020-01-01""}},
+            {{""id"":3,""title"":""same name!"",""record_type"":""{third}"",""release_date"":""2019-01-01""}}
+        ]}}";
+        var svc = BuildService(new() { ["/artist/9/albums"] = json });
+
+        var hit = Assert.Single(await svc.GetArtistAlbumsAsync("9", "Some Artist"));
+
+        Assert.Equal("album", hit.RecordType);
+        Assert.Equal(new[] { first, second, third }.ToList().IndexOf("album") + 1, int.Parse(hit.DeezerId));
+    }
+
+    [Fact]
+    public async Task GetArtistAlbumsAsync_SaysSoWhenTheCatalogHasMoreThanTheListing()
+    {
+        var logger = new Mock<ILogger<DeezerMetadataService>>();
+        var json = @"{""total"":250,""data"":[
+            {""id"":1,""title"":""Newest"",""record_type"":""album"",""release_date"":""2024-01-01""}]}";
+        var svc = BuildService(new() { ["/artist/9/albums"] = json }, logger: logger.Object);
+
+        Assert.Single(await svc.GetArtistAlbumsAsync("9", "Long Career"));
+
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains("has 250 releases; the page lists the first 1")),
+            It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetArtistAlbumsAsync_AWholeListingWarnsOfNothing()
+    {
+        var logger = new Mock<ILogger<DeezerMetadataService>>();
+        var json = @"{""total"":1,""data"":[
+            {""id"":1,""title"":""Only"",""record_type"":""album"",""release_date"":""2024-01-01""}]}";
+        var svc = BuildService(new() { ["/artist/9/albums"] = json }, logger: logger.Object);
+
+        await svc.GetArtistAlbumsAsync("9", "Short Career");
+
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(),
+            It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
+    }
 }

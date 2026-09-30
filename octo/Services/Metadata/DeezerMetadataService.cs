@@ -455,7 +455,10 @@ public class DeezerMetadataService : IDisposable
     /// <summary>
     /// An artist's own releases for their page: albums, then EPs, then singles, then their own
     /// compilations, newest first within each, the way the apps group a discography. One copy
-    /// of each title (the catalog lists a clean and an explicit copy of many). Singles used to
+    /// of each title, whatever its type: the catalog lists a clean and an explicit copy of many,
+    /// and an album can share its title with its own single or EP. The album is the one kept.
+    /// Two releases of one title would also open as one, since an outside album's id is made
+    /// from the artist and title, and the second would take over the first's. Singles used to
     /// be left out unless there was nothing else, which hid half of a career that is mostly
     /// singles; grouped after the records, they no longer bury them. The artist's name is not
     /// on this listing, so every hit carries the one given.
@@ -467,6 +470,10 @@ public class DeezerMetadataService : IDisposable
         if (TryGetCached<List<AlbumHit>>(key, out var cached)) return cached!;
 
         var releases = new List<AlbumHit>();
+        // Where each title sits in the list, so a better copy found later takes its place.
+        var byTitle = new Dictionary<string, int>(StringComparer.Ordinal);
+        int? total = null;
+        var listed = 0;
         try
         {
             var id = Uri.EscapeDataString(deezerArtistId);
@@ -477,7 +484,8 @@ public class DeezerMetadataService : IDisposable
                 && r.Doc.RootElement.TryGetProperty("data", out var data)
                 && data.ValueKind == JsonValueKind.Array)
             {
-                var seen = new HashSet<string>(StringComparer.Ordinal);
+                total = Int(r.Doc.RootElement, "total");
+                listed = data.GetArrayLength();
                 // Materialize everything before the JsonDocument is disposed.
                 foreach (var a in data.EnumerateArray())
                 {
@@ -492,8 +500,16 @@ public class DeezerMetadataService : IDisposable
                     var hit = new AlbumHit(albumId, title, artistName,
                         Str(a, "cover_xl") ?? Str(a, "cover_medium"), year, Int(a, "nb_tracks") ?? 0, recordType);
 
-                    if (!seen.Add(Octo.Services.Common.SongIdentity.Key(title) + "|" + recordType)) continue;
-                    releases.Add(hit);
+                    var titleKey = Octo.Services.Common.SongIdentity.Key(title);
+                    if (!byTitle.TryGetValue(titleKey, out var at))
+                    {
+                        byTitle[titleKey] = releases.Count;
+                        releases.Add(hit);
+                    }
+                    else if (ReleaseRank(recordType) < ReleaseRank(releases[at].RecordType))
+                    {
+                        releases[at] = hit;
+                    }
                 }
             }
         }
@@ -501,6 +517,12 @@ public class DeezerMetadataService : IDisposable
         {
             _logger.LogDebug("deezer artist albums '{Id}' failed: {M}", deezerArtistId, ex.Message);
         }
+
+        // Said out loud, because a page that stops short otherwise looks like a whole career.
+        if (total is int all && all > listed)
+            _logger.LogWarning(
+                "deezer artist {Id} ('{Artist}') has {Total} releases; the page lists the first {Listed}",
+                deezerArtistId, artistName, all, listed);
 
         var hits = releases
             .OrderBy(h => ReleaseRank(h.RecordType))

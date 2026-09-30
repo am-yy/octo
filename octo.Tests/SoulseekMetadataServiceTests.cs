@@ -349,7 +349,86 @@ public class SoulseekMetadataServiceTests
 
         Assert.Contains("Dedicated to Markos III", albums.Select(a => a.Title));
         Assert.DoesNotContain("Nevermind", albums.Select(a => a.Title));
-        Assert.Equal("111", _registry.Lookup(id)!.ExternalArtistId);
+        // The library page's choice is its own. The artist's routing is everyone's.
+        Assert.Equal("222", _registry.Lookup(id)!.ExternalArtistId);
+
+        // Kept for the page's next visit all the same: no name search this time.
+        var searches = _calls.Count(c => c.Contains("/search/artist"));
+        var again = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id,
+            ["Local Anaesthetic"]);
+        Assert.Equal(albums.Select(a => a.Title), again.Select(a => a.Title));
+        Assert.Equal(searches, _calls.Count(c => c.Contains("/search/artist")));
+    }
+
+    [Fact]
+    public async Task GetArtistAlbums_ALibraryPagesNamesake_StaysOnThatPage()
+    {
+        // One listener's library holds the less followed Nirvana. Their library page picking
+        // that artist used to write it onto the name's shared routing, and every listener's
+        // outside page and search row for "Nirvana" then showed the library's artist.
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000,""picture_xl"":""https://cdn/us.jpg""},
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40,""picture_xl"":""https://cdn/uk.jpg""}]}",
+            ["/artist/111/albums"] = Releases("Local Anaesthetic"),
+            ["/artist/222/albums"] = Releases("Nevermind"),
+        });
+        // The library page: a name search, then the albums with the library's titles.
+        var id = (await svc.SearchArtistsAsync("Nirvana", 5)).Single().Id;
+        var library = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id, ["Local Anaesthetic"]);
+        Assert.Equal(["Local Anaesthetic"], library.Select(a => a.Title));
+
+        // Another listener's outside page for the name, and their search row.
+        var outside = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id);
+        var row = (await svc.SearchArtistsAsync("Nirvana", 5)).Single();
+
+        Assert.Equal(["Nevermind"], outside.Select(a => a.Title));
+        Assert.Equal("https://cdn/us.jpg", row.ImageUrl);
+        Assert.Equal("222", _registry.Lookup(id)!.ExternalArtistId);
+    }
+
+    [Fact]
+    public async Task SearchAlbums_TheAlbumsArtistIsTheOneWhoMadeIt()
+    {
+        // Two artists share a name. An album row's artist link opened a page for whichever of
+        // them a name search ranked first, though the album says who made it.
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = @"{""data"":[
+                {""id"":5,""title"":""Local Anaesthetic"",""record_type"":""album"",""nb_tracks"":6,
+                 ""artist"":{""id"":111,""name"":""Nirvana""}}]}",
+            ["/search/artist"] = @"{""data"":[
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000,""picture_xl"":""https://cdn/us.jpg""},
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40,""picture_xl"":""https://cdn/uk.jpg""}]}",
+            ["/artist/111/albums"] = Releases("Local Anaesthetic"),
+            ["/artist/222/albums"] = Releases("Nevermind"),
+        });
+
+        var album = Assert.Single(await svc.SearchAlbumsAsync("local anaesthetic", 10));
+        var page = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, album.ArtistId!);
+        var artist = await svc.GetArtistAsync(SoulseekMetadataService.ProviderName, album.ArtistId!);
+
+        Assert.Equal("111", _registry.Lookup(album.ArtistId!)!.ExternalArtistId);
+        Assert.Equal(["Local Anaesthetic"], page.Select(a => a.Title));
+        Assert.Equal("https://cdn/uk.jpg", artist!.ImageUrl);
+    }
+
+    [Fact]
+    public async Task SearchAlbums_AnArtistAlreadySettled_KeepsItsChoice()
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = @"{""data"":[
+                {""id"":5,""title"":""Local Anaesthetic"",""record_type"":""album"",""nb_tracks"":6,
+                 ""artist"":{""id"":111,""name"":""Nirvana""}}]}",
+        });
+        var id = OutsideArtist("Nirvana", "222");
+
+        var album = Assert.Single(await svc.SearchAlbumsAsync("local anaesthetic", 10));
+
+        Assert.Equal(id, album.ArtistId);
+        Assert.Equal("222", _registry.Lookup(id)!.ExternalArtistId);
     }
 
     [Fact]

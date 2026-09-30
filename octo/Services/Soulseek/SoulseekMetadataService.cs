@@ -495,6 +495,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Kind = RoutingKind.Artist,
                 Artist = hit.Artist,
             });
+            SeedCatalogArtist(artistId, hit.ArtistDeezerId);
 
             albums.Add(new Album
             {
@@ -513,6 +514,20 @@ public class SoulseekMetadataService : IMusicMetadataService
         }
 
         return albums;
+    }
+
+    /// <summary>
+    /// An album names the catalog artist who made it, and the artist it links to is that
+    /// artist: of two artists of one name, the page opened from "Nevermind" is the one who made
+    /// it, not whichever a name search ranks first. Only when nothing has settled the artist
+    /// yet: an artist search or an earlier visit already chose.
+    /// </summary>
+    private void SeedCatalogArtist(string artistId, string? deezerArtistId)
+    {
+        if (deezerArtistId is not { Length: > 0 }) return;
+        if (_idRegistry.Lookup(artistId) is not { ExternalArtistId: null } routing) return;
+        routing.ExternalArtistId = deezerArtistId;
+        _idRegistry.Register(routing);
     }
 
     public async Task<List<Artist>> SearchArtistsAsync(string query, int limit = 20)
@@ -538,8 +553,8 @@ public class SoulseekMetadataService : IMusicMetadataService
             var routing = _idRegistry.Lookup(id);
             var hit = sameName.FirstOrDefault(h => h.DeezerId == routing?.ExternalArtistId)
                 ?? MostFollowed(sameName);
-            // Remembered only when nothing is yet: an artist page that checked the choice
-            // against the library knows better than a search does.
+            // Remembered only when nothing is yet: an album row or an earlier visit to the
+            // artist's page already settled which artist of the name this is.
             if (routing is not null && routing.ExternalArtistId is null)
             {
                 routing.ExternalArtistId = hit.DeezerId;
@@ -667,6 +682,7 @@ public class SoulseekMetadataService : IMusicMetadataService
         // but if one ever gets through, reporting zero is worse than saying nothing.
         if (detail.Tracks.Count > 0) album.SongCount = detail.Tracks.Count;
         if (!string.IsNullOrWhiteSpace(detail.Artist)) album.Artist = detail.Artist;
+        if (SongIdentity.SameArtistName(detail.Artist, routing.Artist)) SeedCatalogArtist(artistId, detail.ArtistDeezerId);
 
         foreach (var track in detail.Tracks)
         {
@@ -788,20 +804,36 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// <summary>
     /// The releases of the catalog artist an outside artist's name stands for, or none when no
     /// catalog artist has that name. The catalog id Octo already holds wins over a name search:
-    /// it is the artist the user tapped in search, or the one an earlier visit settled on. On a
-    /// library artist's page it must also share an album with the library, because two artists
-    /// can share a name and the library says which one is meant. Without an id, only artists
-    /// with this exact name count; of several, the one sharing the most albums with the library,
-    /// else the one more people follow. The choice is kept on the artist for the next visit.
+    /// it is the artist the user tapped in search or whose album they opened, or the one an
+    /// earlier visit settled on. On a library artist's page it must also share an album with
+    /// the library, because two artists can share a name and the library says which one is
+    /// meant. Without an id, only artists with this exact name count; of several, the one
+    /// sharing the most albums with the library, else the one more people follow.
+    ///
+    /// The choice is kept for the next visit, and where depends on the page. The artist's
+    /// routing is shared by everyone who reaches that name, from search, an album or a song,
+    /// so an outside page keeps its choice there. A library artist's page keeps its own apart,
+    /// under <paramref name="pageKey"/>: written onto the routing, the library's namesake
+    /// became every listener's search row and outside page for the name.
     /// </summary>
     private async Task<List<DeezerMetadataService.AlbumHit>> FindArtistReleasesAsync(
-        SoulseekRouting routing, string name, IReadOnlySet<string> owned)
+        SoulseekRouting routing, string name, IReadOnlySet<string> owned, string pageKey)
     {
+        var libraryPage = owned.Count > 0;
+        var knownId = libraryPage && _libraryPicks.TryGetValue(pageKey, out var picked)
+            ? picked
+            : routing.ExternalArtistId;
+
         List<DeezerMetadataService.AlbumHit>? knownReleases = null;
-        if (routing.ExternalArtistId is { Length: > 0 } known)
+        if (knownId is { Length: > 0 } known)
         {
             knownReleases = await _deezer.GetArtistAlbumsAsync(known, name);
-            if (owned.Count == 0 || Shared(knownReleases, owned) > 0) return knownReleases;
+            if (!libraryPage) return knownReleases;
+            if (Shared(knownReleases, owned) > 0)
+            {
+                KeepLibraryPick(pageKey, known);
+                return knownReleases;
+            }
         }
 
         var candidates = (await _deezer.SearchArtistsAsync(name, ArtistCandidates))
@@ -824,12 +856,30 @@ public class SoulseekMetadataService : IMusicMetadataService
         }
         releases ??= await _deezer.GetArtistAlbumsAsync(pick.DeezerId, name);
 
-        if (pick.DeezerId != routing.ExternalArtistId)
+        if (libraryPage)
+        {
+            KeepLibraryPick(pageKey, pick.DeezerId);
+        }
+        else if (pick.DeezerId != routing.ExternalArtistId)
         {
             routing.ExternalArtistId = pick.DeezerId;
             _idRegistry.Register(routing);
         }
         return releases;
+    }
+
+    /// <summary>The catalog artist each library artist's page settled on, by the page's artist
+    /// and library titles. Never on the shared routing: see FindArtistReleasesAsync.</summary>
+    private readonly ConcurrentDictionary<string, string> _libraryPicks = new();
+
+    /// <summary>How many library pages' choices are kept. Past it they start over: a choice
+    /// lost costs one comparison against listings the catalog cache still holds.</summary>
+    private const int LibraryPicksKept = 2048;
+
+    private void KeepLibraryPick(string pageKey, string deezerArtistId)
+    {
+        if (_libraryPicks.Count >= LibraryPicksKept && !_libraryPicks.ContainsKey(pageKey)) _libraryPicks.Clear();
+        _libraryPicks[pageKey] = deezerArtistId;
     }
 
     /// <summary>The catalog artist of this exact name an outside artist stands for: the one
@@ -920,7 +970,7 @@ public class SoulseekMetadataService : IMusicMetadataService
             StringComparer.Ordinal);
         var key = externalId + "|" + string.Join("\u001f", owned.Order(StringComparer.Ordinal));
         Task<List<DeezerMetadataService.AlbumHit>> Releases() =>
-            SharedWalk(_releaseWalks, key, () => FindArtistReleasesAsync(routing, name, owned));
+            SharedWalk(_releaseWalks, key, () => FindArtistReleasesAsync(routing, name, owned, key));
 
         ArtistWalk walk;
         if (fillCounts)

@@ -38,7 +38,7 @@ public class DeezerMetadataService : IDisposable
     /// <summary>One album from a catalog search. Year is not on the search payload;
     /// the detail call fills it.</summary>
     public record AlbumHit(string DeezerId, string Title, string Artist,
-        string? CoverUrl, int? Year, int TrackCount, string? RecordType);
+        string? CoverUrl, int? Year, int TrackCount, string? RecordType, string? ArtistDeezerId = null);
 
     /// <summary>One track of an album, with the real length and position.</summary>
     public record AlbumTrack(string Title, string Artist, int? Duration,
@@ -48,7 +48,7 @@ public class DeezerMetadataService : IDisposable
     /// album, ep, single or compile.</summary>
     public record AlbumDetail(string DeezerId, string Title, string Artist,
         string? CoverUrl, int? Year, string? Genre, string? Label, List<AlbumTrack> Tracks,
-        string? RecordType = null);
+        string? RecordType = null, string? ArtistDeezerId = null);
 
     private const string Base = "https://api.deezer.com";
     private const int MaxCache = 4096;
@@ -467,7 +467,8 @@ public class DeezerMetadataService : IDisposable
                     hits.Add(new AlbumHit(
                         id, title, artist ?? "",
                         Str(a, "cover_xl") ?? Str(a, "cover_medium"),
-                        null, trackCount, recordType));
+                        null, trackCount, recordType,
+                        a.TryGetProperty("artist", out var byArtist) ? Id(byArtist) : null));
                 }
             }
         }
@@ -668,7 +669,7 @@ public class DeezerMetadataService : IDisposable
         try
         {
             string title = "", artist = "", genre = "", label = "", cover = "";
-            string? recordType = null;
+            string? recordType = null, artistDeezerId = null;
             int? year = null;
             // Declared out here on purpose: the document below is disposed before the
             // tracklist call, and this is what tells an empty tracklist apart from an
@@ -690,7 +691,10 @@ public class DeezerMetadataService : IDisposable
                     if (!string.IsNullOrEmpty(rd) && rd.Length >= 4 && int.TryParse(rd[..4], out var yr))
                         year = yr;
                     if (root.TryGetProperty("artist", out var art))
+                    {
                         artist = Str(art, "name") ?? "";
+                        artistDeezerId = Id(art);
+                    }
                     if (root.TryGetProperty("genres", out var genres)
                         && genres.TryGetProperty("data", out var gd)
                         && gd.ValueKind == JsonValueKind.Array && gd.GetArrayLength() > 0)
@@ -758,7 +762,7 @@ public class DeezerMetadataService : IDisposable
                 string.IsNullOrEmpty(cover) ? null : cover, year,
                 string.IsNullOrEmpty(genre) ? null : genre,
                 string.IsNullOrEmpty(label) ? null : label,
-                tracks, recordType);
+                tracks, recordType, artistDeezerId);
         }
         catch (Exception ex)
         {
@@ -944,6 +948,11 @@ public class DeezerMetadataService : IDisposable
             return d[0];
         return null;
     }
+
+    /// <summary>The catalog's numeric id of an object, as text, or null.</summary>
+    private static string? Id(JsonElement e) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number
+            ? id.GetInt64().ToString() : null;
 
     private static string? Str(JsonElement e, string name)
         => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

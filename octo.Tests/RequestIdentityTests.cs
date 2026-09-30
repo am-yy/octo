@@ -93,9 +93,9 @@ public sealed class RequestIdentityTests
         await client.GetStringAsync(Search(0, 30, "&apiKey=bob-key"));
         await client.GetStringAsync(Search(20, 20, "&apiKey=alice-key"));
 
-        Assert.Equal(20, cache.Get(SearchSongOrderCache.Key("alice", "rest/search3", null, "paging"))!.PageOneCount);
-        Assert.Equal(30, cache.Get(SearchSongOrderCache.Key("bob", "rest/search3", null, "paging"))!.PageOneCount);
-        Assert.Null(cache.Get(SearchSongOrderCache.Key("", "rest/search3", null, "paging")));
+        Assert.Equal(20, cache.Get(SearchSongOrderCache.Key("alice", "Test", "rest/search3", null, "paging"), 20, 20)!.PageOneCount);
+        Assert.Equal(30, cache.Get(SearchSongOrderCache.Key("bob", "Test", "rest/search3", null, "paging"), 30, 30)!.PageOneCount);
+        Assert.Null(cache.Get(SearchSongOrderCache.Key("", "Test", "rest/search3", null, "paging"), 20, 20));
         Assert.Equal(2, fixture.Upstream.TokenInfoCalls);
     }
 
@@ -112,14 +112,14 @@ public sealed class RequestIdentityTests
         Assert.Equal(0, cache.Count);
 
         var planted = new Song { Id = "ph-planted", Artist = "Someone", Title = "Planted", IsLocal = false };
-        cache.Set(SearchSongOrderCache.Key("", "rest/search3", null, "paging"),
+        cache.Set(SearchSongOrderCache.Key("", "Test", "rest/search3", null, "paging"),
             SearchSongOrder.From([planted], 20, 12, 8, []));
         var anonymous = Ids(await client.GetStringAsync(Search(20, 20, "")));
         var named = Ids(await client.GetStringAsync(Search(20, 20, "&u=carol&t=token&s=salt")));
 
         Assert.DoesNotContain("ph-planted", anonymous);
         Assert.Equal(named, anonymous);
-        Assert.NotNull(cache.Get(SearchSongOrderCache.Key("carol", "rest/search3", null, "paging")));
+        Assert.NotNull(cache.Get(SearchSongOrderCache.Key("carol", "Test", "rest/search3", null, "paging"), 20, 20));
         Assert.Equal(2, cache.Count);
     }
 

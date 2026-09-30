@@ -34,11 +34,12 @@ public sealed class SearchPagingTests
             .ToList();
 
     private static async Task<List<string>> PageAsync(HttpClient client, int offset, int count,
-        string endpoint = "search3", string format = "json", string user = "alice", string extra = "")
+        string endpoint = "search3", string format = "json", string user = "alice", string extra = "",
+        string app = "Test")
     {
         var body = await client.GetStringAsync(
             $"/rest/{endpoint}.view?query=paging&songCount={count}&songOffset={offset}&albumCount=0&artistCount=0" +
-            $"&u={user}&t=token&s=salt&v=1.16.1&c=Test&f={format}{extra}");
+            $"&u={user}&t=token&s=salt&v=1.16.1&c={app}&f={format}{extra}");
         if (format == "xml")
             return XDocument.Parse(body).Descendants().Where(e => e.Name.LocalName == "song")
                 .Select(e => e.Attribute("id")!.Value).ToList();
@@ -112,6 +113,57 @@ public sealed class SearchPagingTests
         }
 
         Assert.Equal(WholeSearch, all);
+    }
+
+    /// <summary>
+    /// Feishin's song search in Subsonic mode: the list asks for page one at its page size
+    /// while getSongListCount walks the same query 500 rows at a time from offset 0, advancing
+    /// by the rows it got. Both are page ones of one search; the list's next page must carry on
+    /// from the list's own page one, not the count's.
+    /// </summary>
+    [Fact]
+    public async Task AListAndItsCountWalk_KeepTheirOwnOrders()
+    {
+        await using var fixture = new SearchPagingWebFactory();
+        using var client = fixture.CreateClient();
+
+        async Task CountWalk()
+        {
+            var total = 0;
+            while (await PageAsync(client, total, 500) is { Count: > 0 } rows) total += rows.Count;
+        }
+        // In the order that lost the list's page one: the count's page one lands after it.
+        var first = await PageAsync(client, 0, 50);
+        await CountWalk();
+        var second = await PageAsync(client, 50, 50);
+        var third = await PageAsync(client, 100, 50);
+
+        var all = first.Concat(second).Concat(third).ToList();
+        Assert.Equal(all.Count, all.Distinct().Count());
+        Assert.Equal(WholeSearch.OrderBy(id => id), all.OrderBy(id => id));
+        // The walk itself is not checked: a client that advances by the rows it got, after a
+        // page one shorter than it asked for, lands inside page one's places. That is the
+        // planner's to settle, not which order a page reads.
+    }
+
+    /// <summary>One person on two devices with different page sizes scrolls two lists.</summary>
+    [Fact]
+    public async Task TwoClientsOfOneUser_KeepTheirOwnOrders()
+    {
+        await using var fixture = new SearchPagingWebFactory();
+        using var client = fixture.CreateClient();
+
+        var phone = await PageAsync(client, 0, 20, app: "Phone");
+        var desktop = await PageAsync(client, 0, 15, app: "Desktop");
+        var phoneNext = await PageAsync(client, 20, 15, app: "Phone");
+        var desktopNext = await PageAsync(client, 15, 15, app: "Desktop");
+
+        Assert.Equal(WholeSearch.Take(19), phone);
+        Assert.Equal(WholeSearch.Skip(19).Take(15), phoneNext);
+        var desktopAll = desktop.Concat(desktopNext).ToList();
+        Assert.Equal(desktopAll.Count, desktopAll.Distinct().Count());
+        var cache = fixture.Services.GetRequiredService<Octo.Services.Subsonic.SearchSongOrderCache>();
+        Assert.Equal(2, cache.Count);
     }
 
     [Fact]

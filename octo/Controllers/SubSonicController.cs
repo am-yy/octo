@@ -1123,7 +1123,8 @@ public class SubsonicController : ControllerBase
     private async Task<string?> SongOrderKeyAsync(Dictionary<string, string> parameters, string searchEndpoint,
         string cleanQuery) =>
         await _requestIdentity.UsernameAsync(parameters, _proxyService, HttpContext.RequestAborted) is { } user
-            ? SearchSongOrderCache.Key(user, searchEndpoint, parameters.GetValueOrDefault("musicFolderId"), cleanQuery)
+            ? SearchSongOrderCache.Key(user, parameters.GetValueOrDefault("c", ""), searchEndpoint,
+                parameters.GetValueOrDefault("musicFolderId"), cleanQuery)
             : null;
 
     /// <summary>
@@ -1145,7 +1146,7 @@ public class SubsonicController : ControllerBase
         // For an API key sign-in the tokenInfo call that names the user is made with the
         // request's own key, so it is also the credential check this page has not yet had.
         var key = await SongOrderKeyAsync(parameters, searchEndpoint, cleanQuery);
-        var order = key is null ? null : _searchSongOrders.Get(key);
+        var order = key is null ? null : _searchSongOrders.Get(key, requestedSongs, songOffset);
         if (order is null)
         {
             // Nothing remembered: expired, or Octo restarted since page one. Build the order

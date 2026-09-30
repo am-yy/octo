@@ -402,6 +402,12 @@ public sealed class LastFmRadioControllerTests
             .GetProperty("internetRadioStations").GetProperty("internetRadioStation")
             .EnumerateArray().Single(item => item.GetProperty("name").GetString() == "Your Mix")
             .GetProperty("streamUrl").GetString()!;
+        // The starter this keeps is the one the listing warmed. On a slow machine the
+        // refresh could land before it was ready, leaving only the refreshed songs.
+        for (var attempt = 0; attempt < 500
+             && fixture.Transcoder.Calls < LastFmRadioStreamService.ReadyPoolSize; attempt++)
+            await Task.Delay(10);
+        Assert.Equal(LastFmRadioStreamService.ReadyPoolSize, fixture.Transcoder.Calls);
 
         fixture.InstallStation(" Refreshed");
         fixture.Transcoder.ResetStarted();

@@ -18,11 +18,13 @@ Play songs you don't own yet, and keep the ones you like as FLAC.
 
 ## Octo's own apps
 
-Octo works with any Subsonic app. Its own apps, for desktop and Android, are where it feels like a streaming service: the music you don't own sits right beside yours, and keeping a song is just **Add to library**.
+Octo works with any Subsonic app, using the controls that app already has: you star a song to have Octo download it, and a small Octo badge on the cover shows a song isn't in your library yet. It works, but it's Octo working around the app.
+
+Octo's own apps, for desktop and Android, are built for it, so it feels like a streaming service. The music you don't own sits right beside yours, and keeping a song is just **Add to library**.
 
 ![Home in the Octo desktop app](docs/images/players/desktop-home.webp)
 
-- **Add songs the way you'd expect.** Press **+** on a song, an album or a search result and it joins your library. Other apps do this by starring a song.
+- **Add songs the way you'd expect.** Press **+** on a song, an album or a search result and it joins your library.
 - **One search for everything.** Your music comes first, then what Octo found, and all of it plays straight away.
 - **Whole albums.** Every track shows, the ones you have are marked, and one press adds the rest.
 - **Your stations on Home**, each with its own painted cover.

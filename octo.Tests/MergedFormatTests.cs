@@ -34,6 +34,9 @@ public sealed class MergedFormatTests
 
             if (uri.Host == "api.deezer.com")
             {
+                // The catalog writes this title with a curly apostrophe; the library's tags do not.
+                if (path.StartsWith("/search/album", StringComparison.Ordinal) && query["q"]?.Contains("Look Back") == true)
+                    return Json("""{"data":[{"id":20,"title":"Don’t Look Back","record_type":"album","nb_tracks":10,"artist":{"name":"Test Artist"}},{"id":21,"title":"Look Back Again","record_type":"album","nb_tracks":10,"artist":{"name":"Test Artist"}}]}""");
                 if (path.StartsWith("/search/album", StringComparison.Ordinal))
                     return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","nb_tracks":4,"artist":{"name":"Test Artist"}}]}""");
                 if (path == "/album/1/tracks")
@@ -84,6 +87,8 @@ public sealed class MergedFormatTests
             // Navidrome's native API, for a library artist only.
             if (path == "/api/artist/ar-1")
                 return Json("""{"id":"ar-1","name":"Test Artist","albumCount":1,"songCount":2,"size":1}""");
+            if (path == "/api/album" && query["name"] == "Look Back")
+                return Json("""[{"id":"al-9","name":"Don't Look Back","albumArtist":"Test Artist","libraryId":1}]""");
             if (path == "/api/album" && query["artist_id"] == "ar-1")
             {
                 var answer = new HttpResponseMessage(HttpStatusCode.OK)
@@ -378,6 +383,24 @@ public sealed class MergedFormatTests
         using var response = await client.GetAsync("/api/album?_start=0&_end=-1&artist_id=ar-1");
         using var list = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(["al-1"], list.RootElement.EnumerateArray().Select(a => a.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public async Task NativeAlbumSearch_AnOwnedAlbumIsNotAddedAgainOverAnApostrophe()
+    {
+        // The library has "Don't Look Back"; the catalog calls it "Don’t Look Back". The
+        // native search matched the two by exact text, so the album showed up twice.
+        await using var factory = new WebFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/album?_start=0&_end=20&name=Look%20Back");
+        response.EnsureSuccessStatusCode();
+        using var list = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(["Don't Look Back", "Look Back Again"],
+            list.RootElement.EnumerateArray().Select(a => a.GetProperty("name").GetString()));
+        Assert.Equal("al-9", list.RootElement[0].GetProperty("id").GetString());
+        Assert.Equal("2", response.Headers.GetValues("X-Total-Count").Single());
     }
 
     [Fact]

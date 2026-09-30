@@ -266,8 +266,9 @@ public class SubsonicModelMapper
     }
     
     /// <summary>Dedup key for an album, case, accents and punctuation ignored. Null when there
-    /// is not enough to compare on, which means "never treat this as a duplicate".</summary>
-    private static string? AlbumKey(string? artist, string? name)
+    /// is not enough to compare on, which means "never treat this as a duplicate". Shared with
+    /// the native album search, so both APIs agree on what counts as the same album.</summary>
+    internal static string? AlbumKey(string? artist, string? name)
         => string.IsNullOrWhiteSpace(name) ? null : $"{SongIdentity.Key(artist)}|{SongIdentity.Key(name)}";
 
     /// <summary>Dedup key for a song: one song in one version, however its artist and title are

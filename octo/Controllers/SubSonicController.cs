@@ -3778,20 +3778,22 @@ public class SubsonicController : ControllerBase
             && int.TryParse(lib.ToString(), out var parsedLib))
             libraryId = parsedLib;
 
-        // Don't inject an album the library already returned.
-        var localKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Don't inject an album the library already returned. The key is the one search3's
+        // merge uses, so a title the catalog spells with a curly apostrophe or an accent the
+        // library's tags lack is still the same album.
+        var localKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var node in realArr)
         {
             if (node is not JsonObject o) continue;
             var name = o.TryGetPropertyValue("name", out var n) ? n?.ToString() : null;
             var aa = o.TryGetPropertyValue("albumArtist", out var v) ? v?.ToString() : null;
-            if (!string.IsNullOrWhiteSpace(name)) localKeys.Add($"{aa?.Trim()}|{name.Trim()}");
+            if (SubsonicModelMapper.AlbumKey(aa, name) is string key) localKeys.Add(key);
         }
 
         var added = 0;
         foreach (var album in externalAlbums)
         {
-            if (localKeys.Contains($"{album.Artist?.Trim()}|{album.Title?.Trim()}")) continue;
+            if (SubsonicModelMapper.AlbumKey(album.Artist, album.Title) is string key && localKeys.Contains(key)) continue;
             realArr.Add(BuildNativeAlbumObject(album, libraryId));
             added++;
         }

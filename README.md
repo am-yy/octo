@@ -33,6 +33,10 @@ Octo is a proxy, so it works with your Navidrome server and the Subsonic apps yo
 
 ![The player in the Octo desktop app](docs/images/players/desktop-player.webp)
 
+<table>
+<tr><td width="33%"><img src="docs/images/players/phone-search.webp" alt="Search in the Octo Android app"></td><td width="33%"><img src="docs/images/players/phone-album.webp" alt="An album in the Octo Android app"></td><td width="33%"><img src="docs/images/players/phone-player.webp" alt="The player in the Octo Android app"></td></tr>
+</table>
+
 The desktop app runs on Windows and Linux, and the Android app on Android 10 and newer. They need Octo 2026.09.29 or newer, and they work as regular players with Navidrome too. The first builds are coming to the [Releases page](https://github.com/winters27/octo/releases); the source is at [winters27/octo-player](https://github.com/winters27/octo-player).
 
 ## What Octo does

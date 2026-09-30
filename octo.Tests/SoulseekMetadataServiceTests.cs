@@ -23,9 +23,10 @@ public class SoulseekMetadataServiceTests
     private readonly ConcurrentQueue<string> _calls = new();
 
     /// <summary>Builds the service with a Deezer layer answering from a url-substring map.
-    /// YouTube is never reached by the album paths under test. A delay keeps requests in
-    /// flight long enough for callers arriving together to overlap.</summary>
-    private SoulseekMetadataService BuildService(Dictionary<string, string> routes, int delayMs = 0)
+    /// YouTube is never reached by the album paths under test. Given a gate, the catalog
+    /// answers nothing until it opens, so callers started together are all in flight before
+    /// any hears back, however slow the machine.</summary>
+    private SoulseekMetadataService BuildService(Dictionary<string, string> routes, Task? gate = null)
     {
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
@@ -36,7 +37,7 @@ public class SoulseekMetadataServiceTests
             {
                 var url = req.RequestUri!.ToString();
                 _calls.Enqueue(url);
-                if (delayMs > 0) await Task.Delay(delayMs);
+                if (gate is not null) await gate;
                 foreach (var (needle, body) in routes)
                 {
                     if (url.Contains(needle, StringComparison.OrdinalIgnoreCase))
@@ -510,20 +511,26 @@ public class SoulseekMetadataServiceTests
         // and a second client may open it too. Each request walked the catalog on its own:
         // 44 calls for one page, against a limit of 30 every 5 seconds.
         var titles = Enumerable.Range(0, 30).Select(i => $"Record {i}").ToArray();
+        var catalogAnswers = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var svc = BuildService(new()
         {
             ["/search/artist"] = @"{""data"":[{""id"":222,""name"":""Busy"",""nb_fan"":9}]}",
             ["/artist/222/albums"] = @"{""data"":[" + string.Join(",", titles.Select((t, i) =>
                 $@"{{""id"":{1000 + i},""title"":""{t}"",""record_type"":""album"",""release_date"":""2001-01-01""}}")) + "]}",
             ["/album/1"] = @"{""nb_tracks"":10}",
-        }, delayMs: 50);
+        }, catalogAnswers.Task);
         var id = OutsideArtist("Busy");
 
-        var lists = await Task.WhenAll(
+        var pages = new[]
+        {
             svc.GetArtistAsync(SoulseekMetadataService.ProviderName, id).ContinueWith(_ =>
                 svc.GetArtistAlbumsKnownCountsAsync(SoulseekMetadataService.ProviderName, id)).Unwrap(),
             svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id),
-            svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id));
+            svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id),
+        };
+        // All three are asking before the catalog answers any of them.
+        catalogAnswers.SetResult();
+        var lists = await Task.WhenAll(pages);
 
         // One walk: the name search, the artist's listing, and the own records of the first
         // 20 albums without a count. 22 calls, where each request used to make its own.

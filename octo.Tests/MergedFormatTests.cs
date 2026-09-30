@@ -29,7 +29,24 @@ public sealed class MergedFormatTests
         /// <summary>Every path the catalog was asked for.</summary>
         public readonly System.Collections.Concurrent.ConcurrentQueue<string> DeezerCalls = new();
 
+        /// <summary>Holds each catalog answer, by path, until the returned task completes.</summary>
+        public Func<string, Task>? HoldCatalog { get; set; }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var answer = Answer(request);
+            if (request.RequestUri!.Host != "api.deezer.com" || HoldCatalog is not { } hold) return answer;
+            return Held(hold(request.RequestUri.AbsolutePath), answer);
+        }
+
+        private static async Task<HttpResponseMessage> Held(Task until, Task<HttpResponseMessage> answer)
+        {
+            // Bounded, so a request that never comes fails the test rather than hanging it.
+            await until.WaitAsync(TimeSpan.FromSeconds(30));
+            return await answer;
+        }
+
+        private Task<HttpResponseMessage> Answer(HttpRequestMessage request)
         {
             var uri = request.RequestUri!;
             var path = uri.AbsolutePath;
@@ -380,6 +397,22 @@ public sealed class MergedFormatTests
         await using var factory = new WebFactory();
         using var client = factory.CreateClient();
         var id = RegisterOutsideArtist(factory);
+        // The artist names itself with a search and the album list starts with the listing.
+        // Neither hears back until both have asked, so the two always meet. The listing comes
+        // back last, a moment after the artist has its name: a walk of the artist's own would
+        // ask for it again in that moment, and one asking twice is let through at once.
+        var bothAsking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listedTwice = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listings = 0;
+        factory.Servers.HoldCatalog = path =>
+        {
+            var asked = factory.Servers.DeezerCalls;
+            if (asked.Any(p => p.StartsWith("/search/artist", StringComparison.Ordinal)) && asked.Contains("/artist/7/albums"))
+                bothAsking.TrySetResult();
+            if (path != "/artist/7/albums") return bothAsking.Task;
+            if (Interlocked.Increment(ref listings) > 1) listedTwice.TrySetResult();
+            return Task.WhenAny(listedTwice.Task, bothAsking.Task.ContinueWith(_ => Task.Delay(500)).Unwrap());
+        };
 
         var answers = await Task.WhenAll(
             client.GetAsync($"/api/artist/{id}"),

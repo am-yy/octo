@@ -988,6 +988,17 @@ form.set-card.unsaved { border-color: var(--warn-line); box-shadow: inset 0 1px 
 .setup-checklist[open] summary::before { transform: rotate(45deg); }
 .setup-checklist summary:focus-visible { outline-offset: -2px; }
 .setup-checklist.needs-attention summary { color: var(--warn); }
+.setup-summary-text { flex: 1 1 auto; min-width: 0; }
+.setup-meter {
+  flex: 0 0 96px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--ink-4);
+  overflow: hidden;
+}
+.setup-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--good); transition: width var(--t-card) var(--ease); }
+.setup-checklist.needs-attention .setup-meter > span { background: var(--warn); }
+.setup-row .btn .icon { width: 14px; height: 14px; margin-right: -4px; }
 .setup-list { list-style: none; margin: 0; padding: 0; }
 .setup-row {
   display: grid;

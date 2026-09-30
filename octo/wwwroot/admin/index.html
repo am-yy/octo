@@ -145,7 +145,7 @@
             <h1>Status</h1>
             <p>What Octo needs, what it can reach, and where to point your music apps.</p>
           </div>
-          <button class="btn btn-ghost btn-icon" id="status-refresh" aria-label="Refresh status">
+          <button class="btn btn-ghost btn-icon" id="status-refresh" aria-label="Refresh status" title="Check again">
             <svg class="icon" aria-hidden="true"><use href="#i-arrows-clockwise"/></svg>
           </button>
         </header>
@@ -156,11 +156,8 @@
         </details>
 
         <div class="callout callout-accent" id="point-at-octo">
-          <div class="callout-title">Point your music apps here, not at Navidrome</div>
-          <p>
-            Octo sits in front of Navidrome. In Feishin, Symfonium, Arpeggi, or any Subsonic app,
-            set the <strong>server address</strong> to Octo:
-          </p>
+          <div class="callout-title">Point your music apps here</div>
+          <p>In your Subsonic app, set the <strong>server address</strong> to Octo rather than to Navidrome.</p>
           <div class="callout-address">
             <span class="callout-address-label">On this network</span>
             <code id="octo-address">http://this-host:5274</code>
@@ -172,12 +169,12 @@
             <button type="button" class="btn btn-ghost" id="copy-octo-public-address"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
           </div>
           <p class="callout-fine">
-            Use your Subsonic username and password as usual. If an app points straight at Navidrome
-            it bypasses Octo, and discovery and download-on-heart won't work.
+            Sign in with your usual Navidrome username and password. An app pointed straight at
+            Navidrome skips Octo, so it gets no discovery and no downloads on heart.
           </p>
           <form data-section="server" class="callout-form">
             <label class="callout-address-label" for="f-public-url">
-              Reachable from outside your network? Save the address here so it is always to hand.
+              Reachable from outside your network? Save that address here to keep it to hand.
             </label>
             <div class="set-inline">
               <input class="set-input" id="f-public-url" name="Server.PublicUrl"
@@ -186,6 +183,10 @@
           </form>
         </div>
 
+        <div class="set-head">
+          <h3 class="set-title">Services</h3>
+          <p class="set-desc">What Octo can reach right now, checked every 30 seconds while this page is open.</p>
+        </div>
         <div class="status-grid" id="status-grid">
           <article class="status-card" data-svc="octo">
             <div class="status-card-head">
@@ -193,8 +194,8 @@
               <span class="status-card-title">Octo</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">octo · main app</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">This server</div>
           </article>
           <article class="status-card" data-svc="navidrome">
             <div class="status-card-head">
@@ -202,8 +203,8 @@
               <span class="status-card-title">Navidrome</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">your music library server</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">Your music library</div>
           </article>
           <article class="status-card" data-svc="slskd">
             <div class="status-card-head">
@@ -211,8 +212,8 @@
               <span class="status-card-title">Soulseek</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">slskd · downloads on heart</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">slskd, downloads on heart</div>
           </article>
           <article class="status-card" data-svc="lidarr">
             <div class="status-card-head">
@@ -220,8 +221,8 @@
               <span class="status-card-title">Lidarr</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">optional album acquisition</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">Optional, whole albums</div>
           </article>
           <article class="status-card" data-svc="ytDlpShim">
             <div class="status-card-head">
@@ -229,8 +230,8 @@
               <span class="status-card-title">yt-dlp shim</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">YouTube preview source</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">Previews from YouTube</div>
           </article>
           <article class="status-card" data-svc="lastfm">
             <div class="status-card-head">
@@ -238,14 +239,14 @@
               <span class="status-card-title">Last.fm</span>
               <span class="status-dot pending"></span>
             </div>
-            <div class="status-card-body">probing…</div>
-            <div class="status-card-foot">optional · song discovery and radio</div>
+            <div class="status-card-body">Checking…</div>
+            <div class="status-card-foot">Optional, discovery and radio</div>
           </article>
         </div>
 
         <div class="status-meta">
           <span class="status-meta-label">Last refreshed</span>
-          <span class="status-meta-time" id="status-last-checked">—</span>
+          <span class="status-meta-time" id="status-last-checked">not yet</span>
         </div>
       </section>
 
@@ -254,15 +255,19 @@
         <header class="page-header">
           <div>
             <h1>Fetched songs</h1>
-            <p>A running log of every song Octo has pulled into your library, newest first, with its source, format, save path, size, and when it landed. A heart that failed never appears here; turn on <em>Download failed</em> under <button type="button" class="link-button" data-open-tab="notifications">Notifications</button> to hear about those.</p>
+            <p>Every song Octo has added to your library, newest first.</p>
           </div>
-          <button class="btn btn-ghost btn-icon" id="fetched-refresh" aria-label="Refresh">
+          <button class="btn btn-ghost btn-icon" id="fetched-refresh" aria-label="Refresh" title="Refresh">
             <svg class="icon" aria-hidden="true"><use href="#i-arrows-clockwise"/></svg>
           </button>
         </header>
         <div id="acq-wrap" class="acq-wrap" hidden>
-          <div class="set-head"><h3 class="set-title">In progress</h3></div>
+          <div class="set-head"><h3 class="set-title">In progress</h3><p class="set-desc">Hearted songs on their way, and any that failed in the last half hour.</p></div>
           <div id="acq-list" class="dl-list" aria-live="polite"></div>
+        </div>
+        <div class="set-head">
+          <h3 class="set-title">Added to your library</h3>
+          <p class="set-desc">A failed heart is not listed here. Turn on <em>Download failed</em> under <button type="button" class="link-button" data-open-tab="notifications">Notifications</button> to hear about those.</p>
         </div>
         <div id="fetched-list" class="dl-list"><div class="state state-loading"><svg class="icon" aria-hidden="true"><use href="#i-circle-notch"/></svg><span>Loading…</span></div></div>
       </section>

@@ -2895,7 +2895,7 @@ function renderSetupChecklist() {
         <span class="setup-title">${esc(row.title)}<span class="visually-hidden">: ${stateLabel[row.state]}</span></span>
         <span class="setup-detail">${esc(row.detail)}</span>
       </span>
-      <button type="button" class="btn btn-ghost" data-open-tab="${row.tab}" aria-label="Open ${esc(row.title)}">Open</button>
+      <button type="button" class="btn ${row.state === 'bad' ? '' : 'btn-ghost '}btn-sm" data-open-tab="${row.tab}" aria-label="${row.state === 'bad' ? 'Fix' : 'Open'} ${esc(row.title)}">${row.state === 'bad' ? 'Fix' : 'Open'}${icon('i-caret-right')}</button>
     </li>`).join('')}</ol>`;
   // Only when something changed, so a status refresh does not pull focus off a button.
   if (holder.dataset.rendered !== markup) {
@@ -2906,9 +2906,13 @@ function renderSetupChecklist() {
   const required = rows.filter(row => row.required);
   const missing = required.filter(row => row.state === 'bad');
   const checking = required.some(row => row.state === 'pending');
-  summary.textContent = checking ? 'Checking setup…'
+  const summaryText = checking ? 'Checking setup…'
     : missing.length ? `Setup: ${missing.length} of ${required.length} required step${required.length === 1 ? '' : 's'} need${missing.length === 1 ? 's' : ''} attention`
       : 'Setup complete. Point your apps at the address below.';
+  const done = required.filter(row => row.state === 'ok').length;
+  const summaryMarkup = `<span class="setup-summary-text">${esc(summaryText)}</span>`
+    + (checking ? '' : `<span class="setup-meter" role="img" aria-label="${done} of ${required.length} required steps done"><span style="width:${Math.round(100 * done / required.length)}%"></span></span>`);
+  if (summary.innerHTML !== summaryMarkup) summary.innerHTML = summaryMarkup;
   wrap.classList.toggle('needs-attention', missing.length > 0);
   // The sidebar marks where each missing step is fixed, so setup is visible from every page.
   rows.filter(row => row.required).forEach(row => {

@@ -57,9 +57,17 @@ public class LastFmService
             // Last.fm knows a song under one spelling. "$uicideboy$ - $UICIDE" or a title
             // carrying "(feat. X)" or "- Remastered 2011" can come back empty where the same song
             // written plainly does not, so those are asked before falling back to similar artists.
+            // A renamed artist is filed under one name only: Last.fm has "Kanye West - Crack
+            // Music" and nothing under "Ye", so the name the artist is best known by comes last.
+            var knownName = SongIdentity.KnownName(artist);
+            var queries = SongIdentity.QueryVariants(title, artist)
+                .Where(variant => variant.Artist.Length > 0).Take(3).ToList();
+            if (knownName is not null)
+                queries.AddRange(SongIdentity.QueryVariants(title, knownName)
+                    .Where(variant => variant.Artist.Length > 0).Take(2));
+
             var tracks = new List<SimilarTrack>();
-            foreach (var variant in SongIdentity.QueryVariants(title, artist)
-                         .Where(variant => variant.Artist.Length > 0).Take(3))
+            foreach (var variant in queries)
             {
                 tracks = await FetchSimilarTracksAsync(variant.Artist, variant.Title, limit, cancellationToken);
                 if (tracks.Count > 0) break;
@@ -70,11 +78,15 @@ public class LastFmService
             // Cache results
             _cache[cacheKey] = (DateTime.UtcNow.AddHours(_settings.EffectiveRadioCacheDurationHours), tracks);
 
-            // If no similar tracks found, try getting top tracks from similar artists
+            // If no similar tracks found, try getting top tracks from similar artists. For a
+            // renamed artist that guess runs under the name Last.fm files them by: asked for
+            // artists like "Ye", it answered for someone else, and a mix for "Ye - Crack Music"
+            // came back as thirty Jon Anderson songs.
             if (tracks.Count == 0)
             {
-                _logger.LogInformation("No similar tracks found, trying similar artists for {Artist}", artist);
-                tracks = await GetTopTracksFromSimilarArtistsAsync(artist, limit, cancellationToken);
+                var guessFrom = knownName ?? artist;
+                _logger.LogInformation("No similar tracks found, trying similar artists for {Artist}", guessFrom);
+                tracks = await GetTopTracksFromSimilarArtistsAsync(guessFrom, limit, cancellationToken);
             }
 
             return tracks.Take(limit).ToList();

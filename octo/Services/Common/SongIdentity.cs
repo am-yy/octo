@@ -623,6 +623,20 @@ public static class SongIdentity
         ["princeandthenewpowergeneration"] = "prince", ["theartistformerlyknownasprince"] = "prince",
     };
 
+    /// <summary>The name each artist in <see cref="Aliases"/> is best known by, written the way
+    /// the catalogs write it, keyed by the canonical key the aliases lead to.</summary>
+    private static readonly Dictionary<string, string> AliasNames = new(StringComparer.Ordinal)
+    {
+        ["kanyewest"] = "Kanye West",
+        ["2pac"] = "2Pac",
+        ["diddy"] = "Diddy",
+        ["snoopdogg"] = "Snoop Dogg",
+        ["mosdef"] = "Mos Def",
+        ["notoriousbig"] = "The Notorious B.I.G.",
+        ["childishgambino"] = "Childish Gambino",
+        ["prince"] = "Prince",
+    };
+
     private static readonly Regex ArtistSeparator = new(
         @"\s*(?:,|;|/|、|×|&|\s\+\s|\s[•·]\s|\sx\s(?!(?:feat|ft|featuring|with|and|x)\b|[&,;/])|\s(?:and|with|feat\.?|ft\.?|featuring|vs\.?|pres\.|presents)\s)\s*",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -1043,6 +1057,20 @@ public static class SongIdentity
         var right = ParseArtists(b).Display;
         if (Key(left).Length == 0 || Key(right).Length == 0) return false;
         return Keys([left], false).Overlaps(Keys([right], false)) || Keys([left], true).Overlaps(Keys([right], true));
+    }
+
+    /// <summary>
+    /// The name an artist is best known by, when <paramref name="artist"/> credits them under
+    /// another name in the alias table: "Kanye West" for "Ye". Null when the name is not an
+    /// alias or already is that name. A source that files a renamed artist under one name only
+    /// finds nothing under the other, so this is the second name to ask.
+    /// </summary>
+    public static string? KnownName(string? artist)
+    {
+        var key = Key(ParseArtists(artist).Primary);
+        if (!Aliases.TryGetValue(key, out var canonical)
+            || !AliasNames.TryGetValue(canonical, out var name)) return null;
+        return Key(name) == key ? null : name;
     }
 
     // ---- searching ----------------------------------------------------------------------

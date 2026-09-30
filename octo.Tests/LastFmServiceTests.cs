@@ -109,6 +109,70 @@ public class LastFmServiceTests
             service.GetSimilarArtistsAsync("A", cancellationToken: cancellation.Token));
     }
 
+    /// <summary>Last.fm as it files a renamed artist: the catalogue under "Kanye West" only.
+    /// Records every request's method and artist.</summary>
+    private static FixtureHandler RenamedArtistLastFm(List<(string Method, string Artist)> asked, bool knowsSong = true) =>
+        new(request =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var (method, artist) = (query["method"] ?? "", query["artist"] ?? "");
+            lock (asked) asked.Add((method, artist));
+            return method switch
+            {
+                "track.getsimilar" when knowsSong && artist == "Kanye West" =>
+                    "{\"similartracks\":{\"track\":[{\"name\":\"Gold Digger\",\"match\":1,\"artist\":{\"name\":\"Kanye West\"}}]}}",
+                "track.getsimilar" => "{\"similartracks\":{\"track\":[]}}",
+                "artist.getsimilar" when artist == "Kanye West" =>
+                    "{\"similarartists\":{\"artist\":[{\"name\":\"Jay-Z\"}]}}",
+                "artist.getsimilar" => "{\"similarartists\":{\"artist\":[{\"name\":\"Jon Anderson\"}]}}",
+                "artist.gettoptracks" =>
+                    $"{{\"toptracks\":{{\"track\":[{{\"name\":\"Top of {artist}\"}}]}}}}",
+                _ => "{}"
+            };
+        });
+
+    [Fact]
+    public async Task SimilarTracks_ARenamedArtistIsAlsoAskedUnderTheNameLastFmKnows()
+    {
+        // Last.fm has nothing under "Ye" for this song, and the similar tracks under "Kanye West".
+        var asked = new List<(string Method, string Artist)>();
+        var service = Service(RenamedArtistLastFm(asked));
+
+        var tracks = await service.GetSimilarTracksAsync("Ye", "Crack Music");
+
+        Assert.Equal("Gold Digger", Assert.Single(tracks).Title);
+        Assert.Contains(("track.getsimilar", "Ye"), asked);
+        Assert.Contains(("track.getsimilar", "Kanye West"), asked);
+        Assert.DoesNotContain(asked, request => request.Method == "artist.getsimilar");
+    }
+
+    [Fact]
+    public async Task SimilarTracks_TheSimilarArtistGuessRunsUnderTheNameLastFmKnows()
+    {
+        // Asked for artists like "Ye", Last.fm answers for someone else: a mix of Jon Anderson.
+        var asked = new List<(string Method, string Artist)>();
+        var service = Service(RenamedArtistLastFm(asked, knowsSong: false));
+
+        var tracks = await service.GetSimilarTracksAsync("Ye", "Crack Music");
+
+        Assert.Equal(["Jay-Z"], tracks.Select(track => track.Artist).Distinct());
+        Assert.Contains(("artist.getsimilar", "Kanye West"), asked);
+        Assert.DoesNotContain(("artist.getsimilar", "Ye"), asked);
+    }
+
+    [Fact]
+    public async Task SimilarTracks_AnArtistWithOneNameIsAskedOnlyUnderIt()
+    {
+        var asked = new List<(string Method, string Artist)>();
+        var service = Service(RenamedArtistLastFm(asked, knowsSong: false));
+
+        await service.GetSimilarTracksAsync("Radiohead", "Creep");
+
+        Assert.All(asked.Where(request => request.Method != "artist.gettoptracks"),
+            request => Assert.Equal("Radiohead", request.Artist));
+        Assert.Contains(("artist.getsimilar", "Radiohead"), asked);
+    }
+
     private static LastFmService Service(HttpMessageHandler handler) => new(new HttpClient(handler),
         TestOptions.Monitor(new LastFmSettings { ApiKey = "key", RadioCacheDurationHours = 2 }),
         Options.Create(new MetadataSettings { Language = "en" }),

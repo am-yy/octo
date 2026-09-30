@@ -306,4 +306,34 @@ public class SongIdentityTests
 
         Assert.Equal(without, withCodes);
     }
+
+    [Theory]
+    [InlineData("Ye", "Kanye West")]
+    [InlineData("Kanye", "Kanye West")]
+    [InlineData("ye", "Kanye West")]
+    [InlineData("Tupac Shakur", "2Pac")]
+    [InlineData("Puff Daddy", "Diddy")]
+    [InlineData("Snoop Lion", "Snoop Dogg")]
+    [InlineData("Yasiin Bey", "Mos Def")]
+    [InlineData("Biggie Smalls", "The Notorious B.I.G.")]
+    [InlineData("Donald Glover", "Childish Gambino")]
+    [InlineData("The Artist Formerly Known as Prince", "Prince")]
+    public void KnownName_AnAliasLeadsToTheNameTheArtistIsKnownBy(string alias, string known)
+    {
+        Assert.Equal(known, SongIdentity.KnownName(alias));
+        // The name found is the same artist by the alias table's own rule.
+        Assert.True(SongIdentity.SameArtistName(alias, known));
+    }
+
+    [Theory]
+    [InlineData("Kanye West")]
+    [InlineData("2Pac")]
+    [InlineData("Diddy")]
+    [InlineData("Radiohead")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void KnownName_NoneForANameThatIsNotAnAlias(string? artist)
+    {
+        Assert.Null(SongIdentity.KnownName(artist));
+    }
 }

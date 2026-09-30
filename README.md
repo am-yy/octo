@@ -175,7 +175,8 @@ Every setting has a form, every backing service has a live status indicator, and
 > **The admin dashboard has no authentication, so run Octo on a trusted network only.**
 >
 > Anyone who can reach port 5274 can read and change every setting, including your
-> Last.fm API key, your Navidrome admin login, and your Soulseek and slskd passwords.
+> Last.fm API key and shared secret, your Navidrome admin login, and your Soulseek and slskd
+> passwords, and connect or disconnect each listener's Last.fm.
 > Nothing on that page asks who you are.
 >
 > Do not port-forward 5274 or put it on a public hostname. If you need Octo from
@@ -224,7 +225,7 @@ Navidrome's radio plays songs from your existing library. Octo's radio reaches *
 
 ### Is my data going anywhere?
 
-Octo's per-user play ledger and station snapshots stay in `/app/config/lastfm-radio-state.json`. It sends Last.fm only the artist, title, and tag lookups needed to build recommendations; it does not send the ledger, Navidrome credentials, usernames, or stream URLs. Continuous Radio URLs contain opaque, expiring in-memory session tokens rather than Navidrome credentials. YouTube and Soulseek receive the ordinary outbound lookups needed for preview/acquisition.
+Octo's per-user play ledger and station snapshots stay in `/app/config/lastfm-radio-state.json`. It sends Last.fm only the artist, title, and tag lookups needed to build recommendations; it does not send the ledger, Navidrome credentials, usernames, or stream URLs. Continuous Radio URLs contain opaque, expiring in-memory session tokens rather than Navidrome credentials. YouTube and Soulseek receive the ordinary outbound lookups needed for preview/acquisition. Once a listener connects Last.fm on the dashboard, Octo also sends that listener's plays of outside songs (artist, title, album and time) to their own Last.fm account, and with a ListenBrainz token set it sends the same plays to ListenBrainz.
 
 ### Do downloaded songs get tagged correctly?
 
@@ -516,6 +517,8 @@ Tracks already in your library play locally through Navidrome. Missing external 
 
 Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. The setting also changes what searches advertise for external tracks, so it needs a restart, and clients that cached earlier results should re-search after you change it.
 
+Navidrome scrobbles your library plays itself. Songs Octo plays from outside your library are unknown to Navidrome, so Octo sends them to ListenBrainz (when a token is set) and, once connected, to Last.fm. For Last.fm, add the shared secret from the same Last.fm API page as your key (`LASTFM_API_SECRET`, or paste it in the dashboard's Last.fm page), open the dashboard's Last.fm page, type a listener's Navidrome username and press **Connect**, approve it on last.fm while signed in as that person, and press **Finish**. Each listener has their own connection, and library plays are never sent twice. If an app already scrobbles to Last.fm itself, turn that off or outside plays count twice.
+
 ### Folder layouts
 
 - `Flat` *(default)*: `Artist - Title.flac`.
@@ -542,7 +545,7 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 
 | Endpoint | Why |
 |---|---|
-| `search3` | merge local + Last.fm-driven external songs and Deezer-driven external albums |
+| `search3` | merge local + Last.fm-driven external songs and Deezer-driven external albums; later pages carry on through the outside songs page one started |
 | `getSimilarSongs2` | radio queue with local-first preference |
 | `getPlaylists`, `getPlaylist` | append authenticated per-user read-only Radio snapshots and materialize tracks local-first |
 | `createPlaylist`, `updatePlaylist`, `deletePlaylist` | protect reserved Radio IDs while relaying ordinary mutations |
@@ -551,13 +554,15 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `/radio/stream/{token}` | consume the ready MP3 pool, optionally frame its existing artist/title as client-requested ICY metadata, and replenish it until disconnect |
 | `stream` | YouTube proxy with Range support, mp4/m4a passthrough |
 | `getCoverArt` | Deezer → iTunes → Last.fm aggregator with Octo watermark |
+| `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` |
 | `getAlbum` | external album tracklists, and fills in tracks you're missing from an album you own |
 | `star` | try enabled heart sources in priority order and stop after the first successful track/album acquisition |
-| `scrobble` | preserve Navidrome scrobbling, prewarm the next 8, and learn deduplicated completed plays for the authenticated user |
+| `scrobble` | relay library plays to Navidrome, send outside plays to ListenBrainz and Last.fm instead (Navidrome does not know them), prewarm the next 8, and learn deduplicated completed plays for the authenticated user |
 | `getTranscodeDecision` | OpenSubsonic: return direct-play for Octo IDs |
 | `getLyricsBySongId`, `getLyrics` | lyrics for outside songs and for library songs Navidrome has none for; chosen or hidden lyrics for every client; word cues with `enhanced=true` |
 | `getLyricsCandidates`, `setLyricsChoice` | the `octoLyrics` extension: every lyrics entry for a song, and pinning one, hiding lyrics, or going back to automatic |
 | `getLibraryActions`, `libraryAction` | the `octoLibraryActions` extension: what the caller may do to library files, and removing one song the way the Delete playlist does |
+| `/api/artist/{id}`, `/api/album?artist_id=` | Navidrome's own API, for clients that use it (Feishin): an outside artist's page and its albums |
 | `getOpenSubsonicExtensions` | Navidrome's list plus `octoAcquisitions`, `octoLyrics` (while lyrics lookups are on), `octoLibraryActions` (while library actions are on) and `songLyrics` 1 and 2 |
 
 ### Soulseek download details

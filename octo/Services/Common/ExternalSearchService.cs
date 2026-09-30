@@ -33,6 +33,10 @@ public sealed class ExternalSearchService
     /// </summary>
     public const int BuildSize = 60;
 
+    // track.search returns at most 50 rows, so padding whenever the list was short of
+    // BuildSize made the second, sequential Last.fm call on every search.
+    private const int ThinSearchThreshold = 20;
+
     /// <summary>
     /// Deadline for one build. Last.fm has no configured HTTP timeout of its own, so
     /// without this a single hung call would pin the query for every joined caller.
@@ -129,7 +133,7 @@ public sealed class ExternalSearchService
             if (collected.Count >= BuildSize) break;
         }
 
-        if (collected.Count < BuildSize)
+        if (collected.Count < ThinSearchThreshold)
         {
             // Use the first track-search hit's artist as the canonical anchor
             // for top-tracks padding. Falls back to the raw query string when

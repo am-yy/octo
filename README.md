@@ -85,10 +85,37 @@ The installer asks for your Navidrome URL (and, optionally, Last.fm and Soulseek
   It is unauthenticated, so keep Octo on a trusted network. See [Admin dashboard](#admin-dashboard).
 - If a client reports the server is unreachable, that is Octo telling you setup is not finished: its ping response spells out exactly what to fix (usually the Navidrome URL).
 
+## Apps made for Octo
+
+Octo works with the Subsonic app you already use. I also make two players to go with it, a desktop app for Windows and Linux and an Android app, and they are where Octo feels most like a streaming service. They read Octo's own extensions, so the music Octo finds sits right next to your library, plays straight away, and joins your library with one press.
+
+| | |
+| --- | --- |
+| ![Octo desktop app, Home](docs/images/players/desktop-home.webp) | ![Octo desktop app, an album](docs/images/players/desktop-album.webp) |
+| ![Octo desktop app, the player](docs/images/players/desktop-player.webp) | ![Octo desktop app, a station with its painted cover](docs/images/players/desktop-playlists.webp) |
+
+With an Octo server, both apps:
+
+- Search past your library. Your own artists, albums and songs come first, and below them, under *Not in your library*, the songs, albums and artists Octo found. They play straight away.
+- Add a song with one press. Press **+** on a song you don't have, in search, in a list or on the player. The button fills as Octo downloads it and becomes a check once the song is in your library. On Android the notification has the same button for the song playing.
+- Put your stations on Home, with their covers. Your mixes are with your playlists.
+- Mix music from outside your library into radio started from a song or an album (on the desktop, from an artist too).
+- Mark every song you don't own and keep it out of your library lists. It can be hearted and rated once it's yours.
+- Let you pick a song's lyrics for everyone. When Octo's lyrics lookups are on, choosing other lyrics or hiding them holds in every app on the server.
+
+On the desktop app, an album you own part of lists every track, with a check on the songs you have and a **+** on the rest. The line under the title says how many you have ("7 of 12 in your library"), and **Add the 5 missing songs** fetches the rest. The desktop app also paints each playlist a cover with its name, in colours taken from its music, and Octo draws its stations and mixes in the same style, so they look alike in any app.
+
+The Android app has an **Octo admin** page for your home network: whether each service is working, your stations with a button to refresh them, and the latest downloads.
+
+The apps need Octo 2026.09.29 or newer for all of this. With Navidrome or any other Subsonic server they are full music players for the music you have.
+
+The first builds are on their way to this repository's [Releases page](https://github.com/winters27/octo/releases), as `desktop-v` and `android-v` releases. Server releases stay the ones marked *Latest*, so updating Octo never pulls in the apps. The source and everything else the apps do are in [winters27/octo-player](https://github.com/winters27/octo-player).
+
 ## Compatible apps
 
 | Works | App | Platform |
 |---|---|---|
+| ✅ | [Octo for desktop and Android](#apps-made-for-octo) | Windows, Linux, Android |
 | ✅ | [Feishin](https://github.com/jeffvli/feishin) | desktop |
 | ✅ | [Supersonic](https://github.com/dweymouth/supersonic) | desktop |
 | ✅ | [Sublime Music](https://github.com/sublime-music/sublime-music) | Linux |

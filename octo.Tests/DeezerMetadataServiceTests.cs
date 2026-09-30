@@ -345,6 +345,30 @@ public class DeezerMetadataServiceTests
         Assert.Equal(1, calls("/album/999"));
     }
 
+    /// <summary>getAlbum lists the songs filed under an album when Deezer answered that it has
+    /// no such album or no tracks for it, never when it failed to answer. So the lookup says
+    /// which, and a cached "no such album" still says so.</summary>
+    [Fact]
+    public async Task LookUpAlbumDetailAsync_SaysWhyThereIsNoDetail()
+    {
+        var svc = BuildSequencedService(new()
+        {
+            ("/album/711108/tracks", new[] { QuotaEnvelope, @"{""data"":[]}", TracksJson(10) }),
+            ("/album/711108", new[] { AlbumDetailJson }),
+            ("/album/999", new[] { NoDataEnvelope }),
+        }, out var calls);
+
+        Assert.Equal(DeezerMetadataService.AlbumAnswer.Unavailable, (await svc.LookUpAlbumDetailAsync("711108")).Answer);
+        Assert.Equal(DeezerMetadataService.AlbumAnswer.NoTracks, (await svc.LookUpAlbumDetailAsync("711108")).Answer);
+        var found = await svc.LookUpAlbumDetailAsync("711108");
+        Assert.Equal(DeezerMetadataService.AlbumAnswer.Found, found.Answer);
+        Assert.Equal(10, found.Detail!.Tracks.Count);
+
+        Assert.Equal(DeezerMetadataService.AlbumAnswer.NoSuchAlbum, (await svc.LookUpAlbumDetailAsync("999")).Answer);
+        Assert.Equal(DeezerMetadataService.AlbumAnswer.NoSuchAlbum, (await svc.LookUpAlbumDetailAsync("999")).Answer);
+        Assert.Equal(1, calls("/album/999"));
+    }
+
     /// <summary>
     /// A throttled album search used to cache an empty list, so external albums silently
     /// stopped appearing in search3 for the life of the process.

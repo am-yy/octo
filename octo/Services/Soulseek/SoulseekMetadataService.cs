@@ -645,18 +645,22 @@ public class SoulseekMetadataService : IMusicMetadataService
             return album;
         }
 
-        var detail = await _deezer.GetAlbumDetailAsync(deezerAlbumId);
+        var (detail, answer) = await _deezer.LookUpAlbumDetailAsync(deezerAlbumId);
         // An album with no resolvable tracklist must still render, so fall through with
         // whatever we already have rather than failing the request.
-        // No songs are filed in here: Deezer knows this album and only failed to answer
-        // this time, and a partial list would be taken for the whole album by a client
-        // that caches what it syncs.
         if (detail is null)
         {
+            // Deezer only failed to answer this time: no songs are filed in, because a
+            // partial list would be taken for the whole album by a client that caches what
+            // it syncs. When Deezer answered that it has no such album, or no tracks for it,
+            // the songs filed under it are all there is to list.
+            var standIn = answer is not DeezerMetadataService.AlbumAnswer.Unavailable;
+            if (standIn) ListSongsFiledUnder(album, routing, placeholder, artistId);
             _logger.LogWarning(
-                "getAlbum '{Artist} - {Album}' ({Id}): Deezer album {DeezerId} returned no usable detail "
-                + "(see the deezer warning above for why); returning album without a tracklist",
-                routing.Artist, placeholder, externalId, deezerAlbumId);
+                "getAlbum '{Artist} - {Album}' ({Id}): Deezer album {DeezerId} returned no usable detail ({Answer}; "
+                + "see the deezer warning above for why); {Outcome}",
+                routing.Artist, placeholder, externalId, deezerAlbumId, answer,
+                standIn ? $"listing the {album.Songs.Count} song(s) filed under it" : "returning album without a tracklist");
             return album;
         }
 
@@ -669,6 +673,8 @@ public class SoulseekMetadataService : IMusicMetadataService
         // but if one ever gets through, reporting zero is worse than saying nothing.
         if (detail.Tracks.Count > 0) album.SongCount = detail.Tracks.Count;
         if (!string.IsNullOrWhiteSpace(detail.Artist)) album.Artist = detail.Artist;
+        // Deezer says the album has no tracks at all: the songs filed under it stand in.
+        if (detail.Tracks.Count == 0) ListSongsFiledUnder(album, routing, placeholder, artistId);
 
         foreach (var track in detail.Tracks)
         {

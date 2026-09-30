@@ -50,6 +50,22 @@ public class DeezerMetadataService : IDisposable
         string? CoverUrl, int? Year, string? Genre, string? Label, List<AlbumTrack> Tracks,
         string? RecordType = null);
 
+    /// <summary>What the catalog said when asked for an album's detail.</summary>
+    public enum AlbumAnswer
+    {
+        /// <summary>The album and its tracklist.</summary>
+        Found,
+        /// <summary>Deezer answered, and it has no such album.</summary>
+        NoSuchAlbum,
+        /// <summary>Deezer knows the album, but its tracklist came back empty.</summary>
+        NoTracks,
+        /// <summary>Deezer did not answer this time: throttled, unreachable or unreadable.</summary>
+        Unavailable,
+    }
+
+    /// <summary>An album's detail, when there is one, and what the catalog said.</summary>
+    public sealed record AlbumLookup(AlbumDetail? Detail, AlbumAnswer Answer);
+
     private const string Base = "https://api.deezer.com";
     private const int MaxCache = 4096;
 
@@ -666,11 +682,20 @@ public class DeezerMetadataService : IDisposable
     /// <summary>Album detail plus its full tracklist, ordered by disc then track position.
     /// One bounded request per resource; a release larger than the cap is reported as
     /// truncated rather than silently presented as complete.</summary>
-    public async Task<AlbumDetail?> GetAlbumDetailAsync(string deezerId, CancellationToken ct = default)
+    public async Task<AlbumDetail?> GetAlbumDetailAsync(string deezerId, CancellationToken ct = default) =>
+        (await LookUpAlbumDetailAsync(deezerId, ct)).Detail;
+
+    /// <summary>
+    /// <see cref="GetAlbumDetailAsync"/>, saying also why there is no detail when there is none:
+    /// Deezer has no such album, it has the album but no tracks for it, or it did not answer
+    /// this time. Only the last may come right on its own a moment later.
+    /// </summary>
+    public async Task<AlbumLookup> LookUpAlbumDetailAsync(string deezerId, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(deezerId)) return null;
+        if (string.IsNullOrWhiteSpace(deezerId)) return new AlbumLookup(null, AlbumAnswer.NoSuchAlbum);
         var cacheKey = $"ad|{deezerId}";
-        if (TryGetCached<AlbumDetail?>(cacheKey, out var cached)) return cached;
+        if (TryGetCached<AlbumLookup>(cacheKey, out var cached)) return cached!;
+        var unavailable = new AlbumLookup(null, AlbumAnswer.Unavailable);
 
         AlbumDetail? detail = null;
         // A tracklist we know is short gets a shorter life than a complete one, so a
@@ -688,7 +713,7 @@ public class DeezerMetadataService : IDisposable
 
             using (var r = await GetJsonAsync($"{Base}/album/{deezerId}", ct))
             {
-                if (r.Transient) return null;
+                if (r.Transient) return unavailable;
                 if (r.Doc is not null)
                 {
                     var root = r.Doc.RootElement;
@@ -710,7 +735,12 @@ public class DeezerMetadataService : IDisposable
             }
 
             // Deezer answered and there is no such album. Cacheable, but not forever.
-            if (string.IsNullOrWhiteSpace(title)) { Put(cacheKey, (AlbumDetail?)null, NegativeTtl); return null; }
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                var none = new AlbumLookup(null, AlbumAnswer.NoSuchAlbum);
+                Put(cacheKey, none, NegativeTtl);
+                return none;
+            }
 
             var tracks = new List<AlbumTrack>();
             using (var tr = await GetJsonAsync($"{Base}/album/{deezerId}/tracks?limit=300", ct))
@@ -719,7 +749,7 @@ public class DeezerMetadataService : IDisposable
                 // built a perfectly valid AlbumDetail carrying title, year and genre with
                 // an empty tracklist, cached it permanently, and is why getAlbum reported
                 // songCount 0 forever while still showing real metadata.
-                if (tr.Transient) return null;
+                if (tr.Transient) return unavailable;
                 if (tr.Doc is not null
                     && tr.Doc.RootElement.TryGetProperty("data", out var data)
                     && data.ValueKind == JsonValueKind.Array)
@@ -754,7 +784,7 @@ public class DeezerMetadataService : IDisposable
                 _logger.LogWarning(
                     "deezer album '{Title}' ({Id}) reports {Expected} track(s) but returned none; not caching",
                     title, deezerId, nbTracks?.ToString() ?? "an unknown number of");
-                return null;
+                return new AlbumLookup(null, AlbumAnswer.NoTracks);
             }
 
             // Fewer tracks than the album claims, e.g. entries skipped for a blank title.
@@ -776,8 +806,9 @@ public class DeezerMetadataService : IDisposable
             _logger.LogDebug("deezer album detail {Id} failed: {M}", deezerId, ex.Message);
         }
 
-        Put(cacheKey, detail, detail is null ? NegativeTtl : partial ? PartialTtl : PositiveTtl);
-        return detail;
+        var lookup = detail is null ? unavailable : new AlbumLookup(detail, AlbumAnswer.Found);
+        Put(cacheKey, lookup, detail is null ? NegativeTtl : partial ? PartialTtl : PositiveTtl);
+        return lookup;
     }
 
     private Task<(int? Year, bool Transient)> AlbumYearAsync(long albumId, CancellationToken ct)

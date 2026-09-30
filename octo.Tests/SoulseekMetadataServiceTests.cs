@@ -191,6 +191,69 @@ public class SoulseekMetadataServiceTests
         Assert.Empty(album!.Songs);
     }
 
+    private const string DeezerNoData =
+        @"{""error"":{""type"":""DataException"",""message"":""no data"",""code"":800}}";
+
+    private const string DeezerQuota =
+        @"{""error"":{""type"":""Exception"",""message"":""Quota limit exceeded"",""code"":4}}";
+
+    /// <summary>An album row opened with one song filed under it, the catalog answering the
+    /// album and its tracklist with these.</summary>
+    private async Task<Album> OpenAlbumWithAFiledSong(string albumJson, string tracksJson)
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = AlbumSearchJson,
+            ["/album/1/tracks"] = tracksJson,
+            ["/album/1"] = albumJson,
+        });
+        var albumId = (await svc.SearchAlbumsAsync("test", 10)).Single().Id;
+        _registry.Register(new SoulseekRouting
+        {
+            Kind = RoutingKind.Song, Artist = "Test Artist", Title = "Track One", Album = "Test Album", Duration = 200,
+        });
+        return (await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, albumId))!;
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_DeezerHasNoSuchAlbum_ListsTheFiledSongs()
+    {
+        // Deezer answering that the album does not exist used to read the same as an outage,
+        // so the album opened empty though Octo had shown a song under it (#59).
+        var album = await OpenAlbumWithAFiledSong(DeezerNoData, AlbumTracksJson);
+
+        Assert.Equal(["Track One"], album.Songs.Select(s => s.Title));
+        Assert.Equal(1, album.SongCount);
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_DeezerListsNoTracksForTheAlbum_ListsTheFiledSongs()
+    {
+        var album = await OpenAlbumWithAFiledSong(AlbumDetailJson, @"{""data"":[]}");
+
+        Assert.Equal(["Track One"], album.Songs.Select(s => s.Title));
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_DeezerSaysTheAlbumHasNoTracks_ListsTheFiledSongs()
+    {
+        var album = await OpenAlbumWithAFiledSong(
+            @"{""id"":1,""title"":""Test Album"",""nb_tracks"":0,""artist"":{""name"":""Test Artist""}}",
+            @"{""total"":0,""data"":[]}");
+
+        Assert.Equal(["Track One"], album.Songs.Select(s => s.Title));
+        Assert.Equal("Test Album", album.Title);
+    }
+
+    [Fact]
+    public async Task GetAlbumAsync_TracklistThrottled_ListsNoFiledSongs()
+    {
+        // Deezer knows the album and only failed to answer: a partial list would stick.
+        var album = await OpenAlbumWithAFiledSong(AlbumDetailJson, DeezerQuota);
+
+        Assert.Empty(album.Songs);
+    }
+
     [Fact]
     public async Task GetAlbumAsync_UnknownId_ReturnsNull()
     {

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
+using Octo.Models.Domain;
 using Octo.Models.Search;
 using Octo.Models.Subsonic;
 using Octo.Services.Common;
@@ -106,30 +107,61 @@ public class SubsonicModelMapper
     /// <summary>
     /// Merges local and external search results (songs, albums, artists, playlists).
     /// </summary>
+    /// <param name="trailingLocalSongs">
+    /// Library rows that follow the outside ones. Only a later page of a search has any:
+    /// there the rest of the library comes after the outside songs page one started.
+    /// </param>
     public (List<object> MergedSongs, List<object> MergedAlbums, List<object> MergedArtists) MergeSearchResults(
         List<object> localSongs,
         List<object> localAlbums,
         List<object> localArtists,
         SearchResult externalResult,
         List<ExternalPlaylist> externalPlaylists,
-        bool isJson)
+        bool isJson,
+        List<object>? trailingLocalSongs = null)
     {
+        var trailing = trailingLocalSongs ?? new List<object>();
         if (isJson)
         {
-            return MergeSearchResultsJson(localSongs, localAlbums, localArtists, externalResult, externalPlaylists);
+            return MergeSearchResultsJson(localSongs, localAlbums, localArtists, externalResult, externalPlaylists, trailing);
         }
         else
         {
-            return MergeSearchResultsXml(localSongs, localAlbums, localArtists, externalResult, externalPlaylists);
+            return MergeSearchResultsXml(localSongs, localAlbums, localArtists, externalResult, externalPlaylists, trailing);
         }
     }
+
+    /// <summary>
+    /// Dedup keys for library rows as <see cref="ParseSearchResponse"/> returns them, JSON or
+    /// XML. The same keys the merge uses to leave out an outside song you already own.
+    /// </summary>
+    internal static HashSet<string> LocalSongKeys(IEnumerable<object> localSongs)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var song in localSongs)
+        {
+            var key = song switch
+            {
+                Dictionary<string, object> dict => SongKey(Text(dict, "artist"), Text(dict, "title")),
+                XElement element => SongKey(element.Attribute("artist")?.Value, element.Attribute("title")?.Value),
+                _ => null,
+            };
+            if (key is not null) keys.Add(key);
+        }
+        return keys;
+    }
+
+    /// <summary>True when <paramref name="song"/> is one of the library rows behind <paramref name="keys"/>.</summary>
+    internal static bool IsListed(Song song, IReadOnlySet<string> keys)
+        => SongKey(song.Artist, song.Title) is string key && keys.Contains(key);
 
     private (List<object> MergedSongs, List<object> MergedAlbums, List<object> MergedArtists) MergeSearchResultsJson(
         List<object> localSongs,
         List<object> localAlbums,
         List<object> localArtists,
         SearchResult externalResult,
-        List<ExternalPlaylist> externalPlaylists)
+        List<ExternalPlaylist> externalPlaylists,
+        List<object> trailingLocalSongs)
     {
         // Local songs first, external (YouTube placeholder) after. The earlier
         // version flipped this to put externals first because Arpeggi's "play
@@ -139,7 +171,7 @@ public class SubsonicModelMapper
         // users expect their owned tracks to top the results, with discovery
         // suggestions following.
         // An outside song you already own is not listed again under it.
-        var localSongKeys = localSongs.OfType<Dictionary<string, object>>()
+        var localSongKeys = localSongs.Concat(trailingLocalSongs).OfType<Dictionary<string, object>>()
             .Select(dict => SongKey(Text(dict, "artist"), Text(dict, "title")))
             .OfType<string>()
             .ToHashSet(StringComparer.Ordinal);
@@ -147,6 +179,7 @@ public class SubsonicModelMapper
             .Concat(externalResult.Songs
                 .Where(s => SongKey(s.Artist, s.Title) is not string k || !localSongKeys.Contains(k))
                 .Select(s => _responseBuilder.ConvertSongToJson(s)))
+            .Concat(trailingLocalSongs)
             .ToList();
         
         // Albums, deduplicated by artist+name so an album you own is not listed twice.
@@ -196,7 +229,8 @@ public class SubsonicModelMapper
         List<object> localAlbums,
         List<object> localArtists,
         SearchResult externalResult,
-        List<ExternalPlaylist> externalPlaylists)
+        List<ExternalPlaylist> externalPlaylists,
+        List<object> trailingLocalSongs)
     {
         var ns = XNamespace.Get("http://subsonic.org/restapi");
         
@@ -256,10 +290,20 @@ public class SubsonicModelMapper
             if (SongKey(song.Attribute("artist")?.Value, song.Attribute("title")?.Value) is string key)
                 localSongKeysXml.Add(key);
         }
+        foreach (var song in trailingLocalSongs.Cast<XElement>())
+        {
+            if (SongKey(song.Attribute("artist")?.Value, song.Attribute("title")?.Value) is string key)
+                localSongKeysXml.Add(key);
+        }
         foreach (var song in externalResult.Songs)
         {
             if (SongKey(song.Artist, song.Title) is string key && localSongKeysXml.Contains(key)) continue;
             mergedSongs.Add(_responseBuilder.ConvertSongToXml(song, ns));
+        }
+        foreach (var song in trailingLocalSongs.Cast<XElement>())
+        {
+            song.Name = ns + "song";
+            mergedSongs.Add(song);
         }
 
         return (mergedSongs, mergedAlbums, mergedArtists);

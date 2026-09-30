@@ -266,6 +266,10 @@ builder.Services.AddSingleton<HeartAcquisitionCoordinator>();
 // this each call re-runs the enrichment pipeline over them concurrently.
 builder.Services.AddSingleton<Octo.Services.Common.ExternalSearchService>();
 
+// What page one of each search showed, so a later page carries on from it rather than
+// building its discovery rows again and repeating or skipping some.
+builder.Services.AddSingleton<Octo.Services.Subsonic.SearchSongOrderCache>();
+
 // Permanent-copy fetches run here, never inside the request that asked for one. A client
 // giving up on a slow play must not cancel a transfer slskd is going to finish anyway.
 builder.Services.AddSingleton<Octo.Services.Common.TrackAcquisitionQueue>();

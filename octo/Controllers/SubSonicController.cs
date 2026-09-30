@@ -72,6 +72,7 @@ public class SubsonicController : ControllerBase
     private readonly AcquisitionTracker? _acquisitionTracker;
     private readonly Octo.Services.Lyrics.LyricsChoiceService? _lyricsChoices;
     private readonly Octo.Services.Library.LibraryActionExecutor? _libraryActions;
+    private readonly SearchSongOrderCache _searchSongOrders;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -111,9 +112,11 @@ public class SubsonicController : ControllerBase
         IOptionsMonitor<GeneratedPlaylistSettings>? generatedSettings = null,
         AcquisitionTracker? acquisitionTracker = null,
         Octo.Services.Lyrics.LyricsChoiceService? lyricsChoices = null,
-        Octo.Services.Library.LibraryActionExecutor? libraryActions = null)
+        Octo.Services.Library.LibraryActionExecutor? libraryActions = null,
+        SearchSongOrderCache? searchSongOrders = null)
     {
         _libraryActions = libraryActions;
+        _searchSongOrders = searchSongOrders ?? new SearchSongOrderCache();
         _acquisitionTracker = acquisitionTracker;
         _lyricsChoices = lyricsChoices;
         _generatedPlaylists = generatedPlaylists;
@@ -929,11 +932,9 @@ public class SubsonicController : ControllerBase
         var searchEndpoint = isSearch2 ? "rest/search2" : "rest/search3";
         var envelope = isSearch2 ? "searchResult2" : "searchResult3";
 
-        // Discovery belongs on the first page only. Injected rows are regenerated per
-        // request rather than held in a server-side result set, so appending them to page
-        // two hands the client the same suggestions it already scrolled past. The native
-        // search path refuses later pages for exactly this reason; do the same here and
-        // let the library page normally underneath.
+        // Page one builds the discovery rows and remembers what it showed. A later page
+        // carries on from that instead of going to Navidrome at the same offset, which
+        // made every outside song past page one unreachable. See SearchLaterSongPageAsync.
         var songOffset = int.TryParse(parameters.GetValueOrDefault("songOffset", "0"), out var so) ? so : 0;
 
         // A client that copies the library to the device walks it with an empty query and
@@ -943,6 +944,11 @@ public class SubsonicController : ControllerBase
             && !parameters.ContainsKey("musicFolderId")
             && SyncCatalogService.IsSyncClient(_subsonicSettings, parameters.GetValueOrDefault("c")))
             return await SyncWalkPageAsync(parameters, searchEndpoint, envelope, format);
+
+        if (!string.IsNullOrWhiteSpace(cleanQuery) && songOffset > 0
+            && await SearchLaterSongPageAsync(parameters, cleanQuery, songOffset, searchEndpoint, envelope, format)
+                is { } laterPage)
+            return laterPage;
 
         if (string.IsNullOrWhiteSpace(cleanQuery) || songOffset > 0)
         {
@@ -983,10 +989,16 @@ public class SubsonicController : ControllerBase
         // album-only search still gets album discovery.
         var isTypeAheadProbe = requestedSongs > 0 && externalTarget == 0;
 
+        // Outside albums, artists and playlists are a fixed handful that all fit on the
+        // first page of their own list. Adding them again to a later album or artist page
+        // repeated the same suggestions on every page the client scrolled to.
+        var albumOffset = int.TryParse(parameters.GetValueOrDefault("albumOffset", "0"), out var ao) ? ao : 0;
+        var artistOffset = int.TryParse(parameters.GetValueOrDefault("artistOffset", "0"), out var aro) ? aro : 0;
+
         // Album discovery runs concurrently with the song fan-out below so it costs no
         // serial latency. It needs no Last.fm key (Deezer's catalog is keyless), so albums
         // still appear for a user who has not set one up.
-        var albumTask = requestedAlbums > 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
+        var albumTask = requestedAlbums > 0 && albumOffset <= 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
             ? _externalSearch.GetAlbumsAsync(cleanQuery, Math.Min(requestedAlbums, 20))
             : Task.FromResult<IReadOnlyList<Album>>(new List<Album>());
 
@@ -994,7 +1006,7 @@ public class SubsonicController : ControllerBase
         // fold external artists in and dedupe them against local ones, but nothing ever
         // gave it any, so the artist column of every search showed only what the library
         // already had. Keyless like albums, so it works without a Last.fm key.
-        var artistTask = requestedArtists > 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
+        var artistTask = requestedArtists > 0 && artistOffset <= 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
             ? _metadataService.SearchArtistsAsync(cleanQuery, Math.Min(requestedArtists, 20))
             : Task.FromResult(new List<Artist>());
 
@@ -1042,12 +1054,20 @@ public class SubsonicController : ControllerBase
         // If the relay failed outright the count is zero, and filling the page with
         // discovery is the right answer there too, since the merge will show no locals.
         var built = await externalTask;
-        var externalSlice = Math.Min(
-            built.Count,
-            externalTarget + Math.Max(0, localSongTarget - localParsed.Songs.Count));
+        var externalSlice = SearchSongOrder.PageOneExternalCount(
+            built.Count, localSongTarget, externalTarget, localParsed.Songs.Count);
         var externalSongs = built.Take(externalSlice).ToList();
 
-        var playlistTask = _subsonicSettings.EnableExternalPlaylists
+        // Remember what this page showed so the next page can carry on from it. Only when
+        // discovery was part of the answer (a type-ahead page has none to continue) and
+        // the library answered, since a failed relay would record an empty library.
+        if (externalTarget > 0 && localResult.Success)
+        {
+            _searchSongOrders.Set(SongOrderKey(parameters, searchEndpoint, cleanQuery),
+                SearchSongOrder.From(built, requestedSongs, localSongTarget, externalTarget, localParsed.Songs));
+        }
+
+        var playlistTask = _subsonicSettings.EnableExternalPlaylists && albumOffset <= 0
             ? await _metadataService.SearchPlaylistsAsync(cleanQuery, requestedAlbums)
             : new List<ExternalPlaylist>();
 
@@ -1083,6 +1103,94 @@ public class SubsonicController : ControllerBase
         _radioQueueStore.Register(localSongIds.Concat(externalSongs.Select(s => s.Id)));
 
         return MergeSearchResults(localParsed, localResult.ContentType, externalResult, playlistTask, format, envelope);
+    }
+
+    private static string SongOrderKey(Dictionary<string, string> parameters, string searchEndpoint, string cleanQuery) =>
+        SearchSongOrderCache.Key(parameters.GetValueOrDefault("u", ""), searchEndpoint,
+            parameters.GetValueOrDefault("musicFolderId"), cleanQuery);
+
+    /// <summary>
+    /// A later page of a search's songs: the next stretch of the order page one started
+    /// (its library rows, its outside rows, then the rest of the library), so paging never
+    /// repeats or skips a row. See <see cref="SearchSongPagePlanner"/>.
+    ///
+    /// Null when the page should go to Navidrome unchanged, as every later page used to:
+    /// discovery is off, or nothing is remembered for this search and the request is too
+    /// small to have earned discovery on its own (a type-ahead count).
+    /// </summary>
+    private async Task<IActionResult?> SearchLaterSongPageAsync(Dictionary<string, string> parameters,
+        string cleanQuery, int songOffset, string searchEndpoint, string envelope, string format)
+    {
+        if (!_subsonicSettings.EnableSearchDiscovery) return null;
+
+        var requestedSongs = int.TryParse(parameters.GetValueOrDefault("songCount", "20"), out var sc) ? sc : 20;
+        var key = SongOrderKey(parameters, searchEndpoint, cleanQuery);
+        var order = _searchSongOrders.Get(key);
+        if (order is null)
+        {
+            // Nothing remembered: expired, or Octo restarted since page one. Build the order
+            // again as if page one had asked for this page's count. The build is shared with
+            // any page one still running for the query, so a client that asks for two pages
+            // at once gets one build.
+            var (localTarget, externalTarget) = SearchBudget.Compute(requestedSongs);
+            if (externalTarget == 0) return null;
+
+            var builtTask = _externalSearch.GetAsync(cleanQuery);
+            var prefix = await _proxyService.RelaySafeAsync(searchEndpoint, new Dictionary<string, string>(parameters)
+            {
+                ["songOffset"] = "0", ["songCount"] = localTarget.ToString(),
+                ["albumCount"] = "0", ["artistCount"] = "0",
+            });
+            if (IsFailedSubsonicBody(prefix.Body, prefix.ContentType))
+                return File(prefix.Body!, prefix.ContentType ?? $"application/{format}");
+            if (!prefix.Success || prefix.Body is null) return null;
+
+            var prefixSongs = _modelMapper.ParseSearchResponse(prefix.Body, prefix.ContentType).Songs;
+            order = SearchSongOrder.From(await builtTask, requestedSongs, localTarget, externalTarget, prefixSongs);
+            _searchSongOrders.Set(key, order);
+            _logger.LogDebug("search '{Q}': page one's order was gone, rebuilt it for offset {Offset}",
+                cleanQuery, songOffset);
+        }
+
+        var page = SearchSongPagePlanner.Plan(songOffset, requestedSongs, order);
+
+        // One relay for the page's library rows and for the albums and artists, which page
+        // exactly as they always have on a later page: Navidrome's, at the client's offsets.
+        var localParams = new Dictionary<string, string>(parameters)
+        {
+            ["songOffset"] = page.LocalOffset.ToString(),
+            ["songCount"] = (page.LeadingLocals + page.TrailingLocals).ToString(),
+        };
+        var localResult = await _proxyService.RelaySafeAsync(searchEndpoint, localParams);
+        if (IsFailedSubsonicBody(localResult.Body, localResult.ContentType))
+            return File(localResult.Body!, localResult.ContentType ?? $"application/{format}");
+
+        var localParsed = localResult.Success && localResult.Body != null
+            ? _modelMapper.ParseSearchResponse(localResult.Body, localResult.ContentType)
+            : (Songs: new List<object>(), Albums: new List<object>(), Artists: new List<object>());
+        var leading = localParsed.Songs.Take(page.LeadingLocals).ToList();
+        var trailing = localParsed.Songs.Skip(page.LeadingLocals).Take(page.TrailingLocals).ToList();
+
+        // Page one's own outside rows keep their places even where page one left one out
+        // because the library had it, so the rows after them do not shift.
+        var externalSongs = order.Built
+            .Skip(page.PageOneExternalSkip).Take(page.PageOneExternalTake)
+            .Where(song => !SubsonicModelMapper.IsListed(song, order.PrefixKeys))
+            .Concat(order.LaterExternals.Skip(page.LaterExternalSkip).Take(page.LaterExternalTake))
+            .ToList();
+
+        _logger.LogDebug(
+            "search '{Q}' page at {Offset}+{Count}: {Leading} library, {External} outside, {Trailing} library",
+            cleanQuery, songOffset, requestedSongs, leading.Count, externalSongs.Count, trailing.Count);
+
+        var localSongIds = ExtractLocalSongIds(localResult.Body, localResult.ContentType);
+        _radioQueueStore.Register(localSongIds.Take(leading.Count)
+            .Concat(externalSongs.Select(s => s.Id))
+            .Concat(localSongIds.Skip(leading.Count).Take(trailing.Count)));
+
+        return MergeSearchResults((leading, localParsed.Albums, localParsed.Artists), localResult.ContentType,
+            new SearchResult { Songs = externalSongs, Albums = new List<Album>(), Artists = new List<Artist>() },
+            new List<ExternalPlaylist>(), format, envelope, trailing);
     }
 
     /// <summary>
@@ -2135,7 +2243,8 @@ public class SubsonicController : ControllerBase
         SearchResult externalResult,
         List<ExternalPlaylist> playlistResult,
         string format,
-        string envelope)
+        string envelope,
+        List<object>? trailingLocalSongs = null)
     {
         var (localSongs, localAlbums, localArtists) = local;
 
@@ -2146,7 +2255,8 @@ public class SubsonicController : ControllerBase
             localArtists,
             externalResult,
             playlistResult,
-            isJson);
+            isJson,
+            trailingLocalSongs);
 
         if (isJson)
         {

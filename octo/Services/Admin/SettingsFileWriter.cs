@@ -110,6 +110,24 @@ public class SettingsFileWriter
         }
     }
 
+    /// <summary>
+    /// Read the file, let <paramref name="change"/> edit it, and write it back, all under the one
+    /// lock. For a change a patch cannot say, such as removing one entry from a dictionary,
+    /// without a form save landing between the read and the write. Nothing is written when
+    /// <paramref name="change"/> returns false, so a change with nothing to do does not make
+    /// every settings reader reload.
+    /// </summary>
+    public bool Update(Func<JsonObject, bool> change)
+    {
+        lock (_lock)
+        {
+            var current = ReadForWrite();
+            if (!change(current)) return false;
+            Write(current);
+            return true;
+        }
+    }
+
     /// <summary>Replace the whole file with <paramref name="content"/>. The Raw config editor's
     /// save, routed through here so it shares the lock and the atomic write with Merge.</summary>
     public void Replace(JsonObject content)

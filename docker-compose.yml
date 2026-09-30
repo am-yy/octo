@@ -87,6 +87,7 @@ services:
 
       # ----- Last.fm radio (core Octo feature; no separate Radio service) -----
       LastFm__ApiKey: ${LASTFM_API_KEY:-}
+      LastFm__ApiSecret: ${LASTFM_API_SECRET:-}
       LastFm__EnableRadio: ${LASTFM_ENABLE_RADIO:-true}
       LastFm__RadioTrackCount: ${LASTFM_RADIO_TRACK_COUNT:-50}
       LastFm__RadioCacheDurationHours: ${LASTFM_RADIO_CACHE_HOURS:-24}

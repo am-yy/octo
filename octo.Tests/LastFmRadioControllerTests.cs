@@ -719,11 +719,17 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
     private readonly bool _exposeStreams;
     private readonly bool _enableIcyMetadata;
     private readonly int? _starterPublishTimeoutSeconds;
+    private readonly bool _lastFmScrobbling;
+
+    /// <summary>The settings file Octo writes, kept in this fixture's own folder rather than
+    /// /app/config, where a test run has no business writing.</summary>
+    public string SettingsPath => Path.Combine(_directory, "settings.json");
 
     public RadioWebFactory(string explicitFilter = "All", bool exposePlaylists = true,
         bool exposeStreams = true, bool enableIcyMetadata = true,
-        int? starterPublishTimeoutSeconds = null)
+        int? starterPublishTimeoutSeconds = null, bool lastFmScrobbling = false)
     {
+        _lastFmScrobbling = lastFmScrobbling;
         _explicitFilter = explicitFilter;
         _exposePlaylists = exposePlaylists;
         _exposeStreams = exposeStreams;
@@ -785,6 +791,18 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        var lastFm = _lastFmScrobbling
+            ? new Dictionary<string, string?>
+            {
+                // Only when asked for: with a key, radio would start calling Last.fm too.
+                ["LastFm:ApiKey"] = FakeLastFm.ApiKey,
+                ["LastFm:ApiSecret"] = FakeLastFm.Secret,
+                ["LastFm:UserSessions:bob:SessionKey"] = "sk-bob",
+                ["LastFm:UserSessions:bob:LastFmUser"] = "lfm-bob",
+                // Fails the fixture's credential check, so a session for it must still send nothing.
+                ["LastFm:UserSessions:bad:SessionKey"] = "sk-bad",
+            }
+            : [];
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
             new Dictionary<string, string?>
             {
@@ -802,7 +820,7 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
                 ["LastFm:ExposeRadioAsStreams"] = _exposeStreams.ToString(),
                 ["LastFm:RadioStreamBitrateKbps"] = "192",
                 ["LastFm:EnableIcyMetadata"] = _enableIcyMetadata.ToString(),
-            }));
+            }.Concat(lastFm)));
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<IHostedService>();
@@ -816,6 +834,8 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
             services.AddSingleton<ILastFmRadioAudioTranscoder>(Transcoder);
             services.RemoveAll<LastFmRadioTrackCache>();
             services.AddSingleton(new LastFmRadioTrackCache(Path.Combine(_directory, "radio-cache")));
+            services.RemoveAll<Octo.Services.Admin.SettingsFileWriter>();
+            services.AddSingleton(new Octo.Services.Admin.SettingsFileWriter(SettingsPath));
             services.RemoveAll<LastFmRadioStateStore>();
             services.AddSingleton(provider => new LastFmRadioStateStore(
                 Path.Combine(_directory, "radio-state.json"),
@@ -879,10 +899,13 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
     public int ScrobbleRelays { get; private set; }
     public bool ReturnLocalMatches { get; set; } = true;
     public List<(string Authorization, string Body)> ListenBrainzSubmissions { get; } = [];
+    public FakeLastFm LastFm { get; } = new();
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        if (request.RequestUri!.Host.Equals("ws.audioscrobbler.com", StringComparison.OrdinalIgnoreCase))
+            return await LastFm.RespondAsync(request, cancellationToken);
         if (request.RequestUri!.Host.Equals("api.listenbrainz.org", StringComparison.OrdinalIgnoreCase))
         {
             var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);

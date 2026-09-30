@@ -19,7 +19,7 @@ namespace Octo.Tests;
 /// </summary>
 public sealed class LogRedactionTests
 {
-    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "T", "APIKEY", "Token" };
+    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "T", "APIKEY", "Token", "sk", "api_sig" };
 
     /// <summary>Everything a sink would be handed: the message, every structured value and every
     /// scope, with the scope's own values too, since the JSON formatter writes all of them.</summary>

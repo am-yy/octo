@@ -67,6 +67,7 @@ public class AdminController : ControllerBase
     private readonly Octo.Services.Library.DuplicateScanWorker? _duplicates;
     private readonly IOptionsMonitor<GeneratedPlaylistSettings>? _generatedOpts;
     private readonly Octo.Services.Common.AcquisitionTracker? _acquisitions;
+    private readonly LastFmScrobbleService? _lastFmScrobbles;
 
     public AdminController(
         SettingsFileWriter settings,
@@ -107,8 +108,10 @@ public class AdminController : ControllerBase
         Octo.Services.Library.NoticeQueue? notices = null,
         Octo.Services.Library.DuplicateScanWorker? duplicates = null,
         IOptionsMonitor<GeneratedPlaylistSettings>? generatedOpts = null,
-        Octo.Services.Common.AcquisitionTracker? acquisitions = null)
+        Octo.Services.Common.AcquisitionTracker? acquisitions = null,
+        LastFmScrobbleService? lastFmScrobbles = null)
     {
+        _lastFmScrobbles = lastFmScrobbles;
         _acquisitions = acquisitions;
         _generatedOpts = generatedOpts;
         _notices = notices;
@@ -214,6 +217,83 @@ public class AdminController : ControllerBase
     [HttpPost("listenbrainz/validate")]
     public Task<IActionResult> ValidateListenBrainzPost([FromBody] ListenBrainzValidateRequest request) =>
         ValidateListenBrainz(request.User, request.Token);
+
+    /// <summary>Who can scrobble outside plays to Last.fm: every Navidrome user Octo knows of,
+    /// with the Last.fm account each is connected to. Session keys never leave the server.</summary>
+    [HttpGet("lastfm/scrobble")]
+    public IActionResult GetLastFmScrobbling()
+    {
+        var settings = _lastFmOpts.CurrentValue;
+        var known = (_radioState?.GetSummaries().Select(summary => summary.Username) ?? [])
+            .Concat(_listenBrainzOpts?.CurrentValue.UserTokens.Keys ?? Enumerable.Empty<string>());
+        return Ok(new
+        {
+            available = _lastFmScrobbles is not null,
+            hasApiKey = !string.IsNullOrWhiteSpace(settings.ApiKey),
+            hasApiSecret = !string.IsNullOrWhiteSpace(settings.ApiSecret),
+            enabled = settings.ScrobbleExternalPlays,
+            users = _lastFmScrobbles?.Users(known) ?? [],
+        });
+    }
+
+    public sealed class LastFmScrobbleUserRequest { public string User { get; set; } = string.Empty; }
+
+    /// <summary>Step one of connecting: the page on last.fm where the admin, signed in as the
+    /// listener, approves Octo.</summary>
+    [HttpPost("lastfm/scrobble/connect")]
+    public async Task<IActionResult> ConnectLastFm([FromBody] LastFmScrobbleUserRequest request)
+    {
+        if (_lastFmScrobbles is null) return NotFound(new { error = "Last.fm scrobbling is not available." });
+        try
+        {
+            var url = await _lastFmScrobbles.BeginConnectAsync(request.User ?? "", HttpContext.RequestAborted);
+            return Ok(new { user = (request.User ?? "").Trim(), url });
+        }
+        catch (LastFmScrobbleException ex) { return BadRequest(new { error = ex.Message }); }
+    }
+
+    /// <summary>Step two, once Octo has been approved on last.fm: saves the session. 409 while
+    /// Last.fm has not seen the approval yet, so the dashboard can say "not yet" and let the
+    /// admin press Finish again.</summary>
+    [HttpPost("lastfm/scrobble/finish")]
+    public async Task<IActionResult> FinishLastFm([FromBody] LastFmScrobbleUserRequest request)
+    {
+        if (_lastFmScrobbles is null) return NotFound(new { error = "Last.fm scrobbling is not available." });
+        try
+        {
+            var session = await _lastFmScrobbles.FinishConnectAsync(request.User ?? "", HttpContext.RequestAborted);
+            return Ok(new { ok = true, user = (request.User ?? "").Trim(), lastFmUser = session.LastFmUser });
+        }
+        catch (LastFmScrobbleException ex) when (ex.Code == LastFmScrobbleService.ErrorTokenNotAuthorized)
+        {
+            return Conflict(new { error = ex.Message });
+        }
+        catch (LastFmScrobbleException ex) { return BadRequest(new { error = ex.Message }); }
+        catch (SettingsFileCorruptException ex)
+        {
+            return Conflict(new { error = $"{ex.Message} Fix it in Raw config, or on disk at {ex.Path}, then Connect again." });
+        }
+    }
+
+    [HttpPost("lastfm/scrobble/disconnect")]
+    public IActionResult DisconnectLastFm([FromBody] LastFmScrobbleUserRequest request)
+    {
+        if (_lastFmScrobbles is null) return NotFound(new { error = "Last.fm scrobbling is not available." });
+        try
+        {
+            var user = (request.User ?? "").Trim();
+            var fromFile = _lastFmScrobbles.Disconnect(user);
+            var fromEnvironment = !fromFile && _lastFmOpts.CurrentValue.SessionFor(user) is not null;
+            return Ok(new
+            {
+                ok = true, user,
+                message = fromEnvironment
+                    ? $"Stopped for now. This session is set in the environment (LASTFM__USERSESSIONS__{user}__SESSIONKEY), so remove it there as well or it comes back after a restart."
+                    : "Disconnected. To revoke Octo on Last.fm too, remove it from that account's applications.",
+            });
+        }
+        catch (LastFmScrobbleException ex) { return BadRequest(new { error = ex.Message }); }
+    }
 
     [HttpPost("lastfm/radio/refresh")]
     public IActionResult RefreshLastFmRadio([FromBody] RadioUserRequest request)
@@ -560,6 +640,9 @@ public class AdminController : ControllerBase
             ["LastFm"] = new Dictionary<string, object>
             {
                 ["ApiKey"] = lastfm.ApiKey ?? "",
+                ["ApiSecret"] = MaskSecret(lastfm.ApiSecret),
+                ["ScrobbleExternalPlays"] = lastfm.ScrobbleExternalPlays,
+                ["UserSessions"] = MaskSessions(lastfm.UserSessions),
                 ["EnableRadio"] = lastfm.EnableRadio,
                 ["RadioTrackCount"] = lastfm.RadioTrackCount,
                 ["RadioCacheDurationHours"] = lastfm.RadioCacheDurationHours,
@@ -771,6 +854,22 @@ public class AdminController : ControllerBase
                     && !string.Equals(newUser.Trim(), (_subsonicOpts.CurrentValue.AdminUsername ?? "").Trim(), StringComparison.Ordinal))
                     return BadRequest(new { error = "Retype the admin password for the new username." });
                 subsonicPatch.Remove(passwordKey);
+            }
+        }
+
+        if (Child(patch, "LastFm") is JsonObject lastFmSecrets)
+        {
+            // Sessions are made by Connect and removed by Disconnect. No form sends them, and an
+            // echoed placeholder must never overwrite a real key.
+            if (KeyOf(lastFmSecrets, "UserSessions") is { } sessionsKey) lastFmSecrets.Remove(sessionsKey);
+            if (KeyOf(lastFmSecrets, "ApiSecret") is { } secretKey
+                && lastFmSecrets[secretKey] is JsonValue secretValue
+                && secretValue.TryGetValue<string>(out var secretText)
+                && secretText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
+            {
+                if (secretText != SecretPlaceholder)
+                    return BadRequest(new { error = "Retype the whole Last.fm shared secret; it was added to the hidden placeholder." });
+                lastFmSecrets.Remove(secretKey);
             }
         }
 
@@ -1267,6 +1366,10 @@ public class AdminController : ControllerBase
             ["LastFm"] = new JsonObject
             {
                 ["ApiKey"] = lastfm.ApiKey ?? "",
+                // Placeholders, which PUT swaps back for what is stored.
+                ["ApiSecret"] = MaskSecret(lastfm.ApiSecret),
+                ["ScrobbleExternalPlays"] = lastfm.ScrobbleExternalPlays,
+                ["UserSessions"] = MaskSessions(lastfm.UserSessions),
                 ["EnableRadio"] = lastfm.EnableRadio,
                 ["RadioTrackCount"] = lastfm.RadioTrackCount,
                 ["RadioCacheDurationHours"] = lastfm.RadioCacheDurationHours,
@@ -1422,7 +1525,15 @@ public class AdminController : ControllerBase
             // left, and this save is the recovery path the 409 points people to.
             var existing = _settings.IsReadable()
                 ? _settings.Load()
-                : new JsonObject { ["Subsonic"] = new JsonObject { ["AdminPassword"] = _subsonicOpts.CurrentValue.AdminPassword } };
+                : new JsonObject
+                {
+                    ["Subsonic"] = new JsonObject { ["AdminPassword"] = _subsonicOpts.CurrentValue.AdminPassword },
+                    ["LastFm"] = new JsonObject
+                    {
+                        ["ApiSecret"] = _lastFmOpts.CurrentValue.ApiSecret,
+                        ["UserSessions"] = JsonSerializer.SerializeToNode(_lastFmOpts.CurrentValue.UserSessions),
+                    },
+                };
             RestoreSecretPlaceholders(parsed, existing);
             if (Child(parsed, "Subsonic") is JsonObject savedSubsonic
                 && KeyOf(savedSubsonic, "AdminPassword") is { } savedKey
@@ -1430,6 +1541,12 @@ public class AdminController : ControllerBase
                 && savedValue.TryGetValue<string>(out var savedText)
                 && savedText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
                 return BadRequest(new { error = "Retype the whole admin password; it was added to the hidden placeholder." });
+            if (Child(parsed, "LastFm") is JsonObject savedLastFm
+                && KeyOf(savedLastFm, "ApiSecret") is { } savedSecretKey
+                && savedLastFm[savedSecretKey] is JsonValue savedSecret
+                && savedSecret.TryGetValue<string>(out var savedSecretText)
+                && savedSecretText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
+                return BadRequest(new { error = "Retype the whole Last.fm shared secret; it was added to the hidden placeholder." });
             var pretty = parsed.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
             _settings.Replace(parsed);
             _logger.LogInformation("Admin raw-config saved ({Bytes} bytes)", pretty.Length);
@@ -1495,7 +1612,8 @@ public class AdminController : ControllerBase
             "Lidarr:QualityProfileId", "Lidarr:MetadataProfileId",
             "Lidarr:CompletionMode", "Lidarr:ImportTimeoutSeconds",
             "YouTube:ShimUrl",
-            "LastFm:ApiKey", "LastFm:EnableRadio", "LastFm:RadioTrackCount",
+            "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
+            "LastFm:EnableRadio", "LastFm:RadioTrackCount",
             "LastFm:RadioCacheDurationHours", "LastFm:StarterPublishTimeoutSeconds",
             "LastFm:RadioLoudnessTargetLufs",
             "LastFm:EnablePersonalizedStations", "LastFm:EnableYourMix",
@@ -1527,6 +1645,7 @@ public class AdminController : ControllerBase
             // page doesn't leak credentials.
             var isSecret = k.EndsWith("Password", StringComparison.OrdinalIgnoreCase)
                         || k.EndsWith("ApiKey", StringComparison.OrdinalIgnoreCase)
+                        || k.EndsWith("Secret", StringComparison.OrdinalIgnoreCase)
                         // A Discord webhook URL embeds its token, so the whole URL is
                         // the secret; ntfy tokens are credentials outright.
                         || k.EndsWith("Token", StringComparison.OrdinalIgnoreCase)
@@ -1713,9 +1832,10 @@ public class AdminController : ControllerBase
     private record ServiceProbe(bool Ok, string Detail, bool Warning = false, bool Configured = true);
 
     /// <summary>
-    /// What a saved Navidrome admin password reads as through the admin API. Every other secret
-    /// still goes out in clear, as it always has; this one never did, and adding it to the GET
-    /// so the form could round-trip must not change that.
+    /// What a saved Navidrome admin password reads as through the admin API. The Last.fm shared
+    /// secret and each listener's Last.fm session key read the same way: they were added after
+    /// this was, and neither has ever gone out in clear. Every other secret still does, as it
+    /// always has.
     /// </summary>
     internal const string SecretPlaceholder = "(saved, not shown)";
 
@@ -1729,22 +1849,43 @@ public class AdminController : ControllerBase
     /// </summary>
     internal static void RestoreSecretPlaceholders(JsonObject incoming, JsonObject existingFile)
     {
-        if (Child(incoming, "Subsonic") is not JsonObject subsonic
-            || KeyOf(subsonic, "AdminPassword") is not { } key
-            || subsonic[key] is not JsonValue value
+        RestorePlaceholder(Child(incoming, "Subsonic"), Child(existingFile, "Subsonic"), "AdminPassword");
+        RestorePlaceholder(Child(incoming, "LastFm"), Child(existingFile, "LastFm"), "ApiSecret");
+
+        // Each listener's session the same way, matched by username. An entry whose key is only
+        // in the environment is dropped whole, so the environment keeps applying.
+        if (Child(incoming, "LastFm") is not JsonObject lastFm
+            || Child(lastFm, "UserSessions") is not JsonObject sessions)
+            return;
+        var storedSessions = Child(existingFile, "LastFm") is JsonObject storedLastFm
+            ? Child(storedLastFm, "UserSessions") : null;
+        foreach (var user in sessions.Select(pair => pair.Key).ToList())
+        {
+            if (sessions[user] is not JsonObject session) continue;
+            var stored = storedSessions is not null && KeyOf(storedSessions, user) is { } storedUser
+                ? storedSessions[storedUser] as JsonObject : null;
+            RestorePlaceholder(session, stored, "SessionKey");
+            if (KeyOf(session, "SessionKey") is null) sessions.Remove(user);
+        }
+    }
+
+    /// <summary>Swaps one placeholder back for the stored value, or drops the key when nothing is
+    /// stored. A real value is left alone.</summary>
+    private static void RestorePlaceholder(JsonObject? incoming, JsonObject? existing, string name)
+    {
+        if (incoming is null
+            || KeyOf(incoming, name) is not { } key
+            || incoming[key] is not JsonValue value
             || !value.TryGetValue<string>(out var text)
             || text != SecretPlaceholder)
             return;
 
-        var stored = Child(existingFile, "Subsonic") is JsonObject storedSubsonic
-            && KeyOf(storedSubsonic, "AdminPassword") is { } storedKey
-                ? storedSubsonic[storedKey]
-                : null;
+        var stored = existing is not null && KeyOf(existing, name) is { } storedKey ? existing[storedKey] : null;
         if (stored is JsonValue storedValue && storedValue.TryGetValue<string>(out var storedText)
             && !string.IsNullOrEmpty(storedText))
-            subsonic[key] = storedText;
+            incoming[key] = storedText;
         else
-            subsonic.Remove(key);
+            incoming.Remove(key);
     }
 
     /// <summary>The key in <paramref name="obj"/> that matches <paramref name="name"/> ignoring
@@ -1760,13 +1901,36 @@ public class AdminController : ControllerBase
     internal static JsonObject RedactSecrets(JsonObject merged)
     {
         var copy = merged.DeepClone().AsObject();
-        if (Child(copy, "Subsonic") is JsonObject subsonic)
-            foreach (var key in subsonic.Select(pair => pair.Key)
-                         .Where(key => string.Equals(key, "AdminPassword", StringComparison.OrdinalIgnoreCase)).ToList())
-                if (subsonic[key] is JsonValue value && value.TryGetValue<string>(out var text))
-                    subsonic[key] = MaskSecret(text);
+        MaskIn(Child(copy, "Subsonic"), "AdminPassword");
+        if (Child(copy, "LastFm") is JsonObject lastFm)
+        {
+            MaskIn(lastFm, "ApiSecret");
+            if (Child(lastFm, "UserSessions") is JsonObject sessions)
+                foreach (var (_, session) in sessions)
+                    MaskIn(session as JsonObject, "SessionKey");
+        }
         return copy;
     }
+
+    private static void MaskIn(JsonObject? section, string name)
+    {
+        if (section is null) return;
+        foreach (var key in section.Select(pair => pair.Key)
+                     .Where(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase)).ToList())
+            if (section[key] is JsonValue value && value.TryGetValue<string>(out var text))
+                section[key] = MaskSecret(text);
+    }
+
+    /// <summary>Each listener's Last.fm link with the key masked: enough for the Raw editor to
+    /// round-trip it, and for nobody to read it back.</summary>
+    private static JsonObject MaskSessions(IReadOnlyDictionary<string, LastFmUserSession>? sessions) =>
+        new((sessions ?? new Dictionary<string, LastFmUserSession>())
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value?.SessionKey))
+            .Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, new JsonObject
+            {
+                ["SessionKey"] = SecretPlaceholder,
+                ["LastFmUser"] = pair.Value.LastFmUser ?? "",
+            })));
 
     /// <summary>The release this build came from, e.g. "2026.07.29". Falls back to the
     /// assembly version if the informational version was not stamped.</summary>

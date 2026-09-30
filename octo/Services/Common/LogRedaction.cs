@@ -20,8 +20,10 @@ public static class LogRedaction
 
     // t and s are the token login, p the password (plain or enc:), apiKey the OpenSubsonic key,
     // token what several clients call theirs. Subsonic reads names case-insensitively, so this does.
+    // sk is a Last.fm session key, which scrobbles as that listener, and api_sig is signed with
+    // the Last.fm shared secret.
     private static readonly Regex SecretParameter = new(
-        @"(?<=[?&;](?:t|s|p|apikey|token)=)[^&#\s""'<>]+",
+        @"(?<=[?&;](?:t|s|p|apikey|token|sk|api_sig)=)[^&#\s""'<>]+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>The text with every secret query parameter's value replaced by <see cref="Mask"/>.

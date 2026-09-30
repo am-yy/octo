@@ -88,6 +88,10 @@ builder.Services.Configure<ListenBrainzSettings>(
 builder.Services.AddHttpClient(Octo.Services.ListenBrainz.ListenBrainzService.ClientName,
     c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<Octo.Services.ListenBrainz.ListenBrainzService>();
+// Scrobbles of outside songs go out in the background, never inside a client's request, but a
+// hung call would still hold up every play queued behind it.
+builder.Services.AddHttpClient(LastFmScrobbleService.ClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<LastFmScrobbleService>();
 
 builder.Services.AddSingleton<ILocalLibraryService, LocalLibraryService>();
 

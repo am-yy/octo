@@ -6,7 +6,40 @@ public class LastFmSettings
     /// Last.fm API key for fetching similar tracks
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
-    
+
+    /// <summary>
+    /// The shared secret that comes with the API key, from the same Last.fm API account
+    /// page. Only scrobbling needs it: Last.fm wants every call made for a listener signed
+    /// with it. The admin API never hands it back.
+    /// Environment variable: LASTFM_API_SECRET
+    /// </summary>
+    public string ApiSecret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Send plays of outside songs to each connected listener's Last.fm. Library plays are
+    /// left alone, because Navidrome scrobbles those itself.
+    /// </summary>
+    public bool ScrobbleExternalPlays { get; set; } = true;
+
+    /// <summary>
+    /// Navidrome username to that listener's Last.fm session, written by Connect on the
+    /// dashboard. A session key is a password for scrobbling as that person, so the admin
+    /// API only ever shows it masked.
+    /// Environment variable form: LASTFM__USERSESSIONS__alice__SESSIONKEY=...
+    /// </summary>
+    public Dictionary<string, LastFmUserSession> UserSessions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>This listener's session, or null when they have not connected Last.fm.
+    /// Matched without regard to case, as Navidrome matches usernames.</summary>
+    public LastFmUserSession? SessionFor(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return null;
+        var name = username.Trim();
+        var session = UserSessions.TryGetValue(name, out var exact) ? exact
+            : UserSessions.FirstOrDefault(pair => string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
+        return string.IsNullOrWhiteSpace(session?.SessionKey) ? null : session;
+    }
+
     /// <summary>
     /// Enable/disable the radio feature
     /// </summary>
@@ -159,6 +192,16 @@ public class LastFmSettings
         }
         return result;
     }
+}
+
+/// <summary>One listener's link to their Last.fm account. Last.fm session keys do not
+/// expire; one stops working only when the listener revokes Octo on last.fm.</summary>
+public sealed class LastFmUserSession
+{
+    public string SessionKey { get; set; } = string.Empty;
+
+    /// <summary>The Last.fm account the key belongs to, shown on the dashboard.</summary>
+    public string LastFmUser { get; set; } = string.Empty;
 }
 
 public sealed class DiscoveryStationSettings

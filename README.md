@@ -20,7 +20,7 @@ Search and stream songs you don't own. Heart what you like — Octo grabs the FL
 
 If you self-host your music with Navidrome (or any Subsonic-compatible server), you've already opted out of streaming-service lock-in. The downside: your library is only as interesting as the music you've already collected. Searching for something new just gets you "no results."
 
-Octo is for people who want both — your music on your hardware, plus a working discovery engine that lets you **preview anything for free and keep only what you decide you want.**
+Octo is for people who want both: your music on your hardware, plus a working discovery engine that lets you **preview anything for free and keep only what you decide you want.**
 
 Built for:
 
@@ -30,7 +30,7 @@ Built for:
 - **People canceling Spotify / Apple Music / Tidal** who need a real replacement, not "well, I'll just listen to less music."
 - **Plexamp / Roon refugees** who like the discovery features but don't want the proprietary stack.
 
-> **Note:** if you already pay for Qobuz, Deezer, or Yandex Music and want a Subsonic frontend that ingests your paid catalog into your library, [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) is closer to what you want — it downloads from those APIs directly. Octo is the *no-paid-streaming-required* path: previews come from YouTube, downloads come from Soulseek.
+> **Note:** if you already pay for Qobuz, Deezer, or Yandex Music and want a Subsonic frontend that ingests your paid catalog into your library, [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) is closer to what you want, since it downloads from those APIs directly. Octo is the *no-paid-streaming-required* path: previews come from YouTube, downloads come from Soulseek.
 
 ## What it does
 
@@ -40,6 +40,11 @@ Built for:
 - **Heart to keep.** Heart (some apps say star) a previewed song and Octo grabs the FLAC from Soulseek, adds it to your library, and tells Navidrome to rescan. Usually within a few minutes, longer while Soulseek peers are tried, the song is yours for good.
 - **Search and heart whole albums.** Albums you don't own show up in search with real cover art and tracklists. Star one and Octo fetches every track. Downloads run one at a time, so a full album takes a while; album-heart sources can be disabled independently in the admin UI.
 - **Bring your own Lidarr.** Already running [Lidarr](https://github.com/Lidarr/Lidarr)? Add it as a heart source and order it against Soulseek and YouTube in the admin UI. Hearts hand off to Lidarr at album level, and finished imports land back in your library with a rescan.
+- **Downloads arrive tagged and filed.** Octo tags a download before it places it, so it lands under the right album with its track number and the best cover it can find. A "lossless" file made from an MP3 is caught and held back while Octo looks for a genuine copy.
+- **It asks when it isn't sure.** Optional Review and Duplicates playlists list the downloads Octo couldn't confirm and the recordings you have twice. Move a song to Keep or Delete to answer; nothing is removed on its own.
+- **Lyrics.** With lyrics lookups on, downloads get synced lyrics beside them, and songs without any get them as they play.
+- **Mixes from your own library.** Genre and decade mixes can sit beside the stations, and every station and mix gets a painted cover in colours from its music.
+- **Apps made for Octo.** A desktop app and an Android app show what Octo finds right next to your library. See [Apps made for Octo](#apps-made-for-octo).
 
 Plug Octo in front of your Navidrome. Point your Subsonic apps (Feishin, Arpeggi, Narjo, etc.) at Octo instead. Nothing else changes.
 

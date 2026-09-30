@@ -4,6 +4,7 @@ using System.Text.Json;
 using Octo.Models.Domain;
 using Octo.Models.Search;
 using Octo.Models.Subsonic;
+using Octo.Services.Common;
 using Octo.Services.CoverArt;
 using Octo.Services.LastFm;
 using Octo.Services.Metadata;
@@ -520,7 +521,10 @@ public class SoulseekMetadataService : IMusicMetadataService
         var hits = await _deezer.SearchArtistsAsync(query, limit);
         var artists = new List<Artist>(hits.Count);
 
-        foreach (var hit in hits)
+        // Two catalog artists of one name get one id, so they are one row: two rows opening
+        // the same page would only confuse. The row is the artist Octo already settled on for
+        // that name, else the one more people follow.
+        foreach (var sameName in hits.GroupBy(hit => hit.Name, StringComparer.Ordinal))
         {
             // Same registry id an album row mints for its artist, because the seed is the
             // artist name alone. So an artist found here and the same artist reached from
@@ -528,8 +532,18 @@ public class SoulseekMetadataService : IMusicMetadataService
             var id = _idRegistry.Register(new SoulseekRouting
             {
                 Kind = RoutingKind.Artist,
-                Artist = hit.Name,
+                Artist = sameName.Key,
             });
+            var routing = _idRegistry.Lookup(id);
+            var hit = sameName.FirstOrDefault(h => h.DeezerId == routing?.ExternalArtistId)
+                ?? MostFollowed(sameName);
+            // Remembered only when nothing is yet: an artist page that checked the choice
+            // against the library knows better than a search does.
+            if (routing is not null && routing.ExternalArtistId is null)
+            {
+                routing.ExternalArtistId = hit.DeezerId;
+                _idRegistry.Register(routing);
+            }
 
             artists.Add(new Artist
             {
@@ -734,12 +748,16 @@ public class SoulseekMetadataService : IMusicMetadataService
         var routing = _idRegistry.Lookup(externalId);
         if (routing is null) return null;
 
-        var meta = await _deezer.EnrichArtistAsync(routing.Artist);
+        // The name and picture of the catalog artist this page lists, as the album listing
+        // settles it: the id already held, else the one of this exact name more people
+        // follow. The first search hit can be a bigger act whose name contains this one.
+        var hit = await FindCatalogArtistAsync(routing);
+        var meta = hit is null ? await _deezer.EnrichArtistAsync(routing.Artist) : null;
         return new Artist
         {
             Id = externalId,
-            Name = meta?.Name ?? routing.Artist ?? "",
-            ImageUrl = meta?.ImageUrl,
+            Name = hit?.Name ?? meta?.Name ?? routing.Artist ?? "",
+            ImageUrl = hit?.PictureUrl ?? meta?.ImageUrl,
             IsLocal = false,
             ExternalProvider = ProviderName,
             ExternalId = externalId,
@@ -754,23 +772,108 @@ public class SoulseekMetadataService : IMusicMetadataService
     private const int TrackCountsPerVisit = 20;
     private const int TrackCountsAtOnce = 4;
 
+    /// <summary>How many catalog artists a name search weighs. The first hit is not reliably
+    /// the artist asked for: a name another artist shares, or a bigger act that contains it,
+    /// can come first.</summary>
+    private const int ArtistCandidates = 5;
+
+    /// <summary>How many artists of one name a library artist's page compares against the
+    /// library. Each is one listing call, cached, and only made when a name is shared.</summary>
+    private const int ArtistsCompared = 3;
+
+    /// <summary>
+    /// The releases of the catalog artist an outside artist's name stands for, or none when no
+    /// catalog artist has that name. The catalog id Octo already holds wins over a name search:
+    /// it is the artist the user tapped in search, or the one an earlier visit settled on. On a
+    /// library artist's page it must also share an album with the library, because two artists
+    /// can share a name and the library says which one is meant. Without an id, only artists
+    /// with this exact name count; of several, the one sharing the most albums with the library,
+    /// else the one more people follow. The choice is kept on the artist for the next visit.
+    /// </summary>
+    private async Task<List<DeezerMetadataService.AlbumHit>> FindArtistReleasesAsync(
+        SoulseekRouting routing, string name, IReadOnlySet<string> owned)
+    {
+        List<DeezerMetadataService.AlbumHit>? knownReleases = null;
+        if (routing.ExternalArtistId is { Length: > 0 } known)
+        {
+            knownReleases = await _deezer.GetArtistAlbumsAsync(known, name);
+            if (owned.Count == 0 || Shared(knownReleases, owned) > 0) return knownReleases;
+        }
+
+        var candidates = (await _deezer.SearchArtistsAsync(name, ArtistCandidates))
+            .Where(hit => SongIdentity.SameArtistName(hit.Name, name))
+            .ToList();
+        if (candidates.Count == 0) return knownReleases ?? new List<DeezerMetadataService.AlbumHit>();
+
+        var pick = MostFollowed(candidates);
+        var releases = (List<DeezerMetadataService.AlbumHit>?)null;
+        if (candidates.Count > 1 && owned.Count > 0)
+        {
+            var best = 0;
+            foreach (var candidate in candidates.OrderByDescending(hit => hit.Fans).Take(ArtistsCompared))
+            {
+                var theirs = await _deezer.GetArtistAlbumsAsync(candidate.DeezerId, name);
+                var shared = Shared(theirs, owned);
+                if (shared <= best) continue;
+                (best, pick, releases) = (shared, candidate, theirs);
+            }
+        }
+        releases ??= await _deezer.GetArtistAlbumsAsync(pick.DeezerId, name);
+
+        if (pick.DeezerId != routing.ExternalArtistId)
+        {
+            routing.ExternalArtistId = pick.DeezerId;
+            _idRegistry.Register(routing);
+        }
+        return releases;
+    }
+
+    /// <summary>The catalog artist of this exact name an outside artist stands for: the one
+    /// Octo already settled on, else the one more people follow. Null when none has the name.
+    /// The search is the one the album listing makes, so it costs nothing more.</summary>
+    private async Task<DeezerMetadataService.ArtistHit?> FindCatalogArtistAsync(SoulseekRouting routing)
+    {
+        if (routing.Artist is not { Length: > 0 } name) return null;
+        var candidates = (await _deezer.SearchArtistsAsync(name, ArtistCandidates))
+            .Where(hit => SongIdentity.SameArtistName(hit.Name, name))
+            .ToList();
+        if (candidates.Count == 0) return null;
+        return candidates.FirstOrDefault(hit => hit.DeezerId == routing.ExternalArtistId)
+            ?? MostFollowed(candidates);
+    }
+
+    /// <summary>How many of an artist's releases the library holds, by the matcher's key.</summary>
+    private static int Shared(IEnumerable<DeezerMetadataService.AlbumHit> releases, IReadOnlySet<string> owned) =>
+        releases.Count(release => owned.Contains(SongIdentity.Key(release.Title)));
+
+    /// <summary>The artist more people follow; the catalog's own order on a tie.</summary>
+    private static DeezerMetadataService.ArtistHit MostFollowed(IEnumerable<DeezerMetadataService.ArtistHit> hits) =>
+        hits.OrderByDescending(hit => hit.Fans).First();
+
     /// <summary>
     /// An outside artist's releases, for their page and for filling out a library artist's
     /// page. Each album is registered the way album search registers one, so it opens, plays
     /// and stars like any other outside album. The artist name and id are left for the caller:
     /// a library artist's page links its albums back to the library artist.
     /// </summary>
-    public async Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId)
+    public Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId)
+        => GetArtistAlbumsAsync(externalProvider, externalId, null);
+
+    /// <summary>
+    /// The same, for a library artist's page: the library's album titles say which of two
+    /// artists of one name the page is about.
+    /// </summary>
+    public async Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId,
+        IReadOnlyCollection<string>? libraryAlbumTitles)
     {
         if (!string.Equals(externalProvider, ProviderName, StringComparison.OrdinalIgnoreCase)) return new List<Album>();
         var routing = _idRegistry.Lookup(externalId);
         if (routing?.Artist is not { Length: > 0 } name) return new List<Album>();
 
-        var artist = (await _deezer.SearchArtistsAsync(name, 5))
-            .FirstOrDefault(hit => Octo.Services.Common.SongIdentity.SameArtistName(hit.Name, name));
-        if (artist is null) return new List<Album>();
-
-        var releases = await _deezer.GetArtistAlbumsAsync(artist.DeezerId, name);
+        var owned = new HashSet<string>(
+            (libraryAlbumTitles ?? []).Select(SongIdentity.Key).Where(key => key.Length > 0),
+            StringComparer.Ordinal);
+        var releases = await FindArtistReleasesAsync(routing, name, owned);
 
         // The listing carries no track counts. Each album's own record has one. Counts already
         // known cost nothing; of the rest, the newest few are asked a few at a time, and the
@@ -913,6 +1016,11 @@ public class SoulseekRouting
     /// <summary>Deezer album id, when an album search resolved one. Absent on album
     /// routings minted from a song row, which fall back to a name lookup.</summary>
     public string? ExternalAlbumId { get; set; }
+
+    /// <summary>Deezer artist id behind an artist routing, once an artist search or an artist
+    /// page settled on one. The id itself is minted from the name alone, and two artists can
+    /// share a name, so this is what says which of them the page lists. Not part of the id.</summary>
+    public string? ExternalArtistId { get; set; }
 
     /// <summary>Position within its album. Carried so a track downloaded as part of an
     /// album keeps its ordering: the download path rebuilds the song from its id alone,

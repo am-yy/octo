@@ -1593,7 +1593,17 @@ public class SubsonicController : ControllerBase
             return await RelayAsAskedAsync("rest/getArtist", parameters, format, navidromeResult.Body, navidromeResult.ContentType);
         }
 
-        var deezerArtists = await _metadataService.SearchArtistsAsync(artistName, 1);
+        var localAlbumTitles = localAlbums
+            .OfType<Dictionary<string, object>>()
+            .Select(dict => dict.TryGetValue("name", out var nameObj) ? nameObj?.ToString() : null)
+            .OfType<string>()
+            .ToList();
+
+        // The first hit is not reliably this artist: a bigger act whose name contains this one
+        // can come first. Of the few asked for, the one with this exact name is.
+        var deezerArtists = (await _metadataService.SearchArtistsAsync(artistName, 5))
+            .Where(found => SongIdentity.SameArtistName(found.Name, artistName))
+            .ToList();
         var deezerAlbums = new List<Album>();
         
         if (deezerArtists.Count > 0)
@@ -1603,7 +1613,9 @@ public class SubsonicController : ControllerBase
             {
                 // The provider must come from the artist found, as for albums: a hardcoded
                 // "deezer" never matches the metadata service's name, so this was always empty.
-                deezerAlbums = await _metadataService.GetArtistAlbumsAsync(deezerArtist.ExternalProvider!, deezerArtist.ExternalId!);
+                // The library's own albums go along, to tell two artists of one name apart.
+                deezerAlbums = await _metadataService.GetArtistAlbumsAsync(deezerArtist.ExternalProvider!, deezerArtist.ExternalId!,
+                    localAlbumTitles);
                 
                 // Fill artist info for each album (Deezer API doesn't include it in artist/albums endpoint)
                 // Use local artist ID and name so albums link back to the local artist
@@ -1623,14 +1635,7 @@ public class SubsonicController : ControllerBase
 
         // An owned album is one the library has by the matcher's key, so "Discovery" in the
         // library hides the catalog's "Discovery" however either is spelled or punctuated.
-        var localAlbumNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var album in localAlbums)
-        {
-            if (album is Dictionary<string, object> dict && dict.TryGetValue("name", out var nameObj))
-            {
-                localAlbumNames.Add(SongIdentity.Key(nameObj?.ToString()));
-            }
-        }
+        var localAlbumNames = localAlbumTitles.Select(SongIdentity.Key).ToHashSet(StringComparer.Ordinal);
 
         var mergedAlbums = localAlbums.ToList();
         foreach (var deezerAlbum in deezerAlbums)

@@ -235,4 +235,113 @@ public class SoulseekMetadataServiceTests
         Assert.Equal(newer, song.Id);
         Assert.NotEqual(older, song.Id);
     }
+
+    // ---- Which catalog artist an artist page lists ----------------------------------
+    // The page used to trust the first search hit, and two artists can share a name.
+
+    private string OutsideArtist(string name, string? deezerId = null) => _registry.Register(new SoulseekRouting
+    {
+        Kind = RoutingKind.Artist, Artist = name, ExternalArtistId = deezerId,
+    });
+
+    private static string Releases(params string[] titles) =>
+        @"{""data"":[" + string.Join(",", titles.Select((title, i) =>
+            $@"{{""id"":{900 + i},""title"":""{title}"",""record_type"":""album"",""release_date"":""200{i}-01-01"",""nb_tracks"":10}}")) + "]}";
+
+    [Fact]
+    public async Task GetArtistAlbums_SkipsABiggerActWhoseNameContainsThisOne()
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":111,""name"":""Test Artist Orchestra"",""nb_fan"":90000},
+                {""id"":222,""name"":""Test Artist"",""nb_fan"":10}]}",
+            ["/artist/111/albums"] = Releases("Wrong Record"),
+            ["/artist/222/albums"] = Releases("Right Record"),
+        });
+
+        var albums = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, OutsideArtist("Test Artist"));
+
+        Assert.Equal(["Right Record"], albums.Select(a => a.Title));
+    }
+
+    [Fact]
+    public async Task GetArtistAlbums_OfTwoArtistsOfOneName_TheMoreFollowedAndRemembersIt()
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40},
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000}]}",
+            ["/artist/111/albums"] = Releases("Local Anaesthetic"),
+            ["/artist/222/albums"] = Releases("Nevermind"),
+        });
+        var id = OutsideArtist("Nirvana");
+
+        var albums = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id);
+
+        Assert.Equal(["Nevermind"], albums.Select(a => a.Title));
+        // Kept on the artist, so the next visit asks for no name search.
+        Assert.Equal("222", _registry.Lookup(id)!.ExternalArtistId);
+    }
+
+    [Fact]
+    public async Task GetArtistAlbums_AnIdAlreadyKnown_WinsOverANameSearch()
+    {
+        // The artist the user tapped is the less followed one of the name.
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000},
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40}]}",
+            ["/artist/111/albums"] = Releases("Local Anaesthetic"),
+            ["/artist/222/albums"] = Releases("Nevermind"),
+        });
+
+        var albums = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, OutsideArtist("Nirvana", "111"));
+
+        Assert.Equal(["Local Anaesthetic"], albums.Select(a => a.Title));
+    }
+
+    [Fact]
+    public async Task GetArtistAlbums_ALibraryArtist_IsTheOneSharingItsAlbums()
+    {
+        // The library holds the less followed Nirvana. Its albums say so, even over an id a
+        // search remembered for the name.
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000},
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40}]}",
+            ["/artist/111/albums"] = Releases("Local Anaesthetic", "Dedicated to Markos III"),
+            ["/artist/222/albums"] = Releases("Nevermind", "In Utero"),
+        });
+        var id = OutsideArtist("Nirvana", "222");
+
+        var albums = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, id,
+            ["Local Anaesthetic"]);
+
+        Assert.Contains("Dedicated to Markos III", albums.Select(a => a.Title));
+        Assert.DoesNotContain("Nevermind", albums.Select(a => a.Title));
+        Assert.Equal("111", _registry.Lookup(id)!.ExternalArtistId);
+    }
+
+    [Fact]
+    public async Task SearchArtists_TwoArtistsOfOneName_AreOneRowForTheMoreFollowed()
+    {
+        // They would get one id, and two rows opening one page only confuse.
+        var svc = BuildService(new()
+        {
+            ["/search/artist"] = @"{""data"":[
+                {""id"":111,""name"":""Nirvana"",""nb_fan"":40,""picture_xl"":""https://cdn/uk.jpg""},
+                {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000,""picture_xl"":""https://cdn/us.jpg""},
+                {""id"":333,""name"":""Nirvana Tribute"",""nb_fan"":5}]}",
+        });
+
+        var artists = await svc.SearchArtistsAsync("nirvana", 10);
+
+        Assert.Equal(["Nirvana", "Nirvana Tribute"], artists.Select(a => a.Name));
+        Assert.Equal("https://cdn/us.jpg", artists[0].ImageUrl);
+        Assert.Equal("222", _registry.Lookup(artists[0].Id)!.ExternalArtistId);
+    }
 }

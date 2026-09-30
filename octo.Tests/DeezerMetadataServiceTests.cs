@@ -628,7 +628,7 @@ public class DeezerMetadataServiceTests
     public async Task SearchArtistsAsync_MapsNameImageAndAlbumCount()
     {
         var json = @"{""data"":[
-            {""id"":399,""name"":""Radiohead"",""picture_xl"":""https://cdn/r.jpg"",""nb_album"":24},
+            {""id"":399,""name"":""Radiohead"",""picture_xl"":""https://cdn/r.jpg"",""nb_album"":24,""nb_fan"":6100000},
             {""id"":27,""name"":""Daft Punk"",""picture_medium"":""https://cdn/d.jpg"",""nb_album"":11}]}";
         var svc = BuildService(new() { ["/search/artist"] = json });
 
@@ -639,6 +639,9 @@ public class DeezerMetadataServiceTests
         Assert.Equal("Radiohead", hits[0].Name);
         Assert.Equal("https://cdn/r.jpg", hits[0].PictureUrl);
         Assert.Equal(24, hits[0].AlbumCount);
+        // What tells two artists of one name apart when nothing better is known.
+        Assert.Equal(6100000, hits[0].Fans);
+        Assert.Equal(0, hits[1].Fans);
         // Falls back to the medium picture when there is no xl.
         Assert.Equal("https://cdn/d.jpg", hits[1].PictureUrl);
     }

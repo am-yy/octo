@@ -118,6 +118,14 @@ public interface IMusicMetadataService
     /// Gets an artist's albums
     /// </summary>
     Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId);
+
+    /// <summary>
+    /// Gets an artist's albums for a library artist's page. The library's album titles say
+    /// which of two artists of one name is meant; a provider that cannot use them ignores them.
+    /// </summary>
+    Task<List<Album>> GetArtistAlbumsAsync(string externalProvider, string externalId,
+        IReadOnlyCollection<string>? libraryAlbumTitles)
+        => GetArtistAlbumsAsync(externalProvider, externalId);
     
     /// <summary>
     /// Searches for playlists on external providers

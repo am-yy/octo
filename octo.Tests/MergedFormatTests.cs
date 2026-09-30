@@ -52,8 +52,12 @@ public sealed class MergedFormatTests
                     return Json("""{"id":2,"title":"Other Album","nb_tracks":9,"release_date":"2005-05-05","artist":{"name":"Test Artist"}}""");
                 if (path == "/album/1")
                     return Json("""{"id":1,"title":"Test Album","release_date":"2001-01-01","artist":{"name":"Test Artist"}}""");
+                // A bigger act whose name contains this one comes first, and a better known
+                // artist of the very same name before the one the library holds.
                 if (path.StartsWith("/search/artist", StringComparison.Ordinal))
-                    return Json("""{"data":[{"id":7,"name":"Test Artist","picture_xl":"https://cdn/test-artist.jpg"}]}""");
+                    return Json("""{"data":[{"id":8,"name":"Test Artist Orchestra","nb_fan":90000,"picture_xl":"https://cdn/orchestra.jpg"},{"id":9,"name":"Test Artist","nb_fan":5000,"picture_xl":"https://cdn/somebody-else.jpg"},{"id":7,"name":"Test Artist","nb_fan":10,"picture_xl":"https://cdn/test-artist.jpg"}]}""");
+                if (path.StartsWith("/artist/9/albums", StringComparison.Ordinal))
+                    return Json("""{"data":[{"id":90,"title":"Somebody Else's Record","record_type":"album","release_date":"2010-01-01"}]}""");
                 // The catalog's own shape: no artist and no track counts on this listing.
                 if (path.StartsWith("/artist/7/albums", StringComparison.Ordinal))
                     return Json("""{"data":[{"id":1,"title":"Test Album","record_type":"album","release_date":"2001-01-01"},{"id":2,"title":"Other Album","record_type":"album","release_date":"2005-05-05"},{"id":3,"title":"A Single","record_type":"single","release_date":"2006-01-01"}]}""");
@@ -276,6 +280,8 @@ public sealed class MergedFormatTests
         {
             Kind = Octo.Services.Soulseek.RoutingKind.Artist,
             Artist = "Test Artist",
+            // Tapped in search: this artist, not the better known one of the name.
+            ExternalArtistId = "7",
         });
 
         using var json = JsonDocument.Parse(await client.GetStringAsync($"/rest/getArtist.view?{Auth}&f=json&id={id}"));
@@ -313,6 +319,8 @@ public sealed class MergedFormatTests
             {
                 Kind = Octo.Services.Soulseek.RoutingKind.Artist,
                 Artist = "Test Artist",
+                // Tapped in search: this artist, not the better known one of the name.
+                ExternalArtistId = "7",
             });
 
     [Fact]

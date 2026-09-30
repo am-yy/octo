@@ -353,8 +353,9 @@ public class DeezerMetadataService : IDisposable
         return meta;
     }
 
-    /// <summary>One artist from a catalog search.</summary>
-    public record ArtistHit(string DeezerId, string Name, string? PictureUrl, int AlbumCount);
+    /// <summary>One artist from a catalog search. Fans is how many follow them, which is what
+    /// tells two artists of one name apart when nothing better is known.</summary>
+    public record ArtistHit(string DeezerId, string Name, string? PictureUrl, int AlbumCount, int Fans = 0);
 
     /// <summary>
     /// Search the catalog for artists. Plain query: the artist endpoint takes a bare name
@@ -388,7 +389,7 @@ public class DeezerMetadataService : IDisposable
 
                     hits.Add(new ArtistHit(id, name,
                         Str(a, "picture_xl") ?? Str(a, "picture_medium"),
-                        Int(a, "nb_album") ?? 0));
+                        Int(a, "nb_album") ?? 0, Int(a, "nb_fan") ?? 0));
                 }
             }
         }

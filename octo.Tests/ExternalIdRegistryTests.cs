@@ -161,4 +161,19 @@ public class ExternalIdRegistryTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    [Fact]
+    public void Register_ArtistByNameAlone_KeepsTheCatalogArtistAlreadyChosen()
+    {
+        // Two artists can share a name, and the page settled on one of them. Every album row
+        // mints its artist again by name alone, which must not undo that choice.
+        var id = _registry.Register(new SoulseekRouting
+        {
+            Kind = RoutingKind.Artist, Artist = "Nirvana", ExternalArtistId = "415",
+        });
+
+        _registry.Register(new SoulseekRouting { Kind = RoutingKind.Artist, Artist = "Nirvana" });
+
+        Assert.Equal("415", _registry.Lookup(id)!.ExternalArtistId);
+    }
 }

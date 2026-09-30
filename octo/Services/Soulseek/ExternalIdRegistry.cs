@@ -52,6 +52,9 @@ public class ExternalIdRegistry : IDisposable
             // The same for the ISRC an album listing found: a search row for the same song
             // names none, and must not forget it.
             routing.Isrc ??= previous.Isrc;
+            // And the catalog artist an artist search or page settled on: every album row
+            // mints its artist again by name alone, and must not undo that choice.
+            routing.ExternalArtistId ??= previous.ExternalArtistId;
         }
 
         _byId[id] = routing;

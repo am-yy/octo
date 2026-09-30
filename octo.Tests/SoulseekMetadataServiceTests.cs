@@ -389,15 +389,21 @@ public class SoulseekMetadataServiceTests
     }
 
     [Fact]
-    public async Task SearchAlbums_TheAlbumsArtistIsTheOneWhoMadeIt()
+    public async Task SearchAlbums_ALessFollowedNamesakesAlbum_DoesNotDecideTheName()
     {
-        // Two artists share a name. An album row's artist link opened a page for whichever of
-        // them a name search ranked first, though the album says who made it.
+        // Two artists share a name. An album row and the album it opens name the catalog
+        // artist who made it, and writing that onto the name's shared artist entry let the
+        // first search to show the obscure one's album decide "Nirvana" for every listener,
+        // across restarts.
         var svc = BuildService(new()
         {
             ["/search/album"] = @"{""data"":[
-                {""id"":5,""title"":""Local Anaesthetic"",""record_type"":""album"",""nb_tracks"":6,
+                {""id"":5,""title"":""Local Anaesthetic"",""record_type"":""album"",""nb_tracks"":1,
                  ""artist"":{""id"":111,""name"":""Nirvana""}}]}",
+            ["/album/5/tracks"] = @"{""total"":1,""data"":[
+                {""title"":""Modus Vivendi"",""duration"":200,""track_position"":1,""disk_number"":1,""artist"":{""name"":""Nirvana""}}]}",
+            ["/album/5"] = @"{""id"":5,""title"":""Local Anaesthetic"",""release_date"":""1971-01-01"",
+                ""artist"":{""id"":111,""name"":""Nirvana""}}",
             ["/search/artist"] = @"{""data"":[
                 {""id"":222,""name"":""Nirvana"",""nb_fan"":9000000,""picture_xl"":""https://cdn/us.jpg""},
                 {""id"":111,""name"":""Nirvana"",""nb_fan"":40,""picture_xl"":""https://cdn/uk.jpg""}]}",
@@ -406,12 +412,15 @@ public class SoulseekMetadataServiceTests
         });
 
         var album = Assert.Single(await svc.SearchAlbumsAsync("local anaesthetic", 10));
-        var page = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, album.ArtistId!);
-        var artist = await svc.GetArtistAsync(SoulseekMetadataService.ProviderName, album.ArtistId!);
+        await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, album.Id);
 
-        Assert.Equal("111", _registry.Lookup(album.ArtistId!)!.ExternalArtistId);
-        Assert.Equal(["Local Anaesthetic"], page.Select(a => a.Title));
-        Assert.Equal("https://cdn/uk.jpg", artist!.ImageUrl);
+        var row = (await svc.SearchArtistsAsync("Nirvana", 5)).Single();
+        var outside = await svc.GetArtistAlbumsAsync(SoulseekMetadataService.ProviderName, album.ArtistId!);
+
+        Assert.Equal(album.ArtistId, row.Id);
+        Assert.Equal("https://cdn/us.jpg", row.ImageUrl);
+        Assert.Equal(["Nevermind"], outside.Select(a => a.Title));
+        Assert.Equal("222", _registry.Lookup(album.ArtistId!)!.ExternalArtistId);
     }
 
     [Fact]

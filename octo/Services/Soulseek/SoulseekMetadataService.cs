@@ -495,7 +495,6 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Kind = RoutingKind.Artist,
                 Artist = hit.Artist,
             });
-            SeedCatalogArtist(artistId, hit.ArtistDeezerId);
 
             albums.Add(new Album
             {
@@ -514,20 +513,6 @@ public class SoulseekMetadataService : IMusicMetadataService
         }
 
         return albums;
-    }
-
-    /// <summary>
-    /// An album names the catalog artist who made it, and the artist it links to is that
-    /// artist: of two artists of one name, the page opened from "Nevermind" is the one who made
-    /// it, not whichever a name search ranks first. Only when nothing has settled the artist
-    /// yet: an artist search or an earlier visit already chose.
-    /// </summary>
-    private void SeedCatalogArtist(string artistId, string? deezerArtistId)
-    {
-        if (deezerArtistId is not { Length: > 0 }) return;
-        if (_idRegistry.Lookup(artistId) is not { ExternalArtistId: null } routing) return;
-        routing.ExternalArtistId = deezerArtistId;
-        _idRegistry.Register(routing);
     }
 
     public async Task<List<Artist>> SearchArtistsAsync(string query, int limit = 20)
@@ -553,8 +538,10 @@ public class SoulseekMetadataService : IMusicMetadataService
             var routing = _idRegistry.Lookup(id);
             var hit = sameName.FirstOrDefault(h => h.DeezerId == routing?.ExternalArtistId)
                 ?? MostFollowed(sameName);
-            // Remembered only when nothing is yet: an album row or an earlier visit to the
-            // artist's page already settled which artist of the name this is.
+            // Remembered only when nothing is yet: an earlier search or visit to the artist's
+            // page already settled which artist of the name this is. An album never settles
+            // it: the name's entry is everyone's, and the first album to show a little-known
+            // namesake would have decided the name for all of them.
             if (routing is not null && routing.ExternalArtistId is null)
             {
                 routing.ExternalArtistId = hit.DeezerId;
@@ -682,7 +669,6 @@ public class SoulseekMetadataService : IMusicMetadataService
         // but if one ever gets through, reporting zero is worse than saying nothing.
         if (detail.Tracks.Count > 0) album.SongCount = detail.Tracks.Count;
         if (!string.IsNullOrWhiteSpace(detail.Artist)) album.Artist = detail.Artist;
-        if (SongIdentity.SameArtistName(detail.Artist, routing.Artist)) SeedCatalogArtist(artistId, detail.ArtistDeezerId);
 
         foreach (var track in detail.Tracks)
         {
@@ -804,11 +790,11 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// <summary>
     /// The releases of the catalog artist an outside artist's name stands for, or none when no
     /// catalog artist has that name. The catalog id Octo already holds wins over a name search:
-    /// it is the artist the user tapped in search or whose album they opened, or the one an
-    /// earlier visit settled on. On a library artist's page it must also share an album with
-    /// the library, because two artists can share a name and the library says which one is
-    /// meant. Without an id, only artists with this exact name count; of several, the one
-    /// sharing the most albums with the library, else the one more people follow.
+    /// it is the artist the user tapped in search, or the one an earlier visit settled on. On a
+    /// library artist's page it must also share an album with the library, because two artists
+    /// can share a name and the library says which one is meant. Without an id, only artists
+    /// with this exact name count; of several, the one sharing the most albums with the
+    /// library, else the one more people follow.
     ///
     /// The choice is kept for the next visit, and where depends on the page. The artist's
     /// routing is shared by everyone who reaches that name, from search, an album or a song,

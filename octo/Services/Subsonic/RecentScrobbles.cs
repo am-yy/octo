@@ -30,9 +30,7 @@ public sealed class RecentScrobbles
     /// <param name="time">The client's own time for the play (Subsonic's <c>time</c>), or null.</param>
     public bool FirstReport(string username, string songId, string? time, DateTime nowUtc)
     {
-        var play = time is { Length: > 0 }
-            ? $"{songId}\n{time}"
-            : $"{songId}\nminute {nowUtc.Ticks / TimeSpan.TicksPerMinute}";
+        var play = Play(songId, time, nowUtc);
         lock (_gate)
         {
             if (!_listeners.TryGetValue(username, out var plays))
@@ -44,6 +42,24 @@ public sealed class RecentScrobbles
             return plays.Add(play, nowUtc);
         }
     }
+
+    /// <summary>
+    /// Takes back a play <see cref="FirstReport"/> let through, because nothing was learned from
+    /// it: the song could not be looked up this time. The client's retry then counts as the
+    /// play it is. Called with the same arguments FirstReport had.
+    /// </summary>
+    public void Withdraw(string username, string songId, string? time, DateTime nowUtc)
+    {
+        var play = Play(songId, time, nowUtc);
+        lock (_gate)
+        {
+            if (_listeners.TryGetValue(username, out var plays)) plays.Remove(play);
+        }
+    }
+
+    private static string Play(string songId, string? time, DateTime nowUtc) => time is { Length: > 0 }
+        ? $"{songId}\n{time}"
+        : $"{songId}\nminute {nowUtc.Ticks / TimeSpan.TicksPerMinute}";
 
     /// <summary>Makes room for a new listener by forgetting the one heard from longest ago.</summary>
     private void ForgetQuietestListener()
@@ -76,6 +92,12 @@ public sealed class RecentScrobbles
                 _order.RemoveLast();
             }
             return true;
+        }
+
+        public void Remove(string play)
+        {
+            if (!_index.Remove(play, out var node)) return;
+            _order.Remove(node);
         }
     }
 }

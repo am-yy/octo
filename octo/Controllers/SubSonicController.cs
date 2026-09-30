@@ -2972,16 +2972,24 @@ public class SubsonicController : ControllerBase
             var outside = _localLibraryService.ParseSongId(ids[index]).isExternal;
             if (!completed && !(scrobbling && outside)) continue;
             // A client that sends the same completed play again is not playing it again.
-            if (completed && !_recentScrobbles.FirstReport(username, ids[index],
-                    index < times.Count ? times[index] : null, DateTime.UtcNow))
+            var time = index < times.Count ? times[index] : null;
+            var reportedAt = DateTime.UtcNow;
+            if (completed && !_recentScrobbles.FirstReport(username, ids[index], time, reportedAt))
             {
                 _logger.LogDebug("Scrobble of {Id} for {User} repeats one already learned from", ids[index], username);
                 continue;
             }
+            // Until something has learned from the play, it is not taken: a song that could not
+            // be looked up this time is withdrawn, so the client's retry counts.
+            var taken = false;
             try
             {
                 var song = await _radioTrackResolver.ResolveScrobbleAsync(ids[index], authenticatedParameters);
-                if (song is null || song.Artist.Length == 0 || song.Title.Length == 0) continue;
+                if (song is null || song.Artist.Length == 0 || song.Title.Length == 0)
+                {
+                    if (completed) _recentScrobbles.Withdraw(username, ids[index], time, reportedAt);
+                    continue;
+                }
                 var track = new LastFmTrack(song.Artist, song.Title, song.Album, song.Duration);
                 if (!completed)
                 {
@@ -2994,6 +3002,7 @@ public class SubsonicController : ControllerBase
                     try { playedAt = DateTimeOffset.FromUnixTimeMilliseconds(unix).UtcDateTime; }
                     catch (ArgumentOutOfRangeException) { /* retain now */ }
                 }
+                taken = true;
                 if (learning)
                     recorded |= _radioStateStore!.RecordPlay(username, new LastFmRadioPlay
                     {
@@ -3008,7 +3017,11 @@ public class SubsonicController : ControllerBase
                     await _listenBrainz!.SubmitListenAsync(username, song.Artist, song.Title,
                         song.Album, song.Duration, playedAt, HttpContext.RequestAborted);
             }
-            catch (Exception ex) { _logger.LogDebug(ex, "Radio ignored unreadable scrobble {Id}", ids[index]); }
+            catch (Exception ex)
+            {
+                if (completed && !taken) _recentScrobbles.Withdraw(username, ids[index], time, reportedAt);
+                _logger.LogDebug(ex, "Radio ignored unreadable scrobble {Id}", ids[index]);
+            }
         }
         if (!learning || !recorded || _radioRefreshQueue is null) return;
         var user = _radioStateStore!.GetUser(username);

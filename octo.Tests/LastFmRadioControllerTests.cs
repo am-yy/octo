@@ -910,6 +910,9 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
     public int TokenInfoCalls => Volatile.Read(ref _tokenInfoCalls);
     private int _tokenInfoCalls;
 
+    /// <summary>How many getSong calls fail with a 503 before they answer again.</summary>
+    public int GetSongFailures { get; set; }
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
@@ -958,6 +961,11 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
         }
         if (path.Equals("rest/getSong", StringComparison.OrdinalIgnoreCase))
         {
+            if (GetSongFailures > 0)
+            {
+                GetSongFailures--;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            }
             var id = query["id"] ?? "song";
             return Result(OkJson($"\"song\":{{\"id\":\"{id}\",\"artist\":\"Artist {id}\",\"title\":\"Title {id}\",\"album\":\"Album {id}\",\"genre\":\"Rock\",\"duration\":180}}"));
         }

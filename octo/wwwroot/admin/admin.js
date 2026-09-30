@@ -584,6 +584,8 @@ document.querySelectorAll('form[data-section]').forEach(form => {
         holder.hidden = false;
       }
       saveStatus(form, message, 'error');
+      // A field folded into "More settings" is opened, so the error is where focus lands.
+      invalid.closest('details')?.setAttribute('open', '');
       invalid.focus();
       return;
     }

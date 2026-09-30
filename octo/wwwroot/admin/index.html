@@ -1132,7 +1132,7 @@
         <header class="page-header">
           <div>
             <h1>ListenBrainz</h1>
-            <p>Keep plays of external tracks in your listening history. Plays of library tracks are already scrobbled by Navidrome; previews and Continuous Radio would otherwise be lost.</p>
+            <p>Keeps plays of songs from outside your library in your ListenBrainz history.</p>
           </div>
           <button class="btn" id="btn-check-listenbrainz" type="button"><svg class="icon" aria-hidden="true"><use href="#i-check-circle"/></svg><span>Check token</span></button>
         </header>
@@ -1140,30 +1140,38 @@
         <div id="check-listenbrainz-result" class="notice" hidden></div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Submission</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Sending plays</h3>
+            <p class="set-desc">Navidrome already sends plays from your own library. This covers previews and Continuous Radio.</p>
+          </div>
           <form data-section="listenbrainz" class="set-card">
             <div class="set-row">
               <div class="set-info">
-                <div class="set-info-t">Submit external plays</div>
-                <div class="set-info-d">A listen is sent when an external track is scrobbled by your client, or when a Continuous Radio track plays to the end.</div>
+                <div class="set-info-t">Submit outside plays</div>
+                <div class="set-info-d">A listen is sent when your app scrobbles an outside song, or a Continuous Radio song plays to the end.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-lb-enabled" name="ListenBrainz.SubmitExternalPlays" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t">User token</div>
-                <div class="set-info-d">From <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a>. Applies to every Navidrome user without a token of their own. Leave empty to disable.</div>
+                <div class="set-info-d">From <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a>. Used for every listener without a token of their own.</div>
+                <div class="set-info-more">Leave it empty to stop sending. Check token tests what is typed here, saved or not.</div>
               </div>
               <input class="set-input" id="f-lb-token" name="ListenBrainz.Token" type="password" autocomplete="new-password" />
             </div>
-            <div class="set-row stack">
-              <div class="set-info">
-                <div class="set-info-t">Per-user tokens <span class="set-opt">optional</span></div>
-                <div class="set-info-d">For installs with more than one listener: a Navidrome username and that person's own ListenBrainz token, as JSON, for example <code>{"alice": "token", "bob": "token"}</code>. Also settable as <code>LISTENBRAINZ__USERTOKENS__alice</code> in <code>.env</code>.</div>
+            <details class="set-more">
+              <summary>Listeners with their own token</summary>
+              <div class="set-row stack">
+                <div class="set-info">
+                  <div class="set-info-t">Per-listener tokens <span class="set-opt">optional</span></div>
+                  <div class="set-info-d">Each Navidrome username with that person's own ListenBrainz token.</div>
+                  <div class="set-info-more">As JSON, for example <code>{"alice": "token", "bob": "token"}</code>. Each can also be set as <code>LISTENBRAINZ__USERTOKENS__alice</code> in <code>.env</code>.</div>
+                </div>
+                <textarea class="set-input secret-text" id="f-lb-user-tokens" name="ListenBrainz.UserTokens" data-json="true" data-json-empty="{}" data-error-for="lb-user-tokens-error" rows="3" spellcheck="false" autocomplete="off"></textarea>
+                <div id="lb-user-tokens-error" class="field-error" role="alert" data-json-error hidden></div>
               </div>
-              <textarea class="set-input secret-text" id="f-lb-user-tokens" name="ListenBrainz.UserTokens" data-json="true" data-json-empty="{}" data-error-for="lb-user-tokens-error" rows="3" spellcheck="false" autocomplete="off"></textarea>
-              <div id="lb-user-tokens-error" class="field-error" role="alert" data-json-error hidden></div>
-            </div>
+            </details>
           </form>
         </div>
       </section>
@@ -1173,59 +1181,68 @@
         <header class="page-header">
           <div>
             <h1>Mixes</h1>
-            <p>Genre and decade playlists drawn from each listener's own library, shown beside the radio stations and drawn again on a schedule. Octo serves them itself: nothing is written to Navidrome, and a listener cannot edit one by accident.</p>
+            <p>Genre and decade playlists drawn from each listener's own library, next to the radio stations.</p>
           </div>
         </header>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">Which mixes</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">Which mixes</h3>
+            <p class="set-desc">Octo serves the mixes itself: nothing is written to Navidrome, and nobody can edit one by accident.</p>
+          </div>
           <form data-section="generated-playlists" class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Mixes</div><div class="set-info-d">Off by default. A listener sees theirs the next time their client lists playlists; the first list waits a moment while Octo counts the library.</div></div>
+              <div class="set-info"><div class="set-info-t">Mixes</div><div class="set-info-d">Off to begin with. Each listener sees theirs the next time their app lists playlists.</div><div class="set-info-more">The first list waits a moment while Octo counts the library.</div></div>
               <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Enabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">A mix per genre</div><div class="set-info-d">From the genres your files carry. Years and anything on the genre blocklist never get one.</div></div>
+              <div class="set-info"><div class="set-info-t">A mix per genre</div><div class="set-info-d">From the genres your files carry. Years and blocklisted genres never get one.</div></div>
               <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Genres" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">A mix per decade</div><div class="set-info-d">1950s onward, from the year your files carry.</div></div>
+              <div class="set-info"><div class="set-info-t">A mix per decade</div><div class="set-info-d">The 1950s onward, from the year your files carry.</div></div>
               <label class="switch"><input type="checkbox" name="GeneratedPlaylists.Decades" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Name <span class="set-opt">{0} is the genre or decade</span></div><div class="set-info-d">A picture named after a mix in the <code>covers</code> folder beside <code>settings.json</code> replaces its generated cover.</div></div>
+              <div class="set-info"><div class="set-info-t">Name <span class="set-opt">{0} is the genre or decade</span></div><div class="set-info-d">A picture named after a mix in the <code>covers</code> folder beside <code>settings.json</code> replaces its cover.</div></div>
               <input class="set-input" name="GeneratedPlaylists.NameFormat" maxlength="60" placeholder="{0} Mix" />
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Appears at <span class="set-opt">tracks</span> / goes below <span class="set-opt">tracks</span></div><div class="set-info-d">A genre or decade gets a mix once it has the first number of tracks, and loses it only below the second, so one sitting at the edge does not come and go.</div></div>
-              <div class="set-grid2">
-                <input class="set-input" name="GeneratedPlaylists.CreateAt" type="number" min="1" max="10000" data-number="true" aria-label="A mix appears at this many tracks" />
-                <input class="set-input" name="GeneratedPlaylists.RemoveBelow" type="number" min="0" max="10000" data-number="true" aria-label="A mix goes below this many tracks" />
+            <details class="set-more">
+              <summary>When a mix appears</summary>
+              <div class="set-row stack">
+                <div class="set-info"><div class="set-info-t">Appears at <span class="set-opt">songs</span> / goes below <span class="set-opt">songs</span></div><div class="set-info-d">A mix appears at the first count and goes only below the second, so one at the edge does not come and go.</div></div>
+                <div class="set-grid2">
+                  <input class="set-input" name="GeneratedPlaylists.CreateAt" type="number" min="1" max="10000" data-number="true" aria-label="A mix appears at this many tracks" />
+                  <input class="set-input" name="GeneratedPlaylists.RemoveBelow" type="number" min="0" max="10000" data-number="true" aria-label="A mix goes below this many tracks" />
+                </div>
               </div>
-            </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">At most <span class="set-opt">mixes</span></div><div class="set-info-d">The largest first.</div></div>
-              <input class="set-input" name="GeneratedPlaylists.MaxPlaylists" type="number" min="1" max="100" data-number="true" />
-            </div>
+              <div class="set-row">
+                <div class="set-info"><div class="set-info-t">At most <span class="set-opt">mixes</span></div><div class="set-info-d">The largest first.</div></div>
+                <input class="set-input" name="GeneratedPlaylists.MaxPlaylists" type="number" min="1" max="100" data-number="true" />
+              </div>
+            </details>
           </form>
         </div>
 
         <div class="set-section">
-          <div class="set-head"><h3 class="set-title">What goes in</h3></div>
+          <div class="set-head">
+            <h3 class="set-title">What goes in</h3>
+            <p class="set-desc">How each mix is drawn, and how often.</p>
+          </div>
           <form data-section="generated-playlists-draw" class="set-card">
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Tracks per mix / at most <span class="set-opt">per artist</span></div><div class="set-info-d">The artist cap keeps a lopsided genre from turning into half an album. It is never relaxed: a mix that cannot be filled without breaking it is shorter.</div></div>
+              <div class="set-info"><div class="set-info-t">Songs per mix / at most <span class="set-opt">per artist</span></div><div class="set-info-d">The artist cap keeps one artist from taking over a mix.</div><div class="set-info-more">It is never relaxed: a mix that cannot be filled without breaking it is shorter.</div></div>
               <div class="set-grid2">
                 <input class="set-input" name="GeneratedPlaylists.TrackCount" type="number" min="10" max="500" data-number="true" aria-label="Tracks per mix" />
                 <input class="set-input" name="GeneratedPlaylists.MaxPerArtist" type="number" min="1" max="50" data-number="true" aria-label="At most this many tracks per artist" />
               </div>
             </div>
-            <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Draw again every <span class="set-opt">hours</span></div><div class="set-info-d">A mix holds still between draws, so every client shows the same tracks.</div></div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Draw again every <span class="set-opt">hours</span></div><div class="set-info-d">A mix holds still between draws, so every app shows the same songs.</div></div>
               <input class="set-input" name="GeneratedPlaylists.RefreshHours" type="number" min="1" max="336" data-number="true" />
             </div>
             <div class="set-row stack">
-              <div class="set-info"><div class="set-info-t">Kept for new tracks <span class="set-opt">percent</span> / new for <span class="set-opt">days</span></div><div class="set-info-d">The share of each mix, and of Discovery Mix, saved for tracks new to the listener: never played, or added within the days given. <strong>0 changes nothing</strong>, which is the default.</div></div>
+              <div class="set-info"><div class="set-info-t">Kept for new songs <span class="set-opt">percent</span> / new for <span class="set-opt">days</span></div><div class="set-info-d">The share of each mix, and of Discovery Mix, kept for songs new to the listener. <strong>0 changes nothing</strong>, and is the default.</div><div class="set-info-more">New means never played, or added within the days given.</div></div>
               <div class="set-grid2">
                 <input class="set-input" name="GeneratedPlaylists.NewShare" type="number" min="0" max="100" data-number="true" aria-label="Percent kept for new tracks" />
                 <input class="set-input" name="GeneratedPlaylists.NewDays" type="number" min="1" max="3650" data-number="true" aria-label="A track counts as new for this many days" />

@@ -261,16 +261,18 @@ public class SubsonicProxyService
         "Accept-Ranges",
         "Content-Range",
         "Content-Length",
+        "Content-Disposition",
         "ETag",
         "Last-Modified"
     };
 
     /// <summary>
-    /// Relays a stream request to the Subsonic server with range processing support.
+    /// Relays a stream or download request with range processing and attachment headers.
     /// </summary>
     public async Task<IActionResult> RelayStreamAsync(
         Dictionary<string, string> parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string endpoint = "rest/stream")
     {
         try
         {
@@ -288,7 +290,7 @@ public class SubsonicProxyService
             var outgoingResponse = httpContext.Response;
 
             var query = await BuildQueryAsync(parameters, bodyForwarded: false);
-            var url = $"{_subsonicSettings.Url}/rest/stream?{query}";
+            var url = $"{_subsonicSettings.Url}/{endpoint}?{query}";
             
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
 

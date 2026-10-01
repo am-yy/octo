@@ -1444,9 +1444,54 @@ public partial class SubsonicController : ControllerBase
         return ids;
     }
 
-    /// <summary>
-    /// Downloads on-the-fly if needed, or streams directly in Stream mode.
-    /// </summary>
+    /// <summary>Downloads external FLACs without starting permanent acquisition or recording playback.</summary>
+    [HttpGet, HttpPost]
+    [Route("rest/download")]
+    [Route("rest/download.view")]
+    public async Task<IActionResult> Download()
+    {
+        var parameters = await ExtractAllParameters();
+        var id = parameters.GetValueOrDefault("id", "");
+        var format = parameters.GetValueOrDefault("f", "xml");
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "Missing id parameter" });
+
+        var savedSong = _externalSaves?.GetSong(id);
+        var (isExternal, provider, externalId) = _localLibraryService.ParseSongId(id);
+        if (savedSong is { IsLocal: true }) parameters["id"] = savedSong.Id;
+        if (savedSong is { IsLocal: true } || !isExternal && savedSong is null)
+            return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted, "rest/download");
+        if (savedSong is { IsLocal: false })
+            (provider, externalId) = (savedSong.ExternalProvider ?? "soulseek", savedSong.ExternalId ?? id);
+
+        if (!await HasAcceptedSubsonicCredentialsAsync(parameters))
+            return _responseBuilder.CreateError(format, 40, "Wrong username or password");
+        var username = await _requestIdentity.UsernameAsync(parameters, _proxyService, HttpContext.RequestAborted);
+        if (string.IsNullOrWhiteSpace(username))
+            return _responseBuilder.CreateError(format, 40, "Navidrome did not identify this caller");
+        var auth = parameters.Where(pair => pair.Key is "u" or "p" or "t" or "s" or "apiKey" or "jwt" or "c" or "v")
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        auth["f"] = "json";
+        auth["username"] = username;
+        var permission = await _proxyService.RelaySafeAsync("rest/getUser", auth);
+        if (!permission.Success || permission.Body is null)
+            return _responseBuilder.CreateError(format, 0, "Could not check download permission with Navidrome");
+        if (!IsSuccessfulSubsonicResponse(permission.Body, "json"))
+            return _responseBuilder.CreateError(format, 40, "Wrong username or password");
+        try
+        {
+            if (JsonNode.Parse(permission.Body)?["subsonic-response"]?["user"]?["downloadRole"]?.GetValue<bool>() != true)
+                return _responseBuilder.CreateError(format, 50, "Downloads are disabled for this caller");
+        }
+        catch (JsonException)
+        {
+            return _responseBuilder.CreateError(format, 0, "Could not check download permission with Navidrome");
+        }
+        if (_deezerCache?.Enabled != true)
+            return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+        return await ServeCachedFlacAsync(id, provider!, externalId!, format, savedSong, download: true);
+    }
+
+    /// <summary>Plays a library file, completed cache FLAC, or shared cold download.</summary>
     [HttpGet, HttpPost]
     [Route("rest/stream")]
     [Route("rest/stream.view")]
@@ -1481,37 +1526,7 @@ public partial class SubsonicController : ControllerBase
         if (isExternal && !await HasAcceptedSubsonicCredentialsAsync(parameters))
             return _responseBuilder.CreateError(format, 40, "Wrong username or password");
         if (isExternal && _deezerCache?.Enabled == true)
-        {
-            try
-            {
-                var song = savedSong ?? await _metadataService.GetSongAsync(provider!, externalId!);
-                if (song is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
-                song.DeezerId ??= _idRegistry.Lookup(id)?.DeezerId;
-                var local = await _localLibraryService.GetLocalPathForExternalSongAsync(provider!, externalId!);
-                if (IsPlayableFlac(local)) return File(System.IO.File.OpenRead(local!), "audio/flac", enableRangeProcessing: true);
-                var imported = await _localLibraryService.FindImportedSongAsync(song);
-                if (IsPlayableFlac(imported?.LocalPath)) return File(System.IO.File.OpenRead(imported!.LocalPath!), "audio/flac", enableRangeProcessing: true);
-                var completed = await _deezerCache.EnsureAsync(song, cancellationToken: HttpContext.RequestAborted);
-                var lease = completed is null ? null : _deezerCache.OpenRead(song);
-                if (lease is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
-                Response.RegisterForDispose(lease);
-                Response.OnCompleted(async () =>
-                {
-                    if (!HttpMethods.IsHead(Request.Method) && !Request.Headers.ContainsKey("Range") && Response.StatusCode == 200)
-                    {
-                        try { await _deezerCache.MarkPlayedAsync(song); }
-                        catch (Exception ex) { _logger.LogWarning("Could not persist playback timestamp: {Reason}", ex.GetType().Name); }
-                    }
-                });
-                return File(lease.Stream, "audio/flac", enableRangeProcessing: true);
-            }
-            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { return new EmptyResult(); }
-            catch (Exception ex)
-            {
-                _logger.LogWarning("Deezer FLAC playback failed for {Id}: {Reason}", id, ex.GetType().Name);
-                return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
-            }
-        }
+            return await ServeCachedFlacAsync(id, provider!, externalId!, format, savedSong);
 
         // Verbose entry log: every stream call gets a single line tagged with
         // the client + id + isExternal + Range + UA + key headers. Diagnostics
@@ -1574,6 +1589,43 @@ public partial class SubsonicController : ControllerBase
         {
             _logger.LogError(ex, "Failed to stream track {Id}", id);
             return StatusCode(500, new { error = $"Failed to stream: {ex.Message}" });
+        }
+    }
+
+    private async Task<IActionResult> ServeCachedFlacAsync(string id, string provider, string externalId,
+        string format, Song? savedSong, bool download = false)
+    {
+        try
+        {
+            var song = savedSong ?? await _metadataService.GetSongAsync(provider, externalId);
+            if (song is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+            song.DeezerId ??= _idRegistry.Lookup(id)?.DeezerId;
+            var filename = download
+                ? PathHelper.SanitizeFileName(string.IsNullOrWhiteSpace(song.Title) ? id : $"{song.Artist} - {song.Title}") + ".flac"
+                : null;
+            var local = await _localLibraryService.GetLocalPathForExternalSongAsync(provider, externalId);
+            if (IsPlayableFlac(local)) return File(System.IO.File.OpenRead(local!), "audio/flac", filename, enableRangeProcessing: true);
+            var imported = await _localLibraryService.FindImportedSongAsync(song);
+            if (IsPlayableFlac(imported?.LocalPath)) return File(System.IO.File.OpenRead(imported!.LocalPath!), "audio/flac", filename, enableRangeProcessing: true);
+            var completed = await _deezerCache!.EnsureAsync(song, cancellationToken: HttpContext.RequestAborted);
+            var lease = completed is null ? null : _deezerCache.OpenRead(song);
+            if (lease is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+            Response.RegisterForDispose(lease);
+            if (!download) Response.OnCompleted(async () =>
+            {
+                if (!HttpMethods.IsHead(Request.Method) && !Request.Headers.ContainsKey("Range") && Response.StatusCode == 200)
+                {
+                    try { await _deezerCache.MarkPlayedAsync(song); }
+                    catch (Exception ex) { _logger.LogWarning("Could not persist playback timestamp: {Reason}", ex.GetType().Name); }
+                }
+            });
+            return File(lease.Stream, "audio/flac", filename, enableRangeProcessing: true);
+        }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { return new EmptyResult(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Deezer FLAC serving failed for {Id}: {Reason}", id, ex.GetType().Name);
+            return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
         }
     }
 

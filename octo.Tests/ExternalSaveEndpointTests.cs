@@ -202,6 +202,85 @@ public sealed class ExternalSaveEndpointTests
         Assert.Equal(1, audio.CdnRequests);
     }
 
+    [Theory]
+    [InlineData("download", false, false)]
+    [InlineData("download.view", true, false)]
+    [InlineData("download.view", true, true)]
+    public async Task CachedDownloadServesFlacAttachmentAndRangesWithoutRecordingPlayback(string endpoint, bool warm, bool apiKey)
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        if (warm) await audio.Cache.EnsureAsync(new Song { DeezerId = "123" });
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+        var auth = apiKey ? "apiKey=key&v=1.16.1&c=test" : "u=alice";
+        var url = $"/rest/{endpoint}?{auth}&id=ext-deezer-123&f=json";
+
+        using var download = await client.GetAsync(url);
+        download.EnsureSuccessStatusCode();
+        Assert.Equal("audio/flac", download.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("attachment", download.Content.Headers.ContentDisposition!.DispositionType);
+        Assert.Equal("Artist - Outside.flac", download.Content.Headers.ContentDisposition.FileNameStar);
+        Assert.Equal(audio.Payload, await download.Content.ReadAsByteArrayAsync());
+        using var seek = new HttpRequestMessage(HttpMethod.Get, url);
+        seek.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(10, 19);
+        using var range = await client.SendAsync(seek);
+        Assert.Equal(HttpStatusCode.PartialContent, range.StatusCode);
+        Assert.Equal(audio.Payload[10..20], await range.Content.ReadAsByteArrayAsync());
+        using var invalid = new HttpRequestMessage(HttpMethod.Get, url);
+        invalid.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(audio.Payload.Length + 1, null);
+        using var unsatisfied = await client.SendAsync(invalid);
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, unsatisfied.StatusCode);
+        Assert.Equal(1, audio.CdnRequests);
+        Assert.Empty(fixture.Store.Snapshot().Acquisitions);
+        var state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
+        Assert.Null(state!["tracks"]!["123"]!["lastPlayedUtc"]);
+    }
+
+    [Theory]
+    [InlineData("bad", false, 40)]
+    [InlineData("alice", true, 50)]
+    public async Task CachedDownloadHonorsNavidromeAuthenticationAndDownloadPermission(string user, bool disabled, int code)
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        fixture.Upstream.DownloadsDisabled = disabled;
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+        var url = $"/rest/download.view?u={user}&id=ext-deezer-123&f=json";
+
+        var rejected = JsonNode.Parse(await client.GetStringAsync(url));
+        Assert.Equal(code, rejected!["subsonic-response"]!["error"]!["code"]!.GetValue<int>());
+        Assert.Equal(0, audio.CdnRequests);
+        await audio.Cache.EnsureAsync(new Song { DeezerId = "123" });
+        rejected = JsonNode.Parse(await client.GetStringAsync(url));
+        Assert.Equal(code, rejected!["subsonic-response"]!["error"]!["code"]!.GetValue<int>());
+        Assert.Equal(1, audio.CdnRequests);
+    }
+
+    [Fact]
+    public async Task LibraryAndImportedAliasDownloadsKeepUpstreamIdAndAttachment()
+    {
+        using var fixture = new SavesFixture();
+        await fixture.Store.SetHeartAsync("alice", new Song { Id = "ext-deezer-123", Title = "Outside",
+            Artist = "Artist", ExternalProvider = "deezer", ExternalId = "123" }, true);
+        var imported = Path.Combine(Path.GetDirectoryName(fixture.StatePath)!, "imported.flac");
+        await File.WriteAllBytesAsync(imported, DeezerAudioCacheTests.MinimalFlacSample());
+        await fixture.Store.MarkImportedAsync("deezer", "123", "library-123", imported);
+        await using var app = fixture.App();
+        using var client = app.CreateClient();
+
+        foreach (var id in new[] { "real", "ext-deezer-123" })
+        {
+            using var response = await client.GetAsync("/rest/download.view?u=alice&f=json&id=" + id);
+            response.EnsureSuccessStatusCode();
+            Assert.Equal("audio/flac", response.Content.Headers.ContentType!.MediaType);
+            Assert.Equal("Owned.flac", response.Content.Headers.ContentDisposition!.FileNameStar);
+            Assert.Equal(new byte[] { 4, 5, 6 }, await response.Content.ReadAsByteArrayAsync());
+        }
+        Assert.Equal(new[] { "real", "library-123" }, fixture.Upstream.DownloadedIds);
+    }
+
     [Fact]
     public async Task DurableMetadataRecognizesImportBeforeLidarrSubmission()
     {
@@ -357,6 +436,8 @@ public sealed class ExternalSaveEndpointTests
     private sealed class SaveHandler : HttpMessageHandler
     {
         public bool PlaylistMissing { get; set; }
+        public bool DownloadsDisabled { get; set; }
+        public List<string> DownloadedIds { get; } = [];
         public List<string> Requests { get; } = [];
         public List<string> MirroredIds { get; } = [];
         public List<string> MirroredHeartIds { get; } = [];
@@ -368,6 +449,21 @@ public sealed class ExternalSaveEndpointTests
             if (request.Headers.TryGetValues("X-Nd-Authorization", out var auth) && auth.Any(a => a.Contains("denied")))
                 return Reply("{}", HttpStatusCode.Unauthorized);
             if (query.GetValueOrDefault("u") == "bad") return Reply("""{"subsonic-response":{"status":"failed","error":{"code":40}}}""");
+            if (path == "/rest/tokenInfo") return Envelope("tokenInfo", """{"username":"alice"}""");
+            if (path == "/rest/getUser")
+            {
+                Assert.False(query.ContainsKey("id"));
+                Assert.Equal("alice", query.GetValueOrDefault("username").ToString());
+                return Envelope("user", "{\"username\":\"alice\",\"downloadRole\":" + (!DownloadsDisabled).ToString().ToLowerInvariant() + "}");
+            }
+            if (path == "/rest/download")
+            {
+                DownloadedIds.Add(query.GetValueOrDefault("id").ToString());
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([4, 5, 6]) };
+                response.Content.Headers.ContentType = new("audio/flac");
+                response.Content.Headers.ContentDisposition = new("attachment") { FileNameStar = "Owned.flac" };
+                return response;
+            }
             if (PlaylistMissing && path is "/rest/getPlaylist" or "/rest/deletePlaylist")
                 return Reply("""{"subsonic-response":{"status":"failed","error":{"code":70}}}""");
             if (PlaylistMissing && path == "/api/playlist/p1") return Reply("{}", HttpStatusCode.NotFound);

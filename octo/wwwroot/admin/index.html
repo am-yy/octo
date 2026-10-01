@@ -1722,6 +1722,20 @@
               </div>
               <select class="set-input" id="f-lidarr-metadata" name="Lidarr.MetadataProfileId" data-number="true" disabled><option value="0">Connect to Lidarr first</option></select>
             </div>
+            <div class="set-row">
+              <div class="set-info">
+                <label class="set-info-t" for="f-lidarr-refresh-artist">Refresh full artist catalog for new artists</label>
+                <div class="set-info-d" id="lidarr-refresh-artist-help">Loads releases allowed by the metadata profile. Preserves monitoring choices.</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="f-lidarr-refresh-artist" name="Lidarr.RefreshArtistOnAdd" aria-describedby="lidarr-refresh-artist-help" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row">
+              <div class="set-info">
+                <label class="set-info-t" for="f-lidarr-monitor-album">Monitor requested albums</label>
+                <div class="set-info-d" id="lidarr-monitor-album-help">Monitors only the requested album. Other releases keep their monitoring choices.</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="f-lidarr-monitor-album" name="Lidarr.MonitorRequestedAlbums" aria-describedby="lidarr-monitor-album-help" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
             <div class="set-row stack">
               <div class="set-info">
                 <label class="set-info-t" for="f-lidarr-completion">Completion notifications</label>

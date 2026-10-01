@@ -17,6 +17,8 @@ public sealed class LidarrSettings
     public string? RootFolderPath { get; set; }
     public int QualityProfileId { get; set; }
     public int MetadataProfileId { get; set; }
+    public bool RefreshArtistOnAdd { get; set; } = true;
+    public bool MonitorRequestedAlbums { get; set; } = true;
     public LidarrCompletionMode CompletionMode { get; set; } = LidarrCompletionMode.Accepted;
     public int ImportTimeoutSeconds { get; set; } = 1800;
 }

@@ -142,14 +142,34 @@ public sealed class LidarrClient
         int albumId;
         if (existing.Count > 0)
         {
-            // Explicit AlbumSearch works without monitoring. Preserve user's choices.
+            var existingAlbum = existing[0];
             albumId = Int(existing[0], "id");
+            if (settings.MonitorRequestedAlbums)
+            {
+                var artist = existingAlbum["artist"] as JsonObject;
+                if (artist is null)
+                {
+                    var artistId = Int(existingAlbum, "artistId");
+                    artist = (await GetArrayAsync("/api/v1/artist", ct))
+                        .FirstOrDefault(a => Int(a, "id") == artistId)
+                        ?? throw new InvalidOperationException("Lidarr did not return the existing album's artist.");
+                }
+                await EnsureArtistMonitoredAsync(artist, ct);
+
+                using var request = CreateRequest(HttpMethod.Put, "/api/v1/album/monitor");
+                request.Content = JsonContent.Create(new JsonObject
+                {
+                    ["albumIds"] = new JsonArray(albumId),
+                    ["monitored"] = true,
+                });
+                using var response = await SendAsync(request, ct);
+            }
         }
         else
         {
             var resource = (JsonObject)candidate.Resource.DeepClone();
             resource.Remove("id");
-            resource["monitored"] = false;
+            resource["monitored"] = settings.MonitorRequestedAlbums;
             resource["addOptions"] = new JsonObject { ["searchForNewAlbum"] = false };
 
             var artist = resource["artist"] as JsonObject
@@ -163,6 +183,8 @@ public sealed class LidarrClient
             if (existingArtist is not null)
             {
                 resource["artistId"] = Int(existingArtist, "id");
+                if (settings.MonitorRequestedAlbums)
+                    await EnsureArtistMonitoredAsync(existingArtist, ct);
                 resource["artist"] = existingArtist.DeepClone();
             }
             else
@@ -171,19 +193,39 @@ public sealed class LidarrClient
                 artist["rootFolderPath"] = settings.RootFolderPath;
                 artist["qualityProfileId"] = settings.QualityProfileId;
                 artist["metadataProfileId"] = settings.MetadataProfileId;
-                artist["monitored"] = false;
+                // Lidarr's RSS gate requires a monitored artist as well as a monitored album.
+                // The add options below restrict monitoring to this requested album only.
+                artist["monitored"] = settings.MonitorRequestedAlbums;
                 artist["monitorNewItems"] = "none";
                 artist["tags"] = new JsonArray();
                 artist["addOptions"] = new JsonObject
                 {
-                    ["monitor"] = "unknown",
-                    ["albumsToMonitor"] = new JsonArray(candidate.ForeignAlbumId),
+                    // "none" also forces Artist.Monitored=false in Lidarr. Unknown plus an
+                    // explicit album list keeps only the requested album monitored.
+                    ["monitor"] = settings.MonitorRequestedAlbums ? "unknown" : "none",
+                    ["albumsToMonitor"] = settings.MonitorRequestedAlbums
+                        ? new JsonArray(candidate.ForeignAlbumId)
+                        : new JsonArray(),
                     ["searchForMissingAlbums"] = false,
                 };
             }
 
             var added = await SendJsonAsync(HttpMethod.Post, "/api/v1/album", resource, ct);
             albumId = Int(added, "id");
+            if (existingArtist is null && settings.RefreshArtistOnAdd)
+            {
+                // Adding an album can create its artist without refreshing that artist's
+                // complete release catalog. Match Lidarr's normal new-artist refresh.
+                var artistId = NullableInt(added, "artistId");
+                if (artistId is null or <= 0)
+                    throw new InvalidOperationException("Lidarr did not return the created album's artist ID.");
+                await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
+                {
+                    ["name"] = "RefreshArtist",
+                    ["artistIds"] = new JsonArray(artistId.Value),
+                    ["isNewArtist"] = true,
+                }, ct);
+            }
         }
 
         // POST /album returns before metadata refresh loads its tracks. Searching earlier can
@@ -203,6 +245,25 @@ public sealed class LidarrClient
             ["albumIds"] = new JsonArray(albumId),
         }, ct);
         return albumId;
+    }
+
+    private async Task EnsureArtistMonitoredAsync(JsonObject artist, CancellationToken ct)
+    {
+        if (artist["monitored"]?.GetValue<bool>() == true) return;
+        var artistId = NullableInt(artist, "id");
+        if (artistId is null or <= 0)
+            throw new InvalidOperationException("Lidarr did not return the artist ID required for monitoring.");
+        using var request = CreateRequest(HttpMethod.Put, "/api/v1/artist/editor");
+        request.Content = JsonContent.Create(new JsonObject
+        {
+            ["artistIds"] = new JsonArray(artistId.Value),
+            ["monitored"] = true,
+            // Re-enabling a disabled artist must not activate future catalog additions.
+            ["monitorNewItems"] = "none",
+        });
+        using var response = await SendAsync(request, ct);
+        artist["monitored"] = true;
+        artist["monitorNewItems"] = "none";
     }
 
     public async Task<IReadOnlyList<LidarrImportedTrack>> GetAlbumTracksAsync(int albumId, CancellationToken ct = default)

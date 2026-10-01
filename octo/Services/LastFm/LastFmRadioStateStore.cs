@@ -309,6 +309,7 @@ public sealed class LastFmRadioStateStore
                 Album = track.Album,
                 Duration = track.Duration,
                 YouTubeId = track.YouTubeId,
+                DeezerId = track.DeezerId,
             });
             track.ExternalProvider ??= SoulseekMetadataService.ProviderName;
         }

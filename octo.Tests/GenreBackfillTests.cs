@@ -296,7 +296,6 @@ internal sealed class AdminWebFactory : WebApplicationFactory<Program>
             // /app/config/settings.json; a test run must never find a real server.
             ["Subsonic:Url"] = "http://127.0.0.1:1",
             ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-            ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
             // Synthetic, and only here to prove the admin API never hands it back.
             ["Subsonic:AdminPassword"] = "synthetic-admin-password",
         }));

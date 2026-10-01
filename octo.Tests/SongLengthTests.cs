@@ -18,7 +18,6 @@ using Octo.Services.CoverArt;
 using Octo.Services.LastFm;
 using Octo.Services.Metadata;
 using Octo.Services.Soulseek;
-using Octo.Services.YouTube;
 
 namespace Octo.Tests;
 
@@ -183,47 +182,29 @@ public class SongLengthTests
     }
 
     [Fact]
-    public async Task CompleteSongLengths_LastFm_WhenDeezerHasNoMatch()
+    public async Task CompleteSongLengths_LastFmFollowsDeezerMiss_WithoutVideoFallback()
     {
-        var fixture = new LengthFixture { LastFm = { ["Kavinsky|Prelude"] = 95 }, Video = { ["Kavinsky Prelude"] = 120 } };
+        var fixture = new LengthFixture { LastFm = { ["Kavinsky|Prelude"] = 95 } };
         var song = await fixture.StationRowAsync("Kavinsky", "Prelude");
 
         Assert.Equal((95, LengthSource.LastFm), fixture.Shown(song));
-        Assert.DoesNotContain(fixture.Requests, url => url.Contains("/meta"));
+        var requests = fixture.Requests.ToArray();
+        var deezer = Array.FindIndex(requests, url => url.Contains("api.deezer.com/search", StringComparison.Ordinal));
+        var lastFm = Array.FindIndex(requests, url => url.Contains("method=track.getInfo", StringComparison.Ordinal));
+        Assert.True(deezer >= 0 && lastFm > deezer);
+        Assert.DoesNotContain(requests, url => url.Contains("yt-dlp", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public async Task CompleteSongLengths_Video_OnlyWhenNoMetadataLengthExists()
-    {
-        var fixture = new LengthFixture { Video = { ["Daft Punk Emotion"] = 417 } };
-        var song = await fixture.StationRowAsync("Daft Punk", "Emotion");
-
-        Assert.Equal((417, LengthSource.Video), fixture.Shown(song));
-        // Length only: the video is not pinned for playback and the download expectation
-        // is untouched.
-        var routing = fixture.Registry.Lookup(song.Id)!;
-        Assert.Null(routing.YouTubeId);
-        Assert.Null(routing.Duration);
-    }
-
-    [Fact]
-    public async Task CompleteSongLengths_ImplausibleVideo_LeavesTheSongWithoutALength()
-    {
-        var fixture = new LengthFixture { Video = { ["Someone Live Set"] = 3600 } };
-        var song = await fixture.StationRowAsync("Someone", "Live Set");
-
-        Assert.Equal((null, LengthSource.None), fixture.Shown(song));
-        var next = (await fixture.Service().SearchSongsByArtistTitleAsync("Someone", "Live Set")).Single();
-        Assert.Equal(180, next.Duration);
-    }
-
-    [Fact]
-    public async Task CompleteSongLengths_NothingKnown_InventsNothing()
+    public async Task CompleteSongLengths_NoMetadataMatch_LeavesPlaceholderWithoutVideoLookup()
     {
         var fixture = new LengthFixture();
         var song = await fixture.StationRowAsync("Nobody", "Nothing");
 
         Assert.Equal((null, LengthSource.None), fixture.Shown(song));
+        Assert.DoesNotContain(fixture.Requests, url => url.Contains("yt-dlp", StringComparison.OrdinalIgnoreCase));
+        var next = (await fixture.Service().SearchSongsByArtistTitleAsync("Nobody", "Nothing")).Single();
+        Assert.Equal(180, next.Duration);
     }
 
     [Fact]
@@ -257,30 +238,36 @@ public class SongLengthTests
     }
 
     [Fact]
-    public async Task ResolveTopDurations_ImplausibleVideo_KeepsTheShownLength()
+    public async Task ResolveTopDurations_UsesDeezerIdAndFullCatalogDuration()
     {
-        // The video is still pinned for playback as before; only what the row shows is held
-        // to the sane range.
-        var fixture = new LengthFixture { Video = { ["Someone Live Set"] = 3600 } };
+        // Catalog duration remains valid even when longer than the legacy video ceiling.
+        var fixture = new LengthFixture
+        {
+            Deezer = { ["Someone Live Set"] = 1500 },
+            DeezerIds = { ["Someone Live Set"] = "987654321" }
+        };
         var svc = fixture.Service();
         var song = (await svc.SearchSongsByArtistTitleAsync("Someone", "Live Set")).Single();
 
         await svc.ResolveTopDurationsAsync([song]);
 
-        Assert.Equal(180, song.Duration);
-        Assert.Equal("vid-Someone Live Set", fixture.Registry.Lookup(song.Id)!.YouTubeId);
+        var routing = fixture.Registry.Lookup(song.Id)!;
+        Assert.Equal(1500, song.Duration);
+        Assert.Equal("987654321", routing.DeezerId);
+        Assert.Equal((1500, LengthSource.Deezer), fixture.Shown(song));
+        Assert.Null(routing.YouTubeId);
     }
 }
 
 /// <summary>
-/// Deezer, Last.fm and the yt-dlp shim as far as a length lookup needs them. Anything not
-/// listed is a miss, answered the way each service answers one.
+/// Deezer and Last.fm as far as a length lookup needs them. Anything not listed is a miss,
+/// answered the way each service answers one.
 /// </summary>
 internal sealed class LengthFixture
 {
     public Dictionary<string, int> Deezer { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> DeezerIds { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> LastFm { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, int> Video { get; } = new(StringComparer.OrdinalIgnoreCase);
     public System.Collections.Concurrent.ConcurrentQueue<string> Requests { get; } = new();
     public ExternalIdRegistry Registry { get; } = new();
     public DeezerMetadataService DeezerService { get; }
@@ -297,13 +284,10 @@ internal sealed class LengthFixture
     public SoulseekMetadataService Service()
     {
         if (_service is not null) return _service;
-        var factory = new Factory(_handler);
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>()).Build();
         var lastFm = new LastFmService(new HttpClient(_handler),
             TestOptions.Monitor(new LastFmSettings { ApiKey = "key" }),
             Options.Create(new MetadataSettings()), new Mock<ILogger<LastFmService>>().Object);
         return _service = new SoulseekMetadataService(
-            new YouTubeResolver(factory, config, new Mock<ILogger<YouTubeResolver>>().Object),
             Registry, DeezerService,
             new CoverArtAggregator(Array.Empty<ICoverArtSource>(), new Mock<ILogger<CoverArtAggregator>>().Object),
             new Mock<ILogger<SoulseekMetadataService>>().Object, lastFm);
@@ -331,9 +315,10 @@ internal sealed class LengthFixture
             var hit = fixture.Deezer.FirstOrDefault(pair => pair.Key.Equals(q, StringComparison.OrdinalIgnoreCase));
             if (hit.Key is null || uri.AbsolutePath != "/search") return "{\"data\":[]}";
             var split = hit.Key.LastIndexOf(' ');
+            var id = fixture.DeezerIds.TryGetValue(hit.Key, out var configuredId) ? configuredId : "700001";
             return JsonSerializer.Serialize(new
             {
-                data = new[] { new { title = hit.Key[(split + 1)..], duration = hit.Value,
+                data = new[] { new { id, title = hit.Key[(split + 1)..], duration = hit.Value,
                     artist = new { name = hit.Key[..split] } } }
             });
         }
@@ -344,9 +329,6 @@ internal sealed class LengthFixture
                 return $"{{\"track\":{{\"name\":\"{query["track"]}\",\"duration\":\"{seconds * 1000}\",\"artist\":{{\"name\":\"{query["artist"]}\"}}}}}}";
             return "{\"error\":6,\"message\":\"Track not found\"}";
         }
-        if (uri.Host == "yt-dlp-shim" && uri.AbsolutePath == "/meta"
-            && fixture.Video.TryGetValue(query["q"] ?? "", out var length))
-            return $"{{\"video_id\":\"vid-{query["q"]}\",\"duration\":{length}}}";
         status = HttpStatusCode.NotFound;
         return "";
     }
@@ -378,15 +360,14 @@ public sealed class SongLengthEndpointTests
     public async Task Search3_RowsWithoutAMetadataLength_CarryOneInTheNextResponse()
     {
         await using var web = new LengthWebFactory();
-        // Nine ordinary rows with Deezer lengths, so the ones under test sit past the rows
-        // whose YouTube length the search resolves itself.
-        for (var i = 1; i <= 9; i++) web.Fixture.Deezer[$"Filler Song{i}"] = 200 + i;
-        web.SearchTracks.AddRange(Enumerable.Range(1, 9).Select(i => ("Filler", $"Song{i}")));
+        // Keep target rows outside the twelve-row inline enrichment window; their
+        // Deezer/Last.fm lengths should arrive on the next response from background lookup.
+        for (var i = 1; i <= 12; i++) web.Fixture.Deezer[$"Filler Song{i}"] = 200 + i;
+        web.SearchTracks.AddRange(Enumerable.Range(1, 12).Select(i => ("Filler", $"Song{i}")));
         web.SearchTracks.AddRange([("Daft Punk", "Emotion"), ("Kavinsky", "Prelude"),
             ("Nobody", "Nothing"), ("Justice", "Genesis")]);
-        web.Fixture.Video["Daft Punk Emotion"] = 417;
+        web.Fixture.Deezer["Daft Punk Emotion"] = 417;
         web.Fixture.LastFm["Kavinsky|Prelude"] = 95;
-        web.Fixture.Video["Nobody Nothing"] = 3600;
         web.Fixture.Deezer["Justice Genesis"] = 234;
         using var client = web.CreateClient();
 
@@ -400,7 +381,8 @@ public sealed class SongLengthEndpointTests
         Assert.Equal(417, next["Daft Punk|Emotion"]);
         Assert.Equal(95, next["Kavinsky|Prelude"]);
         Assert.Equal(234, next["Justice|Genesis"]);
-        Assert.Equal(180, next["Nobody|Nothing"]); // still the placeholder: nothing plausible
+        Assert.Equal(180, next["Nobody|Nothing"]); // no catalog or Last.fm answer; no video fallback
+        Assert.DoesNotContain(web.Fixture.Requests, url => url.Contains("yt-dlp", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -409,7 +391,7 @@ public sealed class SongLengthEndpointTests
         await using var web = new LengthWebFactory();
         web.Fixture.Deezer["Justice Genesis"] = 234;
         web.Fixture.LastFm["Kavinsky|Prelude"] = 95;
-        web.Fixture.Video["Daft Punk Emotion"] = 417;
+        web.Fixture.Deezer["Daft Punk Emotion"] = 417;
         web.InstallStation(
             new() { Artist = "Justice", Title = "Genesis" },
             new() { Artist = "Kavinsky", Title = "Prelude" },
@@ -429,6 +411,22 @@ public sealed class SongLengthEndpointTests
         Assert.Equal(417, next["Daft Punk|Emotion"]);
         Assert.Equal(207, next["Mr. Oizo|Positif"]);
         Assert.Equal(180, next["Nobody|Nothing"]);
+    }
+
+    [Fact]
+    public async Task NativeSearch_AdvertisesMp3ForExternalSongs()
+    {
+        await using var web = new LengthWebFactory();
+        web.SearchTracks.Add(("Daft Punk", "Emotion"));
+        web.Fixture.Deezer["Daft Punk Emotion"] = 417;
+        using var client = web.CreateClient();
+
+        var body = await client.GetStringAsync("/api/song?title=emotion&_start=0&_end=1&u=alice&t=token&s=salt");
+        using var document = JsonDocument.Parse(body);
+        var song = Assert.Single(document.RootElement.EnumerateArray());
+
+        Assert.EndsWith(".mp3", song.GetProperty("path").GetString());
+        Assert.Equal("mp3", song.GetProperty("suffix").GetString());
     }
 }
 
@@ -523,6 +521,8 @@ internal sealed class LengthWebFactory : WebApplicationFactory<Program>
             var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
             if (uri.Host == "navidrome.test")
             {
+                if (uri.AbsolutePath.Equals("/api/song", StringComparison.OrdinalIgnoreCase))
+                    return Ok("[]");
                 var fields = uri.AbsolutePath.Contains("search3")
                     ? ",\"searchResult3\":{\"song\":[],\"album\":[],\"artist\":[]}" : "";
                 return Ok("{\"subsonic-response\":{\"status\":\"ok\",\"version\":\"1.16.1\"" + fields + "}}");

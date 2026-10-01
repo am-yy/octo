@@ -54,7 +54,7 @@ public sealed class LastFmRadioControllerTests
         Assert.Contains("local-one", body);
         Assert.Contains("readonly", body);
         Assert.Contains("validUntil", body);
-        fixture.Metadata.Verify(service => service.PrewarmYouTubeIdsAsync(
+        fixture.Metadata.Verify(service => service.PrewarmDeezerIdsAsync(
             It.IsAny<IEnumerable<Octo.Models.Domain.Song>>(), 8, It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -741,10 +741,10 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
         Metadata.Setup(service => service.SearchSongsByArtistTitleAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int?>()))
             .ReturnsAsync([]);
-        Metadata.Setup(service => service.PrewarmYouTubeIdsAsync(
+        Metadata.Setup(service => service.PrewarmDeezerIdsAsync(
                 It.IsAny<IEnumerable<Octo.Models.Domain.Song>>(), It.IsAny<int>(),
                 It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
-        Metadata.Setup(service => service.PrewarmYouTubeIdsForSongIdsAsync(
+        Metadata.Setup(service => service.PrewarmDeezerIdsForSongIdsAsync(
                 It.IsAny<IEnumerable<string>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
     }
@@ -813,6 +813,7 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
                 ["Subsonic:AutoDetectDownloadPath"] = "false",
                 ["Subsonic:ExplicitFilter"] = _explicitFilter,
                 ["Library:DownloadPath"] = _directory,
+                ["Deezer:Arl"] = "fixture",
                 ["LastFm:EnableRadio"] = "true",
                 ["LastFm:EnablePersonalizedStations"] = "true",
                 ["LastFm:EnableDiscoveryStations"] = "true",
@@ -935,12 +936,29 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
     {
         var path = request.RequestUri!.AbsolutePath.Trim('/');
         var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
-        if (request.RequestUri.Host.Equals("yt-dlp-shim", StringComparison.OrdinalIgnoreCase))
+        if (request.RequestUri.Host.Equals("www.deezer.com", StringComparison.OrdinalIgnoreCase))
         {
-            if (path.Equals("search", StringComparison.OrdinalIgnoreCase))
-                return Result("{\"video_id\":\"radio-video\",\"duration\":180}");
-            if (path.Equals("stream", StringComparison.OrdinalIgnoreCase))
-                return Result("external-source-audio", "audio/mp4");
+            if (query["method"] == "deezer.getUserData")
+                return Result("""{"results":{"checkForm":"fixture-api","USER":{"USER_ID":1,"OPTIONS":{"license_token":"fixture-license"}}}}""");
+            return Result("""{"results":{"DATA":{"SNG_ID":"42","TRACK_TOKEN":"fixture-track"}},"error":[]}""");
+        }
+        if (request.RequestUri.Host.Equals("media.deezer.com", StringComparison.OrdinalIgnoreCase))
+            return Result("""{"data":[{"media":[{"format":"MP3_320","sources":[{"url":"https://cdn.deezer.test/audio"}]}]}]}""");
+        if (request.RequestUri.Host.Equals("cdn.deezer.test", StringComparison.OrdinalIgnoreCase))
+            return Result("external-source-audio", "audio/mpeg");
+        if (request.RequestUri.Host.Equals("api.deezer.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var search = query["q"] ?? "";
+            var ordinal = search.Contains("Four", StringComparison.OrdinalIgnoreCase) ? "Four"
+                : search.Contains("Three", StringComparison.OrdinalIgnoreCase) ? "Three"
+                : search.Contains("Two", StringComparison.OrdinalIgnoreCase) ? "Two" : "One";
+            var prefix = search.StartsWith("New ", StringComparison.OrdinalIgnoreCase) ? "New " : "";
+            var suffix = search.EndsWith(" Refreshed", StringComparison.OrdinalIgnoreCase) ? " Refreshed" : "";
+            var body = JsonSerializer.Serialize(new { data = new[] { new {
+                id = 42, title = prefix + "Song " + ordinal + suffix,
+                duration = 180, artist = new { name = prefix + "Artist " + ordinal }
+            } } });
+            return Result(body);
         }
         var format = query["f"] ?? "json";
         var username = query["u"] ?? "";

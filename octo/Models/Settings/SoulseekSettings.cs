@@ -30,7 +30,7 @@ public class SoulseekSettings
     /// This was 6, which measurement showed is simply too short: polling slskd's
     /// /responses for the same query returned nothing at 6s, 10s or 15s, then 14
     /// responses including 5 FLACs at 20s — reproducibly, across three runs. The
-    /// effect was that every star fell back to YouTube MP3 while lossless copies
+    /// effect was that every star fell back to Deezer MP3 while lossless copies
     /// were sitting there unseen. Note that the search status object reports a
     /// responseCount well before /responses will hand the files over, so a status
     /// poll makes short waits look adequate when they are not.
@@ -68,7 +68,7 @@ public class SoulseekSettings
     /// <summary>
     /// Fingerprint every finished download with Chromaprint and ask AcoustID what it actually
     /// is before accepting it. A Soulseek file identified as a different recording is discarded
-    /// and the next peer tried; a YouTube file has no second candidate, so it is kept and, with
+    /// and the next peer tried; a Deezer file has no second candidate, so it is kept and, with
     /// the Review playlist on, asked about. Off by default: it needs a free AcoustID key and
     /// the fpcalc binary, and without both it can only ever be a no-op.
     ///
@@ -90,7 +90,7 @@ public class SoulseekSettings
     /// <summary>
     /// On a confident AcoustID match, write that recording's title, artist, album and year,
     /// which are MusicBrainz's, onto the file instead of trusting the source's tags. Applies to
-    /// Soulseek and YouTube downloads alike. Does nothing unless VerifyDownloads is on and a key
+    /// Soulseek and Deezer downloads alike. Does nothing unless VerifyDownloads is on and a key
     /// is set.
     /// Environment variable: SLSKD_TAG_FROM_MUSICBRAINZ
     /// </summary>

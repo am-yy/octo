@@ -372,9 +372,9 @@ public class SubsonicResponseBuilderTests
     {
         var row = BuilderWith(false).ConvertSongToJson(ExternalSong());
 
-        Assert.Equal("m4a", row["suffix"]);
-        Assert.Equal("audio/mp4", row["contentType"]);
-        Assert.Equal(128, row["bitRate"]);
+        Assert.Equal("mp3", row["suffix"]);
+        Assert.Equal("audio/mpeg", row["contentType"]);
+        Assert.Equal(320, row["bitRate"]);
     }
 
     /// <summary>

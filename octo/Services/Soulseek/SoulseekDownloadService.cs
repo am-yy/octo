@@ -4,7 +4,7 @@ using Octo.Models.Settings;
 using Octo.Services.Common;
 using Octo.Services.Local;
 using Octo.Services.Subsonic;
-using Octo.Services.YouTube;
+using Octo.Services.Deezer;
 using System.Text.RegularExpressions;
 using IOFile = System.IO.File;
 
@@ -12,7 +12,7 @@ namespace Octo.Services.Soulseek;
 
 /// <summary>
 /// Hybrid download service:
-///   - GetDirectStreamAsync   -> instant lossy preview via YouTube (yt-dlp)
+///   - GetDirectStreamAsync   -> instant MP3 playback via Deezer
 ///   - DownloadTrackAsync     -> permanent FLAC fetch via slskd. Runs when the user
 ///                              stars a track, and in Permanent mode when one is
 ///                              played. Soulseek is searched here on demand using
@@ -24,9 +24,10 @@ public class SoulseekDownloadService : BaseDownloadService
     private readonly RejectedPeerRegistry _rejectedPeers;
     private readonly Octo.Services.Fingerprint.DownloadVerificationService _verification;
     private readonly SoulseekSettings _settings;
-    private readonly YouTubeResolver _youtube;
+    private readonly DeezerResolver _deezerPlayback;
     private readonly ExternalIdRegistry _idRegistry;
     private readonly HttpClient _httpClient;
+    private readonly Octo.Services.Metadata.DeezerMetadataService _deezerCatalog;
 
     protected override string ProviderName => SoulseekMetadataService.ProviderName;
 
@@ -38,7 +39,7 @@ public class SoulseekDownloadService : BaseDownloadService
         IOptionsMonitor<GenreSettings> genreSettings,
         IOptions<SoulseekSettings> soulseekSettings,
         SoulseekClient slskd,
-        YouTubeResolver youtube,
+        DeezerResolver deezerPlayback,
         ExternalIdRegistry idRegistry,
         IHttpClientFactory httpClientFactory,
         NavidromeIdentityService navIdentity,
@@ -54,13 +55,15 @@ public class SoulseekDownloadService : BaseDownloadService
         _rejectedPeers = rejectedPeers;
         _verification = verification;
         _settings = soulseekSettings.Value;
-        _youtube = youtube;
+        _deezerPlayback = deezerPlayback;
         _idRegistry = idRegistry;
+        _deezerCatalog = serviceProvider.GetRequiredService<Octo.Services.Metadata.DeezerMetadataService>();
         _httpClient = httpClientFactory.CreateClient();
         _httpClient.Timeout = TimeSpan.FromMinutes(10);
     }
 
-    public override Task<bool> IsAvailableAsync() => _slskd.IsReachableAsync();
+    public override async Task<bool> IsAvailableAsync() =>
+        await _deezerPlayback.IsAvailableAsync() || await _slskd.IsReachableAsync();
 
     // Octo's album ids ARE the external id, so this is identity plus a kind check that
     // stops a song or artist id being walked as if it were an album.
@@ -70,7 +73,7 @@ public class SoulseekDownloadService : BaseDownloadService
     /// <summary>
     /// Restore an album track's routing if the registry evicted it mid-download.
     /// The fields here MUST match what SoulseekMetadataService.GetAlbumAsync registered
-    /// (YouTubeId left null, the Song's own Duration) or this hashes to a different id and
+    /// (catalog ID left null, the Song's own Duration) or this hashes to a different id and
     /// fails to restore anything. Routings are mutated in place elsewhere, so rebuild from
     /// the Song, which still carries the values used at registration time.
     /// </summary>
@@ -105,36 +108,16 @@ public class SoulseekDownloadService : BaseDownloadService
         var routing = _idRegistry.Lookup(externalId) ?? SoulseekMetadataService.TryDecodeExternalId(externalId);
         if (routing is null) return null;
 
-        var videoId = routing.YouTubeId;
-        if (string.IsNullOrEmpty(videoId) && routing.HasArtistTitle)
-        {
-            var hit = await _youtube.SearchAsync($"{routing.Artist} {routing.Title}", routing.Duration, ct: cancellationToken);
-            videoId = hit?.VideoId;
-            // Cache back on the routing so a second click on the same placeholder
-            // skips the yt-dlp ytsearch1: round trip — that 3-8s saving is the
-            // difference between Arpeggi (~10s HTTP timeout) playing the song or
-            // canceling and falling back to a local one. The routing object is
-            // shared via the registry singleton, so this mutation is visible to
-            // every subsequent stream request for this id.
-            if (!string.IsNullOrEmpty(videoId))
-            {
-                routing.YouTubeId = videoId;
-            }
-        }
-        if (string.IsNullOrEmpty(videoId)) return null;
-
-        var opened = await _youtube.OpenStreamAsync(videoId, rangeHeader, cancellationToken);
-        if (opened is null)
-        {
-            Logger.LogWarning("yt-dlp shim failed to open stream for vid={Vid}", videoId);
-            return null;
-        }
+        var trackId = await ResolveDeezerIdAsync(routing, externalId, cancellationToken);
+        if (string.IsNullOrEmpty(trackId)) return null;
+        var opened = await _deezerPlayback.OpenStreamAsync(trackId, rangeHeader, cancellationToken);
+        if (opened is null) return null;
 
         var (stream, contentType, contentLength, statusCode, contentRange, owner) = opened.Value;
         var owned = new OwningStream(stream, owner);
 
-        Logger.LogInformation("YouTube preview '{Artist} - {Title}' (vid={Vid}, status={Status}, {Len} bytes{Range})",
-            routing.Artist, routing.Title, videoId, statusCode, contentLength,
+        Logger.LogInformation("Deezer stream '{Artist} - {Title}' (track={TrackId}, status={Status}, {Len} bytes{Range})",
+            routing.Artist, routing.Title, trackId, statusCode, contentLength,
             contentRange is null ? "" : $", range={contentRange}");
 
         return new DirectStreamInfo
@@ -142,10 +125,21 @@ public class SoulseekDownloadService : BaseDownloadService
             AudioStream = owned,
             ContentType = contentType,
             ContentLength = contentLength,
-            Quality = "youtube-m4a",
+            Quality = "deezer-mp3",
             StatusCode = statusCode,
             ContentRange = contentRange,
         };
+    }
+
+    private async Task<string?> ResolveDeezerIdAsync(SoulseekRouting routing, string externalId, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(routing.DeezerId)) return routing.DeezerId;
+        if (!routing.HasArtistTitle) return null;
+        var hit = await _deezerCatalog.EnrichTrackAsync(routing.Artist, routing.Title, includeYear: false, ct: ct);
+        routing.DeezerId = hit?.DeezerId;
+        _idRegistry.RememberDeezerTrack(externalId, hit?.DeezerId);
+        _idRegistry.RememberLength(externalId, hit?.Duration, LengthSource.Deezer);
+        return routing.DeezerId;
     }
 
     // =========================================================================
@@ -171,16 +165,16 @@ public class SoulseekDownloadService : BaseDownloadService
         // DownloadOnStar decides WHETHER to download; DownloadSource decides FROM WHERE.
         switch (sourceOverride ?? SubsonicSettings.DownloadSource)
         {
-            case DownloadSource.YouTube:
-                return await DownloadViaYouTubeAsync(routing, song, suppressNotify, announceStart: true, cancellationToken);
-            case DownloadSource.SoulseekThenYouTube:
+            case DownloadSource.Deezer:
+                return await DownloadViaDeezerAsync(routing, song, suppressNotify, announceStart: true, cancellationToken);
+            case DownloadSource.SoulseekThenDeezer:
                 // The filter matters: a cancelled token means nobody is waiting for
                 // this any more, so falling back would start a second download only
                 // to have it throw on the same token.
                 try { return await DownloadViaSoulseekAsync(routing, song, suppressNotify, cancellationToken); }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Logger.LogWarning("Soulseek download failed ({Msg}); falling back to YouTube MP3", ex.Message);
+                    Logger.LogWarning("Soulseek download failed ({Msg}); falling back to Deezer", ex.Message);
                     if (!suppressNotify)
                     {
                         Notifications.Notify(new Octo.Services.Notifications.NotificationEvent
@@ -189,14 +183,14 @@ public class SoulseekDownloadService : BaseDownloadService
                             Artist = routing.Artist,
                             Title = routing.Title,
                             Album = routing.Album,
-                            Source = "YouTube",
-                            Format = "MP3",
+                            Source = "Deezer",
+                            Format = _deezerPlayback.DownloadQuality,
                             Detail = ex.Message,
                         });
                     }
                     // announceStart false: the fallback event above already announces
                     // the MP3, and one gesture should never ping twice.
-                    return await DownloadViaYouTubeAsync(routing, song, suppressNotify, announceStart: false, cancellationToken);
+                    return await DownloadViaDeezerAsync(routing, song, suppressNotify, announceStart: false, cancellationToken);
                 }
             default:
                 return await DownloadViaSoulseekAsync(routing, song, suppressNotify, cancellationToken);
@@ -204,31 +198,24 @@ public class SoulseekDownloadService : BaseDownloadService
     }
 
     /// <summary>
-    /// Where the shim writes a download before Octo has decided its name. A dot folder, which
+    /// Where Deezer writes a download before Octo has decided its name. A dot folder, which
     /// Navidrome's scanner skips (Scanner.IgnoreDotFolders, on by default), the same way it
     /// skips the library-action quarantine.
     /// </summary>
     internal const string IncomingFolderName = ".octo-incoming";
 
-    // Lossy MP3 via the yt-dlp shim's /download. The shim writes <dest>.mp3 into the staging
-    // folder with clean tags and a cover; PlaceInLibraryAsync moves it once the tags are settled.
-    private async Task<string> DownloadViaYouTubeAsync(SoulseekRouting routing, Song song, bool suppressNotify, bool announceStart, CancellationToken cancellationToken)
+    // Deezer writes a decrypted file into staging; shared finalization tags and places it.
+    private async Task<string> DownloadViaDeezerAsync(SoulseekRouting routing, Song song, bool suppressNotify, bool announceStart, CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(DownloadPath))
             throw new InvalidOperationException("DownloadPath is not configured");
 
         var trackKey = song.ExternalId ?? "";
-        Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "YouTube"));
+        Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Searching, "Deezer"));
 
-        var videoId = routing.YouTubeId;
-        if (string.IsNullOrEmpty(videoId))
-        {
-            var hit = await _youtube.SearchAsync($"{routing.Artist} {routing.Title}", routing.Duration, ct: cancellationToken);
-            videoId = hit?.VideoId;
-            if (!string.IsNullOrEmpty(videoId)) routing.YouTubeId = videoId;
-        }
-        if (string.IsNullOrEmpty(videoId))
-            throw new FileNotFoundException($"No YouTube match for '{routing.Artist} - {routing.Title}'");
+        var deezerId = await ResolveDeezerIdAsync(routing, trackKey, cancellationToken);
+        if (string.IsNullOrEmpty(deezerId))
+            throw new FileNotFoundException($"No Deezer match for '{routing.Artist} - {routing.Title}'");
 
         if (!suppressNotify && announceStart)
         {
@@ -238,28 +225,29 @@ public class SoulseekDownloadService : BaseDownloadService
                 Artist = routing.Artist,
                 Title = routing.Title,
                 Album = routing.Album,
-                Source = "YouTube",
-                Format = "MP3",
+                Source = "Deezer",
+                Format = _deezerPlayback.DownloadQuality,
                 DurationSeconds = routing.Duration,
             });
         }
 
-        // Staged, not written into the library. Writing straight to the layout path let the shim
+        // Staged, not written into the library. Writing straight to the layout path could
         // overwrite a different file that happened to share the name before anything could
-        // protect it. Extension left empty: the shim appends .mp3 itself.
+        // protect it. The selected media format supplies the extension.
         var incoming = Path.Combine(DownloadPath, IncomingFolderName);
         SweepIncoming(incoming);
-        var destWithoutExt = Path.Combine(incoming, $"{videoId}-{Guid.NewGuid():N}");
+        var destWithoutExt = Path.Combine(incoming, $"{deezerId}-{Guid.NewGuid():N}");
 
-        // The shim answers only once the file is written, so there is nothing to count here.
-        Track(t => t.Transfer(ProviderName, trackKey, null, null, null, "YouTube"));
-        var path = await _youtube.DownloadAsync(videoId, destWithoutExt, routing.Artist, routing.Title, cancellationToken);
+        // The resolver returns once the whole decrypted file is written.
+        Track(t => t.Transfer(ProviderName, trackKey, null, null, null, "Deezer"));
+        var path = await _deezerPlayback.DownloadAsync(deezerId, destWithoutExt, cancellationToken);
         if (string.IsNullOrEmpty(path) || !IOFile.Exists(path))
-            throw new FileNotFoundException($"YouTube MP3 download failed for '{routing.Artist} - {routing.Title}'");
+            throw new FileNotFoundException($"Deezer download failed for '{routing.Artist} - {routing.Title}'");
 
-        Logger.LogInformation("YouTube MP3 download complete: {Path}", path);
+        song.AcquisitionSource = "Deezer";
+        Logger.LogInformation("Deezer download complete: {Path}", path);
 
-        // Identification only. YouTube has no second candidate to fall back to, so a
+        // Identification only. Deezer has no second candidate to fall back to, so a
         // disagreement is something to ask a person about (the Review playlist), never a reason
         // to throw the song away.
         Track(t => t.Stage(ProviderName, trackKey, AcquisitionState.Verifying));
@@ -271,10 +259,10 @@ public class SoulseekDownloadService : BaseDownloadService
                 // No decodable audio at all: a broken file, not a question.
                 try { IOFile.Delete(path); } catch { /* best effort */ }
                 throw new InvalidOperationException(
-                    $"YouTube delivered no decodable audio for '{routing.Artist} - {routing.Title}'");
+                    $"Deezer delivered no decodable audio for '{routing.Artist} - {routing.Title}'");
             }
             Logger.LogWarning(
-                "AcoustID says the YouTube file for '{Artist} - {Title}' is {Actual}; keeping it and asking about it",
+                "AcoustID says the Deezer file for '{Artist} - {Title}' is {Actual}; keeping it and asking about it",
                 routing.Artist, routing.Title, verdict.Describe());
             verdict = verdict with
             {
@@ -315,6 +303,7 @@ public class SoulseekDownloadService : BaseDownloadService
     // first successful transfer wins.
     private async Task<string> DownloadViaSoulseekAsync(SoulseekRouting routing, Song song, bool suppressNotify, CancellationToken cancellationToken)
     {
+        song.AcquisitionSource = "Soulseek";
         var queries = SearchQueries(routing.Title!, routing.Artist!);
         var primaryQuery = queries[0].Text;
 
@@ -374,7 +363,7 @@ public class SoulseekDownloadService : BaseDownloadService
         // A file that claims to be lossless and whose spectrum says it was made from a lossy
         // one. It is still the right song, so it is held back rather than thrown away: a later
         // peer's genuine copy replaces it, and when no peer has one it is what this download
-        // delivers, never a reason to fail the song or fall back to YouTube.
+        // delivers, never a reason to fail the song or fall back to Deezer.
         TranscodedReserve? reserve = null;
 
         // Records the ids of a confirmed match, and its name too when tagging from MusicBrainz
@@ -658,7 +647,7 @@ public class SoulseekDownloadService : BaseDownloadService
     /// The Soulseek searches for a song, in order, from <see cref="SongIdentity.QueryVariants"/>.
     ///
     /// Peers name files, not catalogue entries, so a query carrying a bracket finds nothing:
-    /// Last.fm and YouTube titles such as "Adele - Hello" or "Long Season [LIVE][4K]" are
+    /// Last.fm and Deezer titles such as "Adele - Hello" or "Long Season [LIVE][4K]" are
     /// searched as "Adele Hello" and "Long Season". A title that is only an annotation,
     /// Mezzanine's "(Exchange)", keeps it. Then the stylized spelling read as letters
     /// ("suicideboys SUICIDE", for a peer who tagged it that way), and the title alone last.

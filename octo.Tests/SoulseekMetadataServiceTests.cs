@@ -9,7 +9,6 @@ using Octo.Services.CoverArt;
 using Octo.Services.Metadata;
 using Octo.Services.Soulseek;
 using Octo.Services.Subsonic;
-using Octo.Services.YouTube;
 using System.Collections.Concurrent;
 using System.Net;
 
@@ -51,7 +50,6 @@ public class SoulseekMetadataServiceTests
             .Returns(() => new HttpClient(handler.Object));
 
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>()).Build();
-        var youtube = new YouTubeResolver(factory.Object, config, new Mock<ILogger<YouTubeResolver>>().Object);
         var deezer = new DeezerMetadataService(factory.Object,
             TestOptions.Monitor(new Octo.Models.Settings.MetadataSettings()),
             new Mock<ILogger<DeezerMetadataService>>().Object);
@@ -60,7 +58,7 @@ public class SoulseekMetadataServiceTests
             Array.Empty<ICoverArtSource>(), new Mock<ILogger<CoverArtAggregator>>().Object);
 
         return new SoulseekMetadataService(
-            youtube, _registry, deezer, coverArt, new Mock<ILogger<SoulseekMetadataService>>().Object);
+            _registry, deezer, coverArt, new Mock<ILogger<SoulseekMetadataService>>().Object);
     }
 
     private const string AlbumSearchJson = @"{""data"":[

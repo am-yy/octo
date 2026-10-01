@@ -22,6 +22,7 @@ public class AdminContractTests
     [
         ("Subsonic", typeof(SubsonicSettings)),
         ("Soulseek", typeof(SoulseekSettings)),
+        ("Deezer", typeof(DeezerSettings)),
         ("Lidarr", typeof(LidarrSettings)),
         ("LastFm", typeof(LastFmSettings)),
         ("Genre", typeof(GenreSettings)),
@@ -172,6 +173,19 @@ public class AdminContractTests
         using var response = await client.SendAsync(request);
 
         Assert.True(response.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
+    public void DeezerAccountCookies_AreMaskedAndPlaceholdersPreserveStoredValues()
+    {
+        var stored = JsonNodeObject("""{ "Deezer": { "Arl": "primary-cookie", "ArlFallback": "fallback-cookie", "Quality": "FLAC" } }""");
+        var incoming = AdminController.RedactSecrets(stored);
+        Assert.Equal(AdminController.SecretPlaceholder, (string?)incoming["Deezer"]!["Arl"]);
+        Assert.Equal(AdminController.SecretPlaceholder, (string?)incoming["Deezer"]!["ArlFallback"]);
+        AdminController.RestoreSecretPlaceholders(incoming, stored);
+        Assert.Equal("primary-cookie", (string?)incoming["Deezer"]!["Arl"]);
+        Assert.Equal("fallback-cookie", (string?)incoming["Deezer"]!["ArlFallback"]);
+        Assert.Equal("FLAC", (string?)incoming["Deezer"]!["Quality"]);
     }
 
     [Fact]

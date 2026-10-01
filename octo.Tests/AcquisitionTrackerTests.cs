@@ -172,7 +172,7 @@ public class AcquisitionTrackerTests
     public async Task AFallbackChainStaysOneRowAndFailsOnlyAtTheEnd()
     {
         var tracker = NewTracker();
-        var (coordinator, queue) = Chain(tracker, HeartDownloadSource.Soulseek, HeartDownloadSource.YouTube);
+        var (coordinator, queue) = Chain(tracker, HeartDownloadSource.Soulseek, HeartDownloadSource.Deezer);
         tracker.Begin("soulseek", "abc", "abc", "alice", "Radiohead", "Creep", null);
 
         var acquisition = coordinator.AcquireTrackAsync("soulseek", "abc", "alice");
@@ -191,26 +191,26 @@ public class AcquisitionTrackerTests
         var second = await NextAsync(queue);
         var fellBack = Only(tracker, "alice");
         Assert.Equal(AcquisitionState.Searching, fellBack.State);
-        Assert.Equal("YouTube", fellBack.Source);
+        Assert.Equal("Deezer", fellBack.Source);
         Assert.Null(fellBack.Error);
         Assert.Null(fellBack.Progress);
         Assert.Null(fellBack.BytesDone);
 
         queue.Release(second);
-        second.Completion.TrySetException(new FileNotFoundException("No YouTube match for 'Radiohead - Creep'"));
+        second.Completion.TrySetException(new FileNotFoundException("No Deezer match for 'Radiohead - Creep'"));
         await acquisition;
 
         var failed = Assert.Single(tracker.All());
         Assert.Equal(AcquisitionState.Failed, failed.State);
-        Assert.Equal("No YouTube match for 'Radiohead - Creep'", failed.Error);
-        Assert.Equal("YouTube", failed.Source);
+        Assert.Equal("No Deezer match for 'Radiohead - Creep'", failed.Error);
+        Assert.Equal("Deezer", failed.Source);
     }
 
     [Fact]
     public async Task AFallbackThatSucceedsNeverShowsTheEarlierFailure()
     {
         var tracker = NewTracker();
-        var (coordinator, queue) = Chain(tracker, HeartDownloadSource.Soulseek, HeartDownloadSource.YouTube);
+        var (coordinator, queue) = Chain(tracker, HeartDownloadSource.Soulseek, HeartDownloadSource.Deezer);
         tracker.Begin("soulseek", "abc", "abc", "alice");
 
         var acquisition = coordinator.AcquireTrackAsync("soulseek", "abc", "alice");

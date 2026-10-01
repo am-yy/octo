@@ -978,7 +978,6 @@ internal sealed class ScrobbleAdminFactory : WebApplicationFactory<Program>
                 ["Subsonic:Url"] = "http://127.0.0.1:1",
                 ["Subsonic:AutoDetectDownloadPath"] = "false",
                 ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
                 ["Library:DownloadPath"] = _directory,
                 ["LastFm:ApiKey"] = FakeLastFm.ApiKey,
                 ["LastFm:ApiSecret"] = FakeLastFm.Secret,

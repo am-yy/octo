@@ -135,13 +135,13 @@ public sealed class HeartAcquisitionCoordinator
     private static string SourceName(HeartDownloadSource source) => source switch
     {
         HeartDownloadSource.Lidarr => "Lidarr",
-        HeartDownloadSource.YouTube => "YouTube",
+        HeartDownloadSource.Deezer => "Deezer",
         _ => "Soulseek",
     };
 
     private static DownloadSource ToDirectSource(HeartDownloadSource source) => source switch
     {
-        HeartDownloadSource.YouTube => DownloadSource.YouTube,
+        HeartDownloadSource.Deezer => DownloadSource.Deezer,
         _ => DownloadSource.Soulseek,
     };
 }

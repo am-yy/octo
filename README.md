@@ -41,9 +41,9 @@ The desktop app runs on Windows and Linux, and the Android app on Android 10 and
 
 ## What Octo does
 
-Octo sits in front of Navidrome and adds what a streaming service gives you: search past your own library, radio, and stations that learn from what you play. Previews stream from YouTube, and the songs you keep arrive from Soulseek, or your own Lidarr, as tagged files in your library.
+Octo sits in front of Navidrome and adds what a streaming service gives you: search past your own library, radio, and stations that learn from what you play. Missing songs stream from Deezer. The songs you keep arrive from Soulseek, Deezer, or your own Lidarr as tagged files in your library.
 
-- **Search finds music you don't own**, and any of it plays right away as a preview.
+- **Search finds music you don't own**, and Deezer streams it right away without saving a file.
 - **Radio and stations grow from your listening:** Your Mix, discovery, artist and genre stations, plus optional genre and decade mixes from your own library.
 - **Keep what you like.** Octo downloads it, tags it, files it under the right album and tells Navidrome to rescan. Whole albums work too.
 - **Downloads are checked.** A "lossless" file made from an MP3 is caught, and optional Review and Duplicates playlists show what Octo couldn't confirm and what you have twice.
@@ -51,7 +51,7 @@ Octo sits in front of Navidrome and adds what a streaming service gives you: sea
 
 Any Subsonic app works: point it at Octo instead of Navidrome and nothing else changes.
 
-> If you pay for Qobuz, Deezer or Yandex Music and want that catalog in your library, [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) fits better, since it downloads from those services directly. Octo needs no paid streaming account.
+Deezer streaming and downloads require a private Deezer ARL session token. Soulseek and Navidrome playback continue to work without one.
 
 ## Get started
 
@@ -60,22 +60,23 @@ Octo sits **in front of** your existing Navidrome. Your Subsonic app talks to Oc
 ```
    Subsonic app          Octo               Navidrome
   (Feishin, Arpeggi) ──▶  :5274  ──────────▶  (your library)
-                           ├─▶ yt-dlp shim   (instant previews)
+                           ├─▶ Deezer        (direct streams and downloads)
                            ├─▶ slskd         (downloads on star)
                            └─▶ your Lidarr   (optional heart source)
 ```
 
-So setup is two steps: **tell Octo where Navidrome is**, and **point your app at Octo**.
+Setup: **tell Octo where Navidrome is**, add the **Deezer ARL**, then **point your app at Octo**.
 
 **Required**
 
 - A box with [Docker](https://docs.docker.com/engine/install/) installed.
 - An existing [Navidrome](https://www.navidrome.org/) server, reachable from the Octo host by LAN IP or service name (not `localhost`).
+- A Deezer ARL session token for external streams and Deezer downloads.
 
 **Optional** (Octo runs fine without these):
 
 - A free [Last.fm API key](https://www.last.fm/api/account/create) enables radio and discovery.
-- A free [Soulseek account](https://www.slsknet.org/news/node/1) enables lossless FLAC downloads when you star a song.
+- A free [Soulseek account](https://www.slsknet.org/news/node/1) enables peer FLAC downloads when you star a song.
 - An existing [Lidarr](https://github.com/Lidarr/Lidarr) server: an alternative heart source once it has working indexers and a download client.
 
 Then:
@@ -86,7 +87,7 @@ cd octo
 ./install.sh
 ```
 
-The installer asks for your Navidrome URL (and, optionally, Last.fm and Soulseek), brings the stack up, and prints the address.
+The installer asks for your Navidrome URL and Deezer ARL, then optionally Last.fm and Soulseek. It brings the stack up and prints the address.
 
 **When it's done:**
 
@@ -221,11 +222,11 @@ No. Octo speaks the Subsonic API, not the Plex API. If you're a Plex user lookin
 
 ### How is this different from Navidrome's built-in radio?
 
-Navidrome's radio plays songs from your existing library. Octo's radio reaches *outside* your library: Last.fm finds similar tracks, YouTube provides the preview, and Soulseek provides the keep-it-forever path. Navidrome alone gives you a great library player; Octo turns that library into a launchpad for discovery.
+Navidrome's radio plays songs from your existing library. Octo's radio reaches *outside* your library: Last.fm finds similar tracks, Deezer streams them, and Soulseek or Deezer can provide the keep-it-forever path. Navidrome alone gives you a great library player; Octo turns that library into a launchpad for discovery.
 
 ### Is my data going anywhere?
 
-Octo's per-user play ledger and station snapshots stay in `/app/config/lastfm-radio-state.json`. It sends Last.fm only the artist, title, and tag lookups needed to build recommendations; it does not send the ledger, Navidrome credentials, usernames, or stream URLs. Continuous Radio URLs contain opaque, expiring in-memory session tokens rather than Navidrome credentials. YouTube and Soulseek receive the ordinary outbound lookups needed for preview/acquisition. Once a listener connects Last.fm on the dashboard, Octo also sends that listener's plays of outside songs (artist, title, album and time) to their own Last.fm account, and with a ListenBrainz token set it sends the same plays to ListenBrainz.
+Octo's per-user play ledger and station snapshots stay in `/app/config/lastfm-radio-state.json`. It sends Last.fm only the artist, title, and tag lookups needed to build recommendations; it does not send the ledger, Navidrome credentials, usernames, or stream URLs. Continuous Radio URLs contain opaque, expiring in-memory session tokens rather than Navidrome credentials. Deezer and Soulseek receive the ordinary outbound requests needed for playback and acquisition. The Deezer ARL is stored in `.env` or `/app/config/settings.json`; the admin API masks it on reads. Once a listener connects Last.fm on the dashboard, Octo also sends that listener's plays of outside songs (artist, title, album and time) to their own Last.fm account, and with a ListenBrainz token set it sends the same plays to ListenBrainz.
 
 ### Do downloaded songs get tagged correctly?
 
@@ -233,7 +234,7 @@ Yes. Soulseek peers share full FLAC files with their existing ID3 tags intact. O
 
 ### Can it run on a Raspberry Pi?
 
-Yes. Multi-arch images are published for amd64 and arm64. The yt-dlp sidecar does most of the CPU work; a Pi 4 or Pi 5 handles a single household's listening fine.
+Yes. Multi-arch images are published for amd64 and arm64. Octo streams from Deezer directly; a Pi 4 or Pi 5 handles a single household's listening fine.
 
 ---
 
@@ -242,9 +243,9 @@ Yes. Multi-arch images are published for amd64 and arm64. The yt-dlp sidecar doe
 
 ### What if I don't want to use Soulseek?
 
-You can use YouTube or an existing Lidarr server, or disable automatic acquisition entirely.
+You can use Deezer or an existing Lidarr server, or disable automatic acquisition entirely.
 
-Use **Streams & hearts → Heart download priority** in the admin UI to order Soulseek, YouTube, and Lidarr and independently choose whether each handles song hearts, album hearts, or both. Octo tries eligible sources from top to bottom and stops at the first success. `DOWNLOAD_SOURCE`, `DOWNLOAD_ON_STAR`, and `DOWNLOAD_ALBUM_ON_STAR` remain migration defaults for existing and env-only installations.
+Use **Streams & hearts → Heart download priority** in the admin UI to order Soulseek, Deezer, and Lidarr and independently choose whether each handles song hearts, album hearts, or both. Octo tries eligible sources from top to bottom and stops at the first success. `DOWNLOAD_SOURCE`, `DOWNLOAD_ON_STAR`, and `DOWNLOAD_ALBUM_ON_STAR` remain migration defaults for existing and env-only installations.
 
 Lidarr works at album level, so enabling it for song hearts still fetches the song's full album. It is last and disabled by default; configure its URL, API key, root folder, and profiles on the Lidarr page, then enable the heart types you want in the priority list.
 
@@ -260,42 +261,33 @@ than hiding it afterwards, so nothing downstream holds it; names already written
 
 ### Why is Octo a refactor of [octo-radiostarr](https://github.com/winters27/octo-radiostarr)?
 
-The earlier project leaned on SquidWTF (a public TIDAL proxy) for streaming. In April 2026 Tidal hardened their API and broke every TIDAL proxy at once. Rather than patch around it, Octo was rebuilt on two sources that don't depend on a single fragile vendor API: YouTube via yt-dlp, and Soulseek via slskd. The old repo is archived; new development happens here.
+The earlier project leaned on SquidWTF (a public TIDAL proxy) for streaming. In April 2026 Tidal hardened their API and broke every TIDAL proxy at once. Octo now uses the Deezer backend adapted from octo-fiesta for direct MP3 streams and configurable permanent downloads, with Soulseek through slskd retained as a peer source. The old repo is archived; new development happens here.
 
 ### How is Octo different from [octo-fiesta](https://github.com/V1ck3s/octo-fiesta)?
 
-Octo's earliest commits descended from [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) (via [bransoned/octo-fiestarr](https://github.com/bransoned/octo-fiestarr)), so the *concept* is the same: a Subsonic proxy that fills in songs you don't own. The implementation has diverged completely:
+Octo's earliest commits descended from [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) (via [bransoned/octo-fiestarr](https://github.com/bransoned/octo-fiestarr)). Octo's Deezer resolver adapts the account-session and audio-decryption flow from octo-fiesta, while preserving Octo's own Subsonic proxy, radio, acquisition, and file-management paths:
 
-- **Octo-fiesta's model:** when you play an unowned song, it hits the Qobuz / Deezer / Yandex API with your paid streaming credentials, decrypts the audio, and writes the FLAC to disk permanently. Every play = a downloaded file. Excellent if you have a paid streaming sub and want a unified Subsonic UX over your subscription catalog.
-- **Octo's model:** when you play an unowned song, you get a *YouTube preview* with zero disk impact. If you decide you want to keep it, you star it and Octo grabs the FLAC from Soulseek peers. Preview is free, ownership is opt-in.
+- **Playback:** an unowned song streams as MP3 from Deezer without writing a file. Radio and ordinary track playback use the same resolver.
+- **Acquisition:** heart a song or album to download from Soulseek, Deezer, or Lidarr in the order you choose. Deezer download quality defaults to FLAC and falls back to MP3 when unavailable.
 
-Different audience. If you pay for streaming and want every play to enrich your library, octo-fiesta is the right tool. If you don't pay for streaming and want discovery + selective FLAC ownership, Octo is the right tool.
-
-Other practical differences in Octo: a real admin UI, multi-peer Soulseek retry, HTTP Range support for iOS clients, Last.fm-driven discovery and radio, an interactive installer.
-
+Octo-fiesta supports multiple catalogs and Subsonic-proxy behaviors that Octo does not. Octo adds its Last.fm stations, admin UI, ordered acquisition sources, and multi-peer Soulseek retry around Deezer playback.
 
 ### Background
 
-Octo is a full refactor of [octo-radiostarr](https://github.com/winters27/octo-radiostarr). That earlier project ran on SquidWTF + Tidal and broke when Tidal hardened their API in April 2026. Octo pivots to **YouTube via yt-dlp** for previews and **Soulseek via slskd** for downloads, neither of which depends on a single fragile public API.
+Octo is a full refactor of [octo-radiostarr](https://github.com/winters27/octo-radiostarr). That earlier project ran on SquidWTF + Tidal and broke when Tidal hardened their API in April 2026. Octo now uses Deezer directly for streams and configurable downloads, with Soulseek via slskd retained for peer downloads.
 
 ### Architecture
 
-Three Docker containers in one `docker compose` stack:
+Two Docker containers run in the `docker compose` stack. Deezer is accessed directly over HTTPS:
 
 ```
-┌──────────────────────────┐         ┌──────────────────┐
-│  Subsonic clients        │────────▶│       octo       │──▶  Navidrome
-│  (Feishin, Arpeggi, …)   │         │   (port 5274)    │     (your library)
-└──────────────────────────┘         └──┬───────────┬───┘
-                                        │           │
-                              ┌─────────▼──┐    ┌───▼─────┐
-                              │ yt-dlp shim│    │  slskd  │
-                              │  sidecar   │    │ Soulseek│
-                              └────────────┘    └─────────┘
+Subsonic clients ──▶ Octo ──▶ Navidrome
+                      ├────▶ Deezer
+                      └────▶ slskd (Soulseek)
 ```
 
 - **`octo`** (port 5274): the proxy + admin UI. Personalized Radio, its state store, recommendation queue, and refresh worker all run in this process. Octo hijacks the Subsonic endpoints that need enrichment and passes everything else through to Navidrome.
-- **`yt-dlp-shim`** (internal): wraps `yt-dlp` behind two HTTP endpoints. Process-isolation keeps yt-dlp's frequent extractor breakage from affecting the rest of the stack.
+- **Deezer**: direct HTTPS playback and downloads use the configured ARL. Stream audio is MP3; download quality is configurable.
 - **`slskd`** (port 5030): Soulseek client with REST API. Octo authenticates and queues downloads.
 
 Navidrome is **not** part of the stack. Octo just talks to whatever Navidrome you already have.
@@ -379,7 +371,7 @@ Delete action has to be on for it to do anything. Both always answer in JSON.
 
 `LIBRARY_ACTIONS_REVIEW` gives each allowed user a Review playlist, where Octo asks about the
 downloads a person can settle by listening: AcoustID had never heard the recording, was not
-sure of it, or heard a different one in a YouTube download. A download is asked about in the
+sure of it, or heard a different one in a Deezer download. A download is asked about in the
 playlist of the person who requested it when they are on the allowlist, and of every allowed
 user otherwise. Answer by adding the track to an action playlist, by Keep (a fifth action that
 removes nothing, on five stars by default), or by removing it from Review, which means "fine,
@@ -416,8 +408,8 @@ are ignored rather than acted on. A track with no AcoustID entry at all is alway
 and year over the peer's own tags. `NAME_FROM_MATCH` goes one step further and names the file
 from the match as well (artist folder, title, album and track number), so the path and the
 tags come from one decision; it is off by default because a canonical name is not always the
-one you file under, and it only ever names files Octo downloads and confirms. YouTube
-downloads are identified too, but never rejected: YouTube has no second candidate, so a
+one you file under, and it only ever names files Octo downloads and confirms. Deezer
+downloads are identified too, but never rejected: there is no second catalog candidate, so a
 disagreement is kept and, with the Review playlist on, asked about. Verification needs
 `fpcalc` in the runtime image (`libchromaprint-tools`); without it the feature logs once and
 accepts everything. A song asked for with an ISRC (an album track Deezer listed) is also held
@@ -498,7 +490,7 @@ decade (`Rock.png`), replaces its cover, and replacing the picture shows without
 
 ### Download path on Windows and manual installs
 
-`DOWNLOAD_PATH` in `.env` is a HOST path: it is bind-mounted as `/music` into the octo, yt-dlp-shim, and slskd containers, and it is the only path you change to move the library. Container-side settings (Octo's `Library__DownloadPath`, slskd's downloads dir) stay `/music`.
+`DOWNLOAD_PATH` in `.env` is a HOST path: it is bind-mounted as `/music` into the octo and slskd containers, and it is the only path you change to move the library. Container-side settings (Octo's `Library__DownloadPath`, slskd's downloads dir) stay `/music`.
 
 - **Windows (Docker Desktop)**: use forward slashes, e.g. `DOWNLOAD_PATH=E:/Media/Music`. Do not put a drive-letter path in the admin UI's download path field; that field is a path inside the container.
 - **Manual installs** (not using the bundled compose file): slskd's `directories.downloads` must resolve to the same directory Octo's `Library:DownloadPath` points at, or Octo will never see finished downloads. Set it with the `SLSKD_DOWNLOADS_DIR` environment variable, and note that a value set in `slskd.yml` overrides that env var (slskd precedence: env vars < yaml).
@@ -513,7 +505,9 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 ### Playback and acquisition
 
-Tracks already in your library play locally through Navidrome. Missing external results stream from YouTube. Playback does not acquire a permanent copy; heart the song or album to run the configured source priority.
+Tracks already in your library play locally through Navidrome. Missing external results stream from Deezer as MP3 without acquiring a permanent copy; heart the song or album to run the configured source priority.
+
+Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. An optional `DEEZER_ARL_FALLBACK` gives Octo another session to try if the primary expires or is rate-limited. Both ARLs are masked when read back. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. Settings changed in the dashboard apply without restarting Octo.
 
 Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. The setting also changes what searches advertise for external tracks, so it needs a restart, and clients that cached earlier results should re-search after you change it.
 
@@ -531,7 +525,7 @@ A download is filed once it has been tagged, so the album Deezer finds for a tra
 
 Every download is tagged from its source, Deezer and, with verification on, MusicBrainz. A fingerprint-confirmed recording's id is written to `MUSICBRAINZ_TRACKID`, so no later pass has to identify the file again; the album id is deliberately not written, because Navidrome groups albums by it before the album name and a track carrying it beside one without it splits an album.
 
-Cover art comes from a chain: the Cover Art Archive when a fingerprint named the release (`COVER_ART_ARCHIVE`), then the catalog's own cover, then Deezer, iTunes and Last.fm by name, and last the file's own art. A cover that is not square is a video thumbnail and counts as missing (`REPLACE_VIDEO_COVERS`); when nothing better turns up its centre square is used, which for a YouTube "Topic" upload is the real cover inside the letterbox. `COVER_FILE` also writes `cover.jpg` beside the file, only in the `Organized` layout and only in a folder the download created, because Navidrome ranks `cover.*` above embedded art and a new file in an existing album folder would change that album's cover.
+Cover art comes from a chain: the Cover Art Archive when a fingerprint named the release (`COVER_ART_ARCHIVE`), then the catalog's own cover, then Deezer, iTunes and Last.fm by name, and last the file's own art. A cover that is not square is a video thumbnail and counts as missing (`REPLACE_VIDEO_COVERS`); when nothing better turns up its centre square is used, which can recover artwork embedded inside older letterboxed thumbnails. `COVER_FILE` also writes `cover.jpg` beside the file, only in the `Organized` layout and only in a folder the download created, because Navidrome ranks `cover.*` above embedded art and a new file in an existing album folder would change that album's cover.
 
 `LYRICS_FETCH` (off by default) writes lyrics beside each download, looked up in the background so a slow service never holds up the next download, and answers `getLyricsBySongId` live for any song as it plays when the library has none, external songs included. Synced lyrics go in a `.lrc` and plain ones in a `.txt` with the audio file's name, both of which Navidrome reads at request time without a rescan; an instrumental gets nothing, and a file that already has lyrics is never touched. `LYRICS_SOURCES` sets the order: `kugou` (timed word by word for most songs, but an unofficial API that can change without notice), `lrclib` (open, timed line by line), `lyricsovh` (plain text), and `netease`, which goes much deeper on non-Western and older music but is also an unofficial API, so it only runs when you list it. Leave a source out and it is never contacted. The order was chosen by measurement: see [docs/lyrics-source-eval.md](docs/lyrics-source-eval.md). Every source is held to the same rule before its lyrics are used: the same title (a remix or a live take never stands in for the original), the same artist, and a length within three seconds. Credits at the top of a lyric are stripped.
 
@@ -552,7 +546,7 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `getInternetRadioStations` | append startup-warmed authenticated Octo stations immediately, with a one-starter same-request fallback, while preserving ordinary internet radio |
 | `createInternetRadioStation`, `updateInternetRadioStation`, `deleteInternetRadioStation` | protect Octo stations while relaying ordinary internet-radio mutations |
 | `/radio/stream/{token}` | consume the ready MP3 pool, optionally frame its existing artist/title as client-requested ICY metadata, and replenish it until disconnect |
-| `stream` | YouTube proxy with Range support, mp4/m4a passthrough |
+| `stream` | Deezer MP3 stream with stable `audio/mpeg` metadata |
 | `getCoverArt` | Deezer → iTunes → Last.fm aggregator with Octo watermark |
 | `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` |
 | `getAlbum` | external album tracklists, and fills in tracks you're missing from an album you own |
@@ -601,7 +595,7 @@ Yes. slskd downloads are full FLACs from peer libraries that already have ID3 ta
 The next source in your heart order is tried. If every one fails and notifications are set up, you get a **Download failed** message; your music app itself hears nothing, because the heart was answered straight away. The heart may clear on the app's next sync, since Navidrome never stored a favourite for a song it doesn't have. Try again later or grab the file by hand.
 
 **Can it run without Soulseek?**
-Yes. Enable YouTube for MP3 downloads, Lidarr for album-level heart acquisition, or disable every song-heart source to keep discovery without automatic acquisition.
+Yes. Enable Deezer for direct downloads, Lidarr for album-level heart acquisition, or disable every song-heart source to keep discovery without automatic acquisition.
 
 **Can it run without Last.fm?**
 Yes. Existing snapshots are served first; Starter and pinned stations can fall back to accessible local seeds/genres, but fresh external discovery is degraded. The Last.fm pane reports that state explicitly.
@@ -629,13 +623,12 @@ Project layout:
 | `octo/Controllers/` | Subsonic API surface, admin API |
 | `octo/Services/Soulseek/` | slskd client, multi-peer download logic |
 | `octo/Services/Lidarr/` | Lidarr API, album submission, import reconciliation |
-| `octo/Services/YouTube/` | shim HTTP client |
+| `octo/Services/Deezer/` | Deezer playback and download resolver |
 | `octo/Services/CoverArt/` | Deezer / iTunes / Last.fm aggregator |
 | `octo/Services/LastFm/` | Last.fm client, Radio state/recommendations, in-process refresh queue and worker |
 | `octo/Services/Subsonic/` | request parsing, response building |
 | `octo/Services/Admin/` | settings file writer (atomic, deep-merge) |
 | `octo/wwwroot/admin/` | the admin UI (vanilla JS, hand-rolled CSS, no build step) |
-| `yt-dlp-shim/` | Python/Flask sidecar (~200 lines) |
 
 </details>
 
@@ -650,7 +643,6 @@ Project layout:
 - [**Navidrome**](https://www.navidrome.org/): the music server Octo proxies.
 - [**slskd**](https://github.com/slskd/slskd): Soulseek with a REST API.
 - [**Lidarr**](https://github.com/Lidarr/Lidarr): optional album acquisition and import manager.
-- [**yt-dlp**](https://github.com/yt-dlp/yt-dlp): makes YouTube preview feasible.
 - [**Last.fm**](https://www.last.fm/api): similar-tracks API.
-- [**V1ck3s/octo-fiesta**](https://github.com/V1ck3s/octo-fiesta): the upstream root of this lineage. The Qobuz/Deezer/Yandex Subsonic-proxy concept that Octo eventually rebuilt around YouTube + Soulseek started here.
+- [**V1ck3s/octo-fiesta**](https://github.com/V1ck3s/octo-fiesta): source for Octo's adapted Deezer account-session and audio-decryption backend, and the upstream root of this lineage.
 - [**bransoned/octo-fiestarr**](https://github.com/bransoned/octo-fiestarr): the intermediate fork of octo-fiesta whose codebase Octo's earliest commits descended from.

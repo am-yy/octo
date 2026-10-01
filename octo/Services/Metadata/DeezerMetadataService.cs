@@ -8,7 +8,7 @@ using Octo.Services.Common;
 namespace Octo.Services.Metadata;
 
 /// <summary>
-/// Enriches external (YouTube-resolved) tracks with real album/artist metadata
+/// Enriches external (Deezer-resolved) tracks with real album/artist metadata
 /// from Deezer's public API. Keyless and no ARL — the ARL that expires on the
 /// music bot is only for Deezer AUDIO; metadata endpoints are open.
 ///
@@ -19,7 +19,7 @@ namespace Octo.Services.Metadata;
 public class DeezerMetadataService : IDisposable
 {
     public record TrackMeta(string? AlbumTitle, string? AlbumCoverUrl, int? Year, int? Duration,
-        string? ArtistName, string? ArtistImageUrl);
+        string? ArtistName, string? ArtistImageUrl, string? DeezerId = null);
     public record ArtistMeta(string? Name, string? ImageUrl);
 
     /// <summary>
@@ -42,7 +42,7 @@ public class DeezerMetadataService : IDisposable
 
     /// <summary>One track of an album, with the real length and position.</summary>
     public record AlbumTrack(string Title, string Artist, int? Duration,
-        int? TrackPosition, int? DiscNumber, string? Isrc);
+        int? TrackPosition, int? DiscNumber, string? Isrc, string? DeezerId = null);
 
     /// <summary>An album plus its full tracklist. RecordType is the catalog's own word for it:
     /// album, ep, single or compile.</summary>
@@ -251,7 +251,7 @@ public class DeezerMetadataService : IDisposable
                     year = y;
                     yearUnresolved = yearTransient;
                 }
-                meta = new TrackMeta(albTitle, cover, year, duration, artName, artImg);
+                meta = new TrackMeta(albTitle, cover, year, duration, artName, artImg, t.TryGetProperty("id", out var tid) ? tid.ToString() : null);
             }
         }
         catch (Exception ex)
@@ -761,7 +761,8 @@ public class DeezerMetadataService : IDisposable
                         var tArtist = t.TryGetProperty("artist", out var ta) ? Str(ta, "name") : null;
                         tracks.Add(new AlbumTrack(
                             tTitle, tArtist ?? artist, Int(t, "duration"),
-                            Int(t, "track_position"), Int(t, "disk_number"), Str(t, "isrc")));
+                            Int(t, "track_position"), Int(t, "disk_number"), Str(t, "isrc"),
+                            t.TryGetProperty("id", out var trackId) ? trackId.ToString() : null));
                     }
 
                     var total = Int(tr.Doc.RootElement, "total");
@@ -893,16 +894,25 @@ public class DeezerMetadataService : IDisposable
     /// comes back with no hit and must not be cached.
     /// </summary>
     private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackAsync(string? artist, string? title,
-        CancellationToken ct, bool background = false)
+        CancellationToken ct, bool background = false, IReadOnlySet<string>? excluded = null, bool readableOnly = false)
     {
         foreach (var variant in SongIdentity.QueryVariants(title, artist).Take(TrackSearches))
         {
             var r = await GetJsonAsync($"{Base}/search?q={Uri.EscapeDataString(variant.Text)}&limit={MatchCandidates}", ct, background);
             if (r.Transient) return (r, null);
-            if (BestMatch(r.Doc, artist, title) is JsonElement hit) return (r, hit);
+            if (BestMatch(r.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (r, hit);
             r.Dispose();
         }
         return (null, null);
+    }
+
+    /// <summary>Find another readable copy using the same identity guards as normal search.</summary>
+    public async Task<string?> FindAlternativeTrackIdAsync(string artist, string title,
+        IReadOnlySet<string> excluded, CancellationToken ct)
+    {
+        var (response, hit) = await FindTrackAsync(artist, title, ct, excluded: excluded, readableOnly: true);
+        using (response)
+            return hit is JsonElement track && track.TryGetProperty("id", out var id) ? id.ToString() : null;
     }
 
     /// <summary>
@@ -961,7 +971,8 @@ public class DeezerMetadataService : IDisposable
     /// as fact. Requiring at least one positive match is what stops a hit that states
     /// nothing at all from matching everything.
     /// </summary>
-    private static JsonElement? BestMatch(JsonDocument? doc, string? artist, string? title)
+    private static JsonElement? BestMatch(JsonDocument? doc, string? artist, string? title,
+        IReadOnlySet<string>? excluded = null, bool readableOnly = false)
     {
         if (doc is null) return null;
         if (!doc.RootElement.TryGetProperty("data", out var data)
@@ -969,6 +980,8 @@ public class DeezerMetadataService : IDisposable
 
         foreach (var hit in data.EnumerateArray())
         {
+            if (excluded is not null && hit.TryGetProperty("id", out var id) && excluded.Contains(id.ToString())) continue;
+            if (readableOnly && (!hit.TryGetProperty("readable", out var readable) || readable.ValueKind != JsonValueKind.True)) continue;
             var titleVerdict = CompareTitles(title, Str(hit, "title"));
             var artistVerdict = CompareArtists(artist,
                 hit.TryGetProperty("artist", out var a) ? Str(a, "name") : null);

@@ -8,26 +8,19 @@ using Octo.Services.Common;
 using Octo.Services.CoverArt;
 using Octo.Services.LastFm;
 using Octo.Services.Metadata;
-using Octo.Services.YouTube;
 
 namespace Octo.Services.Soulseek;
 
 /// <summary>
-/// Music metadata service for the YouTube-first / Soulseek-on-star architecture.
+/// Catalog metadata for Deezer playback and Soulseek/Deezer acquisition.
 ///
-/// Radio queue creation is YouTube-only and lightweight: one yt-dlp search per
-/// Last.fm similar track. We do NOT query Soulseek here — Soulseek is reserved
-/// for the explicit "user wants to keep this" action (star / permanent download)
-/// in SoulseekDownloadService.
-///
-/// External IDs are kept short (~30-80 chars) so Subsonic clients accept them.
-/// Format:  yt|{videoId}|{artist_b64}|{title_b64}|{durationSec}
+/// Queues register placeholders; catalog IDs resolve on playback or bounded prewarm.
+/// Soulseek searches happen only when acquiring a permanent copy.
 /// </summary>
 public class SoulseekMetadataService : IMusicMetadataService
 {
     public const string ProviderName = "soulseek";
 
-    private readonly YouTubeResolver _youtube;
     private readonly ExternalIdRegistry _idRegistry;
     private readonly DeezerMetadataService _deezer;
     private readonly CoverArtAggregator _coverArt;
@@ -35,14 +28,12 @@ public class SoulseekMetadataService : IMusicMetadataService
     private readonly ILogger<SoulseekMetadataService> _logger;
 
     public SoulseekMetadataService(
-        YouTubeResolver youtube,
         ExternalIdRegistry idRegistry,
         DeezerMetadataService deezer,
         CoverArtAggregator coverArt,
         ILogger<SoulseekMetadataService> logger,
         LastFmService? lastFm = null)
     {
-        _youtube = youtube;
         _idRegistry = idRegistry;
         _deezer = deezer;
         _coverArt = coverArt;
@@ -63,13 +54,13 @@ public class SoulseekMetadataService : IMusicMetadataService
         if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title))
             return Task.FromResult(new List<Song>());
 
-        // INSTANT placeholder. We do NOT call YouTube here — at queue-build time we'd
+        // INSTANT placeholder. We do NOT call Deezer here — at queue-build time we'd
         // rate-limit ourselves into oblivion (Arpeggio fans out 5-10 search3 calls
-        // per radio session). YouTube resolution is deferred to /rest/stream where
+        // per radio session). Deezer resolution is deferred to /rest/stream where
         // it happens once per actual playback, sequentially as the user advances.
         var externalId = _idRegistry.Register(new SoulseekRouting
         {
-            // YouTubeId intentionally null — resolved lazily on play.
+            // Catalog ID intentionally null — resolved lazily on play.
             Artist = artist,
             Title = title,
             Duration = durationSeconds
@@ -114,8 +105,8 @@ public class SoulseekMetadataService : IMusicMetadataService
     // quota and poisoned the metadata caches (issue #8). DeezerRateLimiter now holds that
     // budget centrally, so this figure is about how long a user waits, not about safety.
     //
-    // 12 is the same "first page" figure PrewarmYouTubeIdsAsync already uses. It must
-    // stay above TopDurationResolveLimit, or the rows that get a YouTube length hint
+    // 12 is the same "first page" figure PrewarmDeezerIdsAsync already uses. It must
+    // stay above TopDurationResolveLimit, or the rows that get a Deezer length hint
     // would be reading a duration nobody resolved.
     private const int SearchEnrichLimit = 12;
 
@@ -262,8 +253,7 @@ public class SoulseekMetadataService : IMusicMetadataService
 
     /// <summary>
     /// Look lengths up off the request, one song at a time, and store what is found on the
-    /// registry. Order: Deezer, then Last.fm's track.getInfo, then a YouTube video's length
-    /// inside the sane range. Songs that already have a metadata length are skipped.
+    /// registry. Order: Deezer, then Last.fm's track.getInfo. Songs that already have a metadata length are skipped.
     /// </summary>
     private void WarmLengths(IEnumerable<Song> songs)
     {
@@ -306,43 +296,13 @@ public class SoulseekMetadataService : IMusicMetadataService
             if (_idRegistry.RememberLength(id, info?.Duration, LengthSource.LastFm)) return;
         }
 
-        // Last, and only while the shim has room for background work: a video's length is
-        // the weakest guess there is, and not worth making a play wait for.
-        if (_idRegistry.Lookup(id) is { } routing && SongLength.Shown(routing).Source >= LengthSource.Video) return;
-        if (!await _prewarmGate.WaitAsync(PrewarmQueueWait, ct)) return;
-        try
-        {
-            // Length only. The video is not pinned for playback, so which video plays and
-            // what a download is checked against both stay as they were.
-            var hit = await _youtube.MetaAsync($"{artist} {title}", background: true, ct: ct);
-            _idRegistry.RememberLength(id, hit?.Duration, LengthSource.Video);
-        }
-        finally { _prewarmGate.Release(); }
     }
 
-    // Resolve the ACTUAL YouTube video for the top of the list at search time and
-    // use its duration. Deezer's duration is a different recording (e.g. "Fade"
-    // is 3:13 on Deezer but the YouTube upload that plays is 3:45), so the scrub
-    // bar overran and the client's advance logic broke. Storing the videoId also
-    // means playback reuses this exact video (durations match) and it is prewarmed.
     private const int TopDurationResolveLimit = 8;
-
-    // Shared across ALL invocations, not created per call. The shim runs 5
-    // yt-dlp processes at a time; per-invocation semaphores let the three
-    // prewarm triggers (radio, scrobble, external search) stack to 12
-    // concurrent /search against it, and the old value of 6 here exceeded the
-    // whole gate on its own. Sized to the shim's background capacity
-    // (MAX_CONCURRENT_YTDLP - GATE_RESERVE_INTERACTIVE). This service is
-    // registered as a singleton, so an instance field is already process-wide
-    // without being static (which would make parallel test runs hostile).
     private readonly SemaphoreSlim _prewarmGate = new(3);
     private static readonly TimeSpan PrewarmQueueWait = TimeSpan.FromSeconds(2);
 
-    // Cover art never touches the shim: it hits Deezer/iTunes/Last.fm over HTTP, and
-    // Deezer's own background lane (DeezerRateLimiter.BackgroundPermits) already bounds
-    // that traffic. It needs its own gate, not _prewarmGate above: sharing that one meant
-    // 24 cover-art tasks and 12 YouTube tasks fought over 3 permits with a 2s bounded
-    // wait, so most cover fetches timed out and the ones that won starved YouTube prewarm.
+    // Cover warming has its own gate so catalog lookups cannot starve artwork.
     private readonly SemaphoreSlim _coverArtPrewarmGate = new(6);
 
     public async Task ResolveTopDurationsAsync(List<Song> songs, CancellationToken ct = default)
@@ -352,24 +312,11 @@ public class SoulseekMetadataService : IMusicMetadataService
             if (!await _prewarmGate.WaitAsync(PrewarmQueueWait, ct)) return;
             try
             {
-                // Fast metadata-only lookup (flat search, no URL solve). Pass the
-                // Deezer duration as a hint so it picks the closest-length canonical
-                // video (not a long-form/compilation upload); playback reuses the
-                // stored videoId, so the shown length matches the audio.
-                var hit = await _youtube.MetaAsync($"{song.Artist} {song.Title}", song.Duration, ct: ct);
-                if (hit is { VideoId.Length: > 0 } && hit.Duration is int d && d > 0)
-                {
-                    // Shown only inside the sane range. An hour-long upload is a mix or a
-                    // live set, and its length is no better than the one the row has.
-                    if (SongLength.SaneVideoLength(d) is int shown) song.Duration = shown;
-                    var routing = _idRegistry.Lookup(song.Id);
-                    if (routing != null)
-                    {
-                        routing.YouTubeId = hit.VideoId; // playback reuses this exact video
-                        routing.Duration = d;
-                    }
-                    _idRegistry.RememberLength(song.Id, d, LengthSource.Video);
-                }
+                var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct);
+                if (hit is null) return;
+                _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId);
+                _idRegistry.RememberLength(song.Id, hit.Duration, LengthSource.Deezer);
+                if (hit.Duration is > 0) song.Duration = hit.Duration;
             }
             catch { /* best-effort; keeps the existing duration on a miss */ }
             finally { _prewarmGate.Release(); }
@@ -377,37 +324,23 @@ public class SoulseekMetadataService : IMusicMetadataService
         await Task.WhenAll(tasks);
     }
 
-    /// <summary>
-    /// Fire-and-forget background prewarm: resolve the YouTube videoId (and via
-    /// shim's automatic prefetch, the stream URL) for the first <paramref name="topN"/>
-    /// placeholder songs from a search. Without this, Arpeggi's ~10s HTTP timeout
-    /// fires while the cold yt-dlp ytsearch1: + yt-dlp -g chain is still running,
-    /// the client cancels, and external songs never play.
-    ///
-    /// Only the top hits matter: search clients render in order and users almost
-    /// never click past the first screen of results. Resolving 150 placeholders
-    /// would saturate the shim's yt-dlp gate and waste work.
-    /// </summary>
-    public Task PrewarmYouTubeIdsAsync(IEnumerable<Song> songs, int topN, CancellationToken ct = default)
+    /// <summary>Resolve catalog track IDs for the next few songs, outside playback requests.</summary>
+    public Task PrewarmDeezerIdsAsync(IEnumerable<Song> songs, int topN, CancellationToken ct = default)
     {
         var ids = songs
             .Where(s => !string.IsNullOrEmpty(s.Id))
             .Select(s => s.Id);
-        return PrewarmYouTubeIdsForSongIdsAsync(ids, topN, ct);
+        return PrewarmDeezerIdsForSongIdsAsync(ids, topN, ct);
     }
 
-    public Task PrewarmYouTubeIdsForSongIdsAsync(IEnumerable<string> songIds, int topN, CancellationToken ct = default)
+    public Task PrewarmDeezerIdsForSongIdsAsync(IEnumerable<string> songIds, int topN, CancellationToken ct = default)
     {
-        // Skip ids whose YouTube resolution is already cached on the routing —
-        // those are already warm and don't need a yt-dlp roundtrip. This is the
-        // path used by the scrobble-driven sliding window: as the user advances
-        // through a queue most upcoming items will still be cold, but if they
-        // jump back to one we resolved earlier we don't burn shim cycles re-doing it.
+        // Existing catalog IDs need no further search.
         var targets = songIds
             .Where(id => !string.IsNullOrEmpty(id))
             .Select(id => (id, routing: _idRegistry.Lookup(id)))
             .Where(t => t.routing != null
-                        && string.IsNullOrEmpty(t.routing!.YouTubeId)
+                        && string.IsNullOrEmpty(t.routing!.DeezerId)
                         && t.routing.HasArtistTitle)
             .Take(topN)
             .ToList();
@@ -423,15 +356,11 @@ public class SoulseekMetadataService : IMusicMetadataService
             try
             {
                 var routing = t.routing!;
-                if (!string.IsNullOrEmpty(routing.YouTubeId)) return;
-                var hit = await _youtube.SearchAsync($"{routing.Artist} {routing.Title}",
-                    routing.Duration, background: true, ct: ct);
-                if (hit is { VideoId: { Length: > 0 } })
-                {
-                    routing.YouTubeId = hit.VideoId;
-                    if (hit.Duration is int d) routing.Duration = d;
-                    _idRegistry.RememberLength(t.id, hit.Duration, LengthSource.Video);
-                }
+                if (!string.IsNullOrEmpty(routing.DeezerId)) return;
+                var hit = await _deezer.EnrichTrackAsync(routing.Artist, routing.Title,
+                    includeYear: false, background: true, ct: ct);
+                _idRegistry.RememberDeezerTrack(t.id, hit?.DeezerId);
+                _idRegistry.RememberLength(t.id, hit?.Duration, LengthSource.Deezer);
             }
             catch { /* best-effort warm; never throw out of fire-and-forget */ }
             finally { _prewarmGate.Release(); }
@@ -443,7 +372,7 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// Fire-and-forget background prewarm of cover art for the first <paramref name="topN"/>
     /// songs of a search, so a client that renders them a moment later finds the image
     /// already in <see cref="CoverArtAggregator"/>'s cache. Uses its own
-    /// <see cref="_coverArtPrewarmGate"/>, separate from the shim-bound YouTube prewarm
+    /// <see cref="_coverArtPrewarmGate"/>, separate from the catalog ID prewarm
     /// gate, and passes background: true through to the cover sources so this can never
     /// queue behind a live search or getCoverArt request.
     /// </summary>
@@ -693,6 +622,7 @@ public class SoulseekMetadataService : IMusicMetadataService
                 DiscNumber = track.DiscNumber,
                 TotalTracks = detail.Tracks.Count,
                 Isrc = track.Isrc,
+                DeezerId = track.DeezerId,
             });
 
             album.Songs.Add(new Song
@@ -1055,7 +985,7 @@ public class SoulseekMetadataService : IMusicMetadataService
 
     // ====== Short opaque ID format ======
     // Pipe-delimited fields, base64url where needed.
-    //   yt|{videoId}|{artistB64}|{titleB64}|{durationSec}
+    //   dz|{trackId}|{artistB64}|{titleB64}|{durationSec}
     // Total length ~30-80 chars depending on artist/title length.
 
     public static string EncodeExternalId(SoulseekRouting r)
@@ -1063,21 +993,22 @@ public class SoulseekMetadataService : IMusicMetadataService
         var artist = r.Artist ?? "";
         var title = r.Title ?? "";
         var dur = r.Duration?.ToString() ?? "";
-        return $"yt|{r.YouTubeId ?? ""}|{B64UrlEncode(artist)}|{B64UrlEncode(title)}|{dur}";
+        return $"dz|{r.DeezerId ?? ""}|{B64UrlEncode(artist)}|{B64UrlEncode(title)}|{dur}";
     }
 
     public static SoulseekRouting? TryDecodeExternalId(string? externalId)
     {
         if (string.IsNullOrWhiteSpace(externalId)) return null;
         var parts = externalId.Split('|');
-        if (parts.Length < 4 || parts[0] != "yt") return null;
+        if (parts.Length < 4 || parts[0] is not ("yt" or "dz")) return null;
         try
         {
             int? duration = null;
             if (parts.Length >= 5 && int.TryParse(parts[4], out var d)) duration = d;
             return new SoulseekRouting
             {
-                YouTubeId = parts[1],
+                YouTubeId = parts[0] == "yt" ? parts[1] : null,
+                DeezerId = parts[0] == "dz" ? parts[1] : null,
                 Artist = B64UrlDecode(parts[2]),
                 Title = B64UrlDecode(parts[3]),
                 Duration = duration
@@ -1123,7 +1054,10 @@ public enum RoutingKind
 public class SoulseekRouting
 {
     public RoutingKind Kind { get; set; } = RoutingKind.Song;
+    /// <summary>Legacy identity only. Never used to resolve Deezer media.</summary>
     public string? YouTubeId { get; set; }
+    /// <summary>Catalog track ID, not part of the stable Octo ID.</summary>
+    public string? DeezerId { get; set; }
     public string? Artist { get; set; }
     public string? Title { get; set; }
     public string? Album { get; set; }
@@ -1166,6 +1100,6 @@ public class SoulseekRouting
     /// replaces a stronger one.</summary>
     public LengthSource ShownDurationSource { get; set; }
 
-    public bool HasYouTube => !string.IsNullOrEmpty(YouTubeId);
+    public bool HasDeezer => !string.IsNullOrEmpty(DeezerId);
     public bool HasArtistTitle => !string.IsNullOrEmpty(Artist) && !string.IsNullOrEmpty(Title);
 }

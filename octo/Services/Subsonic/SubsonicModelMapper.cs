@@ -163,7 +163,7 @@ public class SubsonicModelMapper
         List<ExternalPlaylist> externalPlaylists,
         List<object> trailingLocalSongs)
     {
-        // Local songs first, external (YouTube placeholder) after. The earlier
+        // Local songs first, external (Deezer placeholder) after. The earlier
         // version flipped this to put externals first because Arpeggi's "play
         // artist radio" feature reused search3 with songCount=2000 — locals
         // first would crowd externals out of its top-N. Now Arpeggi/Narjo

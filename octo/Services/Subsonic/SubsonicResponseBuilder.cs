@@ -682,12 +682,8 @@ public partial class SubsonicResponseBuilder
         // Subsonic clients (Arpeggio in particular) drop entries whose cover-art
         // request 404s, so making these ids resolvable is what gets external songs
         // queued and played at all.
-        // External (radio) songs stream as YouTube format-140 audio: m4a / AAC LC
-        // inside an mp4 container, ~128kbps. The shim does NOT transcode — it
-        // proxies the googlevideo bytes directly. Declared metadata MUST match the
-        // real bytes, otherwise Subsonic clients prep the wrong decoder and the
-        // play silently fails (Feishin holds at "loading", Arpeggi drops the entry
-        // from the queue). Earlier versions claimed mp3/192k here; that was a lie.
+        // Native Deezer playback is MP3_320 with MP3_128 fallback. The declared
+        // container must match both; estimated bitrate is never sent for outside songs.
         // With WaitForLosslessOnPlay on, /rest/stream serves the fetched FLAC under this
         // same id, so it has to be declared as one. 950 rather than 1411 because that
         // figure is uncompressed PCM and real FLAC compresses well below it: a measured
@@ -700,9 +696,9 @@ public partial class SubsonicResponseBuilder
         // only when it is not: radio and the Discovery blend put library MP3s here too.
         var losslessExternal = !song.IsLocal && _externalsAreLossless;
         var localSuffix = string.IsNullOrWhiteSpace(song.Suffix) ? "flac" : song.Suffix.Trim().ToLowerInvariant();
-        var bitRate  = song.IsLocal ? song.BitRate is > 0 ? song.BitRate.Value : 1411 : losslessExternal ? 950 : 128;
-        var suffix   = song.IsLocal ? localSuffix : losslessExternal ? "flac" : "m4a";
-        var contentType = song.IsLocal ? ContentTypeFor(localSuffix) : losslessExternal ? "audio/flac" : "audio/mp4";
+        var bitRate  = song.IsLocal ? song.BitRate is > 0 ? song.BitRate.Value : 1411 : losslessExternal ? 950 : 320;
+        var suffix   = song.IsLocal ? localSuffix : losslessExternal ? "flac" : "mp3";
+        var contentType = song.IsLocal ? ContentTypeFor(localSuffix) : losslessExternal ? "audio/flac" : "audio/mpeg";
         var duration = song.Duration ?? 180;
         var estSize  = (long)duration * bitRate * 125;
 
@@ -797,7 +793,7 @@ public partial class SubsonicResponseBuilder
         {
             // No file on the server, so nothing about one.
             foreach (var key in FileOnlyFields) fields.Remove(key);
-            // A FLAC's rate is a guess until it is fetched; the 128 of the AAC stream is real.
+            // FLAC has no known rate until fetched; MP3 advertises its preferred bitrate.
             if (losslessExternal) fields.Remove("bitRate");
             fields["isExternal"] = true;
         }

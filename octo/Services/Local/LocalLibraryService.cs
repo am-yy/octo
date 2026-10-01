@@ -124,7 +124,7 @@ public class LocalLibraryService : ILocalLibraryService
 
     public (bool isExternal, string? provider, string? type, string? externalId) ParseExternalId(string id)
     {
-        // First check the registry — IDs we generated for YouTube/Soulseek
+        // First check the registry — IDs we generated for Deezer/Soulseek
         // entries are pure base62 (no prefix) so they look identical to local
         // Navidrome IDs to clients but we still know they're ours.
         if (_idRegistry.Lookup(id) != null)

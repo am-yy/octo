@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Globalization;
+
 namespace Octo.Models.Settings;
 
 /// <summary>
@@ -92,16 +95,17 @@ public enum FolderStructure
 /// <summary>
 /// Where a starred track's permanent copy comes from.
 /// </summary>
+[TypeConverter(typeof(LegacyYouTubeSourceConverter<DownloadSource>))]
 public enum DownloadSource
 {
     /// <summary>Lossless FLAC via Soulseek/slskd (default).</summary>
     Soulseek,
 
-    /// <summary>Lossy MP3 via the yt-dlp shim.</summary>
-    YouTube,
+    /// <summary>Deezer account download at the configured quality.</summary>
+    Deezer,
 
-    /// <summary>Try Soulseek FLAC first; fall back to YouTube MP3 if it fails.</summary>
-    SoulseekThenYouTube,
+    /// <summary>Try Soulseek FLAC first; fall back to Deezer if it fails.</summary>
+    SoulseekThenDeezer,
 
     /// <summary>
     /// Submit external track/album hearts to an existing Lidarr instance. Lidarr is
@@ -112,10 +116,11 @@ public enum DownloadSource
 }
 
 /// <summary>A source that can participate in the ordered heart-acquisition chain.</summary>
+[TypeConverter(typeof(LegacyYouTubeSourceConverter<HeartDownloadSource>))]
 public enum HeartDownloadSource
 {
     Soulseek,
-    YouTube,
+    Deezer,
     Lidarr,
 }
 
@@ -186,7 +191,7 @@ public class SubsonicSettings
     /// <summary>
     /// Legacy storage mode for direct-download jobs (default: Permanent).
     /// Environment variable: STORAGE_MODE
-    /// Ordinary external playback always streams from YouTube unless lossless waiting is enabled.
+    /// Ordinary external playback always streams from Deezer unless lossless waiting is enabled.
     /// </summary>
     public StorageMode StorageMode { get; set; } = StorageMode.Permanent;
     
@@ -212,7 +217,7 @@ public class SubsonicSettings
     /// Environment variable: ENABLE_SEARCH_DISCOVERY
     ///
     /// Off, search returns only local library matches: every result plays straight from
-    /// Navidrome instead of resolving through the YouTube shim on first tap, and a search
+    /// Navidrome instead of resolving through Deezer on first tap, and a search
     /// no longer waits on Deezer/Last.fm at all. This only changes what search3/search2
     /// hands back; radio (getSimilarSongs2) and the Last.fm personalized/discovery
     /// stations are unaffected either way.
@@ -324,8 +329,8 @@ public class SubsonicSettings
     /// <summary>
     /// Download source (default: Soulseek). Lidarr applies to hearts only.
     /// Environment variable: DOWNLOAD_SOURCE
-    /// Values: "Soulseek" (FLAC), "YouTube" (MP3), "SoulseekThenYouTube"
-    /// (FLAC with MP3 fallback), or "Lidarr" (heart-only, full album).
+    /// Values: "Soulseek" (FLAC), "Deezer" (configured quality), "SoulseekThenDeezer"
+    /// (FLAC with Deezer fallback), or "Lidarr" (heart-only, full album).
     /// </summary>
     public DownloadSource DownloadSource { get; set; } = DownloadSource.Soulseek;
 
@@ -366,18 +371,18 @@ public class SubsonicSettings
 
         return DownloadSource switch
         {
-            DownloadSource.YouTube => DefaultHeartSources(false, true, false),
-            DownloadSource.SoulseekThenYouTube => DefaultHeartSources(true, true, false),
+            DownloadSource.Deezer => DefaultHeartSources(false, true, false),
+            DownloadSource.SoulseekThenDeezer => DefaultHeartSources(true, true, false),
             DownloadSource.Lidarr => DefaultHeartSources(false, false, true),
             _ => DefaultHeartSources(true, false, false),
         };
     }
 
     private IReadOnlyList<HeartDownloadStep> DefaultHeartSources(
-        bool soulseek, bool youtube, bool lidarr) =>
+        bool soulseek, bool deezer, bool lidarr) =>
         [
             new() { Source = HeartDownloadSource.Soulseek, SongEnabled = soulseek && DownloadOnStar, AlbumEnabled = soulseek && DownloadAlbumOnStar },
-            new() { Source = HeartDownloadSource.YouTube, SongEnabled = youtube && DownloadOnStar, AlbumEnabled = youtube && DownloadAlbumOnStar },
+            new() { Source = HeartDownloadSource.Deezer, SongEnabled = deezer && DownloadOnStar, AlbumEnabled = deezer && DownloadAlbumOnStar },
             new() { Source = HeartDownloadSource.Lidarr, SongEnabled = lidarr && DownloadOnStar, AlbumEnabled = lidarr && DownloadAlbumOnStar },
         ];
     
@@ -390,4 +395,12 @@ public class SubsonicSettings
     /// </summary>
     public bool UseLocalStaging { get; set; } = false;
 
+}
+
+/// <summary>Existing saved/env source names keep working after the backend replacement.</summary>
+public sealed class LegacyYouTubeSourceConverter<T>() : EnumConverter(typeof(T)) where T : struct, Enum
+{
+    public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value) =>
+        base.ConvertFrom(context, culture, value is string name
+            ? name.Replace("YouTube", "Deezer", StringComparison.OrdinalIgnoreCase) : value);
 }

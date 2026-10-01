@@ -46,8 +46,10 @@ services:
       # Where downloaded FLACs land (bind-mount below)
       Library__DownloadPath: /music
 
-      # ----- yt-dlp shim sidecar (internal stream-preview source) -----
-      YouTube__ShimUrl: http://yt-dlp-shim:8080
+      # ----- Deezer account and acquisition quality -----
+      Deezer__Arl: ${DEEZER_ARL:-}
+      Deezer__ArlFallback: ${DEEZER_ARL_FALLBACK:-}
+      Deezer__Quality: ${DEEZER_QUALITY:-FLAC}
 
       # ----- slskd (Soulseek) sidecar -----
       Soulseek__BaseUrl: http://slskd:5030
@@ -192,55 +194,7 @@ services:
       # change. Bind-mounted to host so values survive `docker compose up`.
       - ./octo-config:/app/config
     depends_on:
-      - yt-dlp-shim
       - slskd
-
-  # Wraps yt-dlp behind /search and /stream HTTP endpoints. Isolating the binary
-  # in its own container prevents .NET process-management quirks from wedging
-  # the parent (see Brain/projects/Flaccy.md, 2026-04-29 LXC wedge note).
-  yt-dlp-shim:
-    build: ./yt-dlp-shim
-    container_name: yt-dlp-shim
-    restart: unless-stopped
-    environment:
-      MAX_CONCURRENT_YTDLP: ${YTDLP_MAX_CONCURRENT:-5}
-      # Slots of the above that background work (prewarm, star-downloads) can
-      # never occupy, so pressing play does not queue behind a prewarm burst.
-      GATE_RESERVE_INTERACTIVE: ${YTDLP_GATE_RESERVE:-2}
-      # Background gives up on a full gate quickly: it is fire-and-forget and
-      # already stale by the time a long queue clears.
-      BG_GATE_WAIT_SEC: ${YTDLP_BG_GATE_WAIT_SEC:-10}
-      SEARCH_CACHE_MAX: ${YTDLP_SEARCH_CACHE_MAX:-1024}
-      URL_CACHE_MAX: ${YTDLP_URL_CACHE_MAX:-512}
-      URL_CACHE_TTL: ${YTDLP_URL_CACHE_TTL:-3600}
-      # Root the /download endpoint may write under (matches the /music mount).
-      DOWNLOAD_ROOT: /music
-      # Run yt-dlp from the volume below rather than the copy baked into the
-      # image, so a self-update survives the container being recreated. The
-      # image copy is still the floor: a rebuild re-seeds this on next start.
-      YTDLP_PATH: /opt/ytdlp/yt-dlp
-      # Persistent duration cache (SQLite). On the named volume below so resolved
-      # "artist - title -> {video_id, duration}" mappings survive container recreate.
-      META_DB_PATH: /var/lib/ytshim/meta.db
-    expose:
-      - "8080"
-    volumes:
-      # Persist yt-dlp's player/nsig cache so base.js + signature solving is not
-      # repeated on every fork, and survives container recreate. Named volume so
-      # ownership is correct and `docker compose down` does not touch host paths.
-      - ytdlp-cache:/root/.cache/yt-dlp
-      # Persistent duration cache DB (see META_DB_PATH above).
-      - ytshim-cache:/var/lib/ytshim
-      # Shared music root so YouTube-MP3 downloads (DownloadSource=YouTube) land
-      # where Navidrome scans; same host dir Octo and slskd mount, so dest paths
-      # line up across containers.
-      - ${DOWNLOAD_PATH:-./downloads}:/music
-      # Writable home for the yt-dlp binary. YouTube rotates its player on its
-      # own schedule and YTDLP_VERSION=latest is resolved at BUILD time, so an
-      # image that is not rebuilt ships one frozen version forever. The shim
-      # self-updates when a 403 outlives a cache purge; this is what makes that
-      # update outlive the next `docker compose up -d`.
-      - ytdlp-bin:/opt/ytdlp
 
   # Soulseek client (slskd). Web UI on 5030, peer port 50300.
   # State (config, db, downloads-in-progress) persisted to ./slskd-state so the
@@ -271,8 +225,3 @@ services:
     volumes:
       - ./slskd-state:/app
       - ${DOWNLOAD_PATH:-./downloads}:/music
-
-volumes:
-  ytdlp-cache:
-  ytshim-cache:
-  ytdlp-bin:

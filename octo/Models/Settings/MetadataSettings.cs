@@ -30,7 +30,7 @@ public class MetadataSettings
 
     /// <summary>
     /// Treat a cover that is not square as missing. A 16:9 cover is a video thumbnail; when
-    /// nothing better turns up its centre square is used, which for a YouTube "Topic" upload is
+    /// nothing better turns up its centre square is used, which for a Deezer "Topic" upload is
     /// the real cover inside the letterbox. Off keeps whatever the source embedded.
     /// Environment variable: REPLACE_VIDEO_COVERS
     /// </summary>

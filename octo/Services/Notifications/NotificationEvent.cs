@@ -31,7 +31,7 @@ public sealed record NotificationEvent
     /// <summary>"FLAC" / "MP3" / "M4A".</summary>
     public string? Format { get; init; }
 
-    /// <summary>"Soulseek" / "YouTube".</summary>
+    /// <summary>"Soulseek" / "Deezer".</summary>
     public string? Source { get; init; }
 
     public string? CoverArtUrl { get; init; }

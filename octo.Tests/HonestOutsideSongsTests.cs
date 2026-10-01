@@ -36,9 +36,9 @@ public sealed class HonestOutsideSongsTests
         Assert.Equal(true, row["isExternal"]);
         Assert.All(FileFacts, key => Assert.False(row.ContainsKey(key), key));
         // How it streams stays, so a client can still play it.
-        Assert.Equal("m4a", row["suffix"]);
-        Assert.Equal("audio/mp4", row["contentType"]);
-        Assert.Equal(128, row["bitRate"]);
+        Assert.Equal("mp3", row["suffix"]);
+        Assert.Equal("audio/mpeg", row["contentType"]);
+        Assert.Equal(320, row["bitRate"]);
         Assert.Equal(245, row["duration"]);
         Assert.Equal(new[] { "USUM70813712" }, row["isrc"]);
     }
@@ -50,7 +50,7 @@ public sealed class HonestOutsideSongsTests
 
         Assert.Equal("true", xml.Attribute("isExternal")?.Value);
         Assert.All(FileFacts, key => Assert.Null(xml.Attribute(key)));
-        Assert.Equal("m4a", xml.Attribute("suffix")?.Value);
+        Assert.Equal("mp3", xml.Attribute("suffix")?.Value);
     }
 
     [Fact]

@@ -291,7 +291,7 @@ internal sealed class SearchPagingWebFactory : WebApplicationFactory<Program>
             .Returns(Task.CompletedTask);
         Metadata.Setup(service => service.ResolveTopDurationsAsync(It.IsAny<List<Song>>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
-        Metadata.Setup(service => service.PrewarmYouTubeIdsAsync(
+        Metadata.Setup(service => service.PrewarmDeezerIdsAsync(
                 It.IsAny<IEnumerable<Song>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
         Metadata.Setup(service => service.PrewarmCoverArtAsync(

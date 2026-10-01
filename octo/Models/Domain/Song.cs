@@ -45,6 +45,9 @@ public class Song
     /// claims to be lossless and is not can be found again. Null for everything else.
     /// </summary>
     public string? TranscodedFrom { get; set; }
+
+    /// <summary>Actual acquisition source; format alone cannot distinguish providers.</summary>
+    public string? AcquisitionSource { get; set; }
     public string? CoverArtUrl { get; set; }
     
     /// <summary>

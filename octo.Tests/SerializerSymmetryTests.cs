@@ -77,9 +77,9 @@ public class SerializerSymmetryTests
         // entry either fails to play or is dropped from the queue outright.
         var xml = Builder().ConvertSongToXml(ExternalSong(), Ns);
 
-        Assert.Equal("m4a", xml.Attribute("suffix")?.Value);
-        Assert.Equal("audio/mp4", xml.Attribute("contentType")?.Value);
-        Assert.Equal("128", xml.Attribute("bitRate")?.Value);
+        Assert.Equal("mp3", xml.Attribute("suffix")?.Value);
+        Assert.Equal("audio/mpeg", xml.Attribute("contentType")?.Value);
+        Assert.Equal("320", xml.Attribute("bitRate")?.Value);
     }
 
     [Fact]

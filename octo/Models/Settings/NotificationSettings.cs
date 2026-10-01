@@ -45,7 +45,7 @@ public class NotificationSettings
     public bool NotifyDownloadCompleted { get; set; } = true;
 
     /// <summary>
-    /// Soulseek came up empty and Octo settled for a YouTube MP3. On by default:
+    /// Soulseek came up empty and Octo settled for a Deezer MP3. On by default:
     /// silent quality loss is the failure mode this whole feature exists to expose.
     /// </summary>
     public bool NotifyLosslessFallback { get; set; } = true;

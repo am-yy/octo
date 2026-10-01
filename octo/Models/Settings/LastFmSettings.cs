@@ -109,7 +109,7 @@ public class LastFmSettings
 
     /// <summary>
     /// EBU R128 integrated loudness every radio track is brought to before it joins the
-    /// stream, in LUFS. Tracks arrive from local FLAC and from YouTube previews at
+    /// stream, in LUFS. Tracks arrive from local FLAC and from Deezer previews at
     /// levels many LU apart; a static gain per track (with a true-peak limiter at
     /// -1 dBTP) makes the station one level. 0 disables normalisation.
     /// </summary>

@@ -96,7 +96,7 @@ public class HeartAcquisitionCoordinatorTests
         {
             HeartDownloadSources =
             [
-                new() { Source = HeartDownloadSource.YouTube, Enabled = false },
+                new() { Source = HeartDownloadSource.Deezer, Enabled = false },
                 new() { Source = HeartDownloadSource.Soulseek, Enabled = true },
                 new() { Source = HeartDownloadSource.Lidarr, Enabled = true },
             ],
@@ -126,7 +126,7 @@ public class HeartAcquisitionCoordinatorTests
             HeartDownloadSources =
             [
                 new() { Source = HeartDownloadSource.Soulseek, Enabled = true },
-                new() { Source = HeartDownloadSource.YouTube, Enabled = false },
+                new() { Source = HeartDownloadSource.Deezer, Enabled = false },
                 new() { Source = HeartDownloadSource.Lidarr, Enabled = true },
             ],
         });
@@ -138,7 +138,7 @@ public class HeartAcquisitionCoordinatorTests
 
         lidarr.Verify(x => x.TryAcquireAlbumAsync("soulseek", "album-id", true, It.IsAny<string?>()), Times.Once);
         direct.Verify(x => x.DownloadAlbumWithSourceAsync(
-            It.IsAny<string>(), It.IsAny<string>(), DownloadSource.YouTube,
+            It.IsAny<string>(), It.IsAny<string>(), DownloadSource.Deezer,
             It.IsAny<bool>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyList<string>?>()), Times.Never);
     }
 
@@ -154,7 +154,7 @@ public class HeartAcquisitionCoordinatorTests
                 IReadOnlyList<string>? _) =>
             {
                 attempts.Add(source);
-                return source == DownloadSource.YouTube;
+                return source == DownloadSource.Deezer;
             });
         var lidarr = new Mock<ILidarrHeartAcquisitionService>();
         var settings = TestOptions.Monitor(new SubsonicSettings
@@ -162,7 +162,7 @@ public class HeartAcquisitionCoordinatorTests
             HeartDownloadSources =
             [
                 new() { Source = HeartDownloadSource.Soulseek, Enabled = true },
-                new() { Source = HeartDownloadSource.YouTube, Enabled = true },
+                new() { Source = HeartDownloadSource.Deezer, Enabled = true },
                 new() { Source = HeartDownloadSource.Lidarr, Enabled = true },
             ],
         });
@@ -172,20 +172,20 @@ public class HeartAcquisitionCoordinatorTests
 
         await coordinator.AcquireAlbumAsync("soulseek", "album-id");
 
-        Assert.Equal([DownloadSource.Soulseek, DownloadSource.YouTube], attempts);
+        Assert.Equal([DownloadSource.Soulseek, DownloadSource.Deezer], attempts);
         lidarr.VerifyNoOtherCalls();
     }
 
     [Fact]
     public void LegacyFallbackMapsToOrderedSourcesWithLidarrLast()
     {
-        var settings = new SubsonicSettings { DownloadSource = DownloadSource.SoulseekThenYouTube };
+        var settings = new SubsonicSettings { DownloadSource = DownloadSource.SoulseekThenDeezer };
 
         var steps = settings.EffectiveHeartDownloadSources();
 
         Assert.Collection(steps,
             step => { Assert.Equal(HeartDownloadSource.Soulseek, step.Source); Assert.True(step.SongEnabled); Assert.True(step.AlbumEnabled); },
-            step => { Assert.Equal(HeartDownloadSource.YouTube, step.Source); Assert.True(step.SongEnabled); Assert.True(step.AlbumEnabled); },
+            step => { Assert.Equal(HeartDownloadSource.Deezer, step.Source); Assert.True(step.SongEnabled); Assert.True(step.AlbumEnabled); },
             step => { Assert.Equal(HeartDownloadSource.Lidarr, step.Source); Assert.False(step.SongEnabled); Assert.False(step.AlbumEnabled); });
     }
 
@@ -201,7 +201,7 @@ public class HeartAcquisitionCoordinatorTests
             HeartDownloadSources =
             [
                 new() { Source = HeartDownloadSource.Soulseek, Enabled = true },
-                new() { Source = HeartDownloadSource.YouTube, Enabled = false },
+                new() { Source = HeartDownloadSource.Deezer, Enabled = false },
                 new() { Source = HeartDownloadSource.Lidarr, Enabled = true },
             ],
         });
@@ -228,7 +228,7 @@ public class HeartAcquisitionCoordinatorTests
             HeartDownloadSources =
             [
                 new() { Source = HeartDownloadSource.Lidarr, Enabled = true },
-                new() { Source = HeartDownloadSource.YouTube, Enabled = true },
+                new() { Source = HeartDownloadSource.Deezer, Enabled = true },
             ],
         };
 
@@ -236,7 +236,7 @@ public class HeartAcquisitionCoordinatorTests
 
         Assert.Collection(steps,
             step => Assert.Equal(HeartDownloadSource.Lidarr, step.Source),
-            step => Assert.Equal(HeartDownloadSource.YouTube, step.Source),
+            step => Assert.Equal(HeartDownloadSource.Deezer, step.Source),
             step => { Assert.Equal(HeartDownloadSource.Soulseek, step.Source); Assert.False(step.SongEnabled); Assert.False(step.AlbumEnabled); });
     }
 
@@ -254,7 +254,7 @@ public class HeartAcquisitionCoordinatorTests
             [
                 new() { Source = HeartDownloadSource.Soulseek, SongEnabled = true, AlbumEnabled = false },
                 new() { Source = HeartDownloadSource.Lidarr, SongEnabled = false, AlbumEnabled = true },
-                new() { Source = HeartDownloadSource.YouTube, SongEnabled = false, AlbumEnabled = false },
+                new() { Source = HeartDownloadSource.Deezer, SongEnabled = false, AlbumEnabled = false },
             ],
         });
         var coordinator = new HeartAcquisitionCoordinator(settings, queue, direct.Object, lidarr.Object, CoordinatorLogger);

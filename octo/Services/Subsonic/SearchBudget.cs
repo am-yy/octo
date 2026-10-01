@@ -23,7 +23,7 @@ public static class SearchBudget
     /// requested count, so a client asking for fewer than this gets local-only results
     /// and no fan-out. That is what keeps per-keystroke type-ahead cheap: a search for
     /// five rows costs one relay, where generating discovery for it would cost a Last.fm
-    /// fan-out plus a dozen Deezer enrichment rows and eight yt-dlp lookups.
+    /// fan-out plus a dozen Deezer enrichment rows and eight catalog recording lookups.
     /// </summary>
     public const int LocalSongFloor = 12;
 

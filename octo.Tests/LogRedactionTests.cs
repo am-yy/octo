@@ -19,7 +19,7 @@ namespace Octo.Tests;
 /// </summary>
 public sealed class LogRedactionTests
 {
-    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "api_key", "client", "sk", "api_sig", "T", "APIKEY", "Token", "API_KEY", "Client", "user", "User" };
+    public static TheoryData<string> SecretNames => new() { "t", "s", "p", "apiKey", "token", "api_token", "API_TOKEN", "api_key", "client", "sk", "api_sig", "T", "APIKEY", "Token", "API_KEY", "Client", "user", "User" };
 
     /// <summary>Everything a sink would be handed: the message, every structured value and every
     /// scope, with the scope's own values too, since the JSON formatter writes all of them.</summary>
@@ -97,7 +97,6 @@ public sealed class LogRedactionTests
                 ["Subsonic:Url"] = "http://navidrome.test",
                 ["Subsonic:AutoDetectDownloadPath"] = "false",
                 ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
                 ["Library:DownloadPath"] = _directory,
             };
             if (everything)

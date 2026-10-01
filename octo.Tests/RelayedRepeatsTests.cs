@@ -64,7 +64,6 @@ public sealed class RelayedRepeatsTests
                     ["Subsonic:Url"] = "http://navidrome.test",
                     ["Subsonic:AutoDetectDownloadPath"] = "false",
                     ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                    ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
                     ["Library:DownloadPath"] = _directory,
                 }));
             builder.ConfigureServices(services =>

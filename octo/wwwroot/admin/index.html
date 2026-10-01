@@ -224,14 +224,14 @@
             <div class="status-card-body">Checking…</div>
             <div class="status-card-foot">Optional, whole albums</div>
           </article>
-          <article class="status-card" data-svc="ytDlpShim">
+          <article class="status-card" data-svc="deezer">
             <div class="status-card-head">
-              <svg class="icon brand" aria-hidden="true"><use href="#b-youtube"/></svg>
-              <span class="status-card-title">yt-dlp shim</span>
+              <svg class="icon brand" aria-hidden="true"><use href="#b-deezer"/></svg>
+              <span class="status-card-title">Deezer</span>
               <span class="status-dot pending"></span>
             </div>
             <div class="status-card-body">Checking…</div>
-            <div class="status-card-foot">Previews from YouTube</div>
+            <div class="status-card-foot">Streams and downloads</div>
           </article>
           <article class="status-card" data-svc="lastfm">
             <div class="status-card-head">
@@ -375,23 +375,41 @@
             <div class="set-row playback-source-row">
               <div class="set-info">
                 <div class="set-info-t">When a song is missing</div>
-                <div class="set-info-d">YouTube starts at once. Soulseek waits for a lossless copy, then plays.</div>
+                <div class="set-info-d">Deezer starts at once. Soulseek waits for a lossless copy, then plays.</div>
               </div>
               <div class="set-ctrl">
                 <div class="seg" data-seg-for="f-playback-source"><span class="seg-thumb"></span></div>
                 <select id="f-playback-source" class="seg-src" hidden aria-label="Primary missing-track playback source">
-                  <option value="YouTube">YouTube stream</option>
+                  <option value="Deezer">Deezer MP3 stream</option>
                   <option value="Lossless">Soulseek download</option>
                 </select>
               </div>
               <input type="checkbox" id="f-wait-for-lossless-on-play" name="Subsonic.WaitForLosslessOnPlay" data-restart="true" hidden />
             </div>
-            <div class="set-row stack" data-stream-source="YouTube">
+            <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t"><svg class="icon brand" aria-hidden="true"><use href="#b-youtube"/></svg>YouTube shim URL</div>
-                <div class="set-info-d">The yt-dlp helper that finds and streams the song. The default works inside Docker's network.</div>
+                <div class="set-info-t"><svg class="icon brand" aria-hidden="true"><use href="#b-deezer"/></svg>Deezer ARL</div>
+                <div class="set-info-d">Streams MP3_320 when available, with MP3_128 fallback. ARL is your private Deezer session token.</div>
               </div>
-              <input class="set-input" id="f-yt-url" name="YouTube.ShimUrl" data-restart="true" placeholder="http://yt-dlp-shim:8080" />
+              <input class="set-input" id="f-deezer-arl" name="Deezer.Arl" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste Deezer ARL" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Fallback ARL <span class="set-opt">optional</span></div>
+                <div class="set-info-d">Second account session to try if the primary ARL expires or is rate-limited.</div>
+              </div>
+              <input class="set-input" id="f-deezer-arl-fallback" name="Deezer.ArlFallback" type="password" autocomplete="new-password" spellcheck="false" placeholder="Optional fallback ARL" />
+            </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Deezer download quality</div>
+                <div class="set-info-d">Used for permanent downloads from Deezer. FLAC is tried first and falls back to MP3 if unavailable.</div>
+              </div>
+              <select class="set-input" name="Deezer.Quality">
+                <option value="FLAC">FLAC</option>
+                <option value="MP3_320">MP3 320 kbps</option>
+                <option value="MP3_128">MP3 128 kbps</option>
+              </select>
             </div>
             <div class="set-row stack" data-stream-source="Lossless" hidden>
               <div class="set-info">
@@ -405,7 +423,7 @@
             <div class="set-row" data-stream-source="Lossless" hidden>
               <div class="set-info">
                 <div class="set-info-t">Lossless wait <span class="set-opt">seconds</span></div>
-                <div class="set-info-d">How long to wait before playing the YouTube preview instead. 0 waits as long as it takes.</div>
+                <div class="set-info-d">How long to wait before playing the Deezer stream instead. 0 waits as long as it takes.</div>
                 <div class="set-info-more">The lossless download carries on either way.</div>
               </div>
               <input class="set-input" id="f-lossless-wait-timeout" name="Subsonic.LosslessWaitTimeoutSeconds" type="number" min="0" />
@@ -851,7 +869,7 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Lossless fallback</div>
-                <div class="set-info-d">Soulseek found nothing for a song someone was playing, so YouTube played instead.</div>
+                <div class="set-info-d">Soulseek found nothing for a song someone was playing, so Deezer streamed it instead.</div>
                 <div class="set-info-more">Only while Streams &amp; hearts waits for lossless on play. Hearts report through Download completed or Download failed.</div>
               </div>
               <label class="switch"><input type="checkbox" id="f-notify-fallback" name="Notifications.NotifyLosslessFallback" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
@@ -918,7 +936,7 @@
               <div class="set-info">
                 <div class="set-info-t">Replace video covers</div>
                 <div class="set-info-d">A cover that is not square is a video still, so Octo looks for a real one.</div>
-                <div class="set-info-more">When nothing better turns up, its centre square is used, which for a YouTube &ldquo;Topic&rdquo; upload is the real cover inside the letterbox.</div>
+                <div class="set-info-more">When nothing better turns up, its centre square is used. This can recover artwork embedded inside older letterboxed video thumbnails.</div>
               </div>
               <label class="switch"><input type="checkbox" name="Metadata.ReplaceVideoCovers" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -1362,7 +1380,7 @@
               <div class="set-info">
                 <div class="set-info-t"><svg class="icon brand" aria-hidden="true"><use href="#b-acoustid"/></svg>Verify downloads</div>
                 <div class="set-info-d">Fingerprints each download and asks AcoustID what it really is. Off by default.</div>
-                <div class="set-info-more"><p>Catches covers, karaoke versions, live takes and mislabelled compilation tracks, which all pass the length check. A peer that sends a different recording has that file remembered and never tried again.</p><p>A song AcoustID has never heard of is always kept. YouTube downloads are identified too but never rejected, since there is no second copy to try.</p></div>
+                <div class="set-info-more"><p>Catches covers, karaoke versions, live takes and mislabelled compilation tracks, which all pass the length check. A peer that sends a different recording has that file remembered and never tried again.</p><p>A song AcoustID has never heard of is always kept. Deezer downloads are identified too but never rejected, since there is no second catalog candidate to try.</p></div>
               </div>
               <label class="switch"><input type="checkbox" name="Soulseek.VerifyDownloads" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
@@ -1508,7 +1526,7 @@
           </div>
           <form data-section="library-actions-review" class="set-card">
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">Review playlist</div><div class="set-info-d">Answer by adding the song to an action playlist, by Keep, or by taking it out of Review.</div><div class="set-info-more"><p>Octo asks when AcoustID had never heard the recording, was not sure of it, or heard a different one in a YouTube download. Each allowed user gets a playlist of their own.</p><p>Keep is its playlist, or five stars. Taking a song out of Review means &ldquo;fine, stop asking&rdquo;. Nothing in Review is ever acted on by itself. Takes effect at the next check, with no restart.</p></div></div>
+              <div class="set-info"><div class="set-info-t">Review playlist</div><div class="set-info-d">Answer by adding the song to an action playlist, by Keep, or by taking it out of Review.</div><div class="set-info-more"><p>Octo asks when AcoustID had never heard the recording, was not sure of it, or heard a different one in a Deezer download. Each allowed user gets a playlist of their own.</p><p>Keep is its playlist, or five stars. Taking a song out of Review means &ldquo;fine, stop asking&rdquo;. Nothing in Review is ever acted on by itself. Takes effect at the next check, with no restart.</p></div></div>
               <label class="switch"><input type="checkbox" name="LibraryActions.ReviewEnabled" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <details class="set-more">
@@ -1734,8 +1752,8 @@
             <label for="raw-editor">JSON content</label>
             <textarea id="raw-editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="{}"></textarea>
             <div class="field-help">
-              <p>Leave <code>"(saved, not shown)"</code> as it is to keep what is stored: the admin password, the Last.fm shared secret and each Last.fm session key. Anything set here wins over the matching environment variable until it is removed.</p>
-              <p>Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>YouTube</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Radio lives in <code>LastFm</code>; pinned stations are the ordered <code>LastFm.DiscoveryStations</code> array, each a whole object with a stable <code>Id</code>, <code>Name</code>, <code>Enabled</code> and <code>Tags</code>.</p>
+              <p>Leave <code>"(saved, not shown)"</code> as it is to keep what is stored: the admin password, Last.fm shared secret and session keys, and Deezer ARLs. Anything set here wins over the matching environment variable until it is removed.</p>
+              <p>Top-level keys: <code>Subsonic</code>, <code>Library</code>, <code>Server</code>, <code>Soulseek</code>, <code>Lidarr</code>, <code>Deezer</code>, <code>LastFm</code>, <code>Metadata</code>, <code>Genre</code>, <code>LibraryActions</code>, <code>Notifications</code>, <code>ListenBrainz</code>. Radio lives in <code>LastFm</code>; pinned stations are the ordered <code>LastFm.DiscoveryStations</code> array, each a whole object with a stable <code>Id</code>, <code>Name</code>, <code>Enabled</code> and <code>Tags</code>.</p>
             </div>
           </div>
           <div id="raw-error" class="raw-error" hidden></div>
@@ -1787,7 +1805,7 @@
         </header>
 
         <div class="info-card">
-          <p>Octo sits in front of your Navidrome library and adds discovery and downloads to it. Search shows songs you don't own beside your own. Radio on any song finds more through Last.fm and plays previews from YouTube. Heart a song you don't own and Octo fetches it through Soulseek, YouTube or your own Lidarr.</p>
+          <p>Octo sits in front of your Navidrome library and adds discovery and downloads to it. Search shows songs you don't own beside your own. Radio on any song finds more through Last.fm and streams from Deezer. Heart a song you don't own and Octo fetches it through Soulseek, Deezer or your own Lidarr.</p>
         </div>
 
         <div class="info-card">

@@ -25,7 +25,7 @@ public static class LogRedaction
     // user is the AcoustID user's own API key, sent with every submission. Subsonic's u is
     // not it, and stays readable.
     private static readonly Regex SecretParameter = new(
-        @"(?<=[?&;](?:t|s|p|apikey|token|api_key|client|user|sk|api_sig)=)[^&#\s""'<>]+",
+        @"(?<=[?&;](?:t|s|p|apikey|token|api_token|api_key|client|user|sk|api_sig)=)[^&#\s""'<>]+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>The text with every secret query parameter's value replaced by <see cref="Mask"/>.

@@ -74,7 +74,7 @@ public class RestartTrackerTests
         var config = Config();
         var tracker = new RestartTracker(config);
 
-        config["YouTube:ShimUrl"] = "  ";
+        config["Soulseek:BaseUrl"] = "  ";
 
         Assert.Empty(tracker.Pending(config));
     }

@@ -16,7 +16,7 @@ public class DownloadHistoryEntry
     /// <summary>File format, upper-cased from the extension (FLAC, MP3, M4A).</summary>
     public string Format { get; set; } = string.Empty;
 
-    /// <summary>Where it came from — "Soulseek" (FLAC) or "YouTube" (MP3).</summary>
+    /// <summary>Where it came from — "Soulseek" (FLAC) or "Deezer" (MP3).</summary>
     public string Source { get; set; } = string.Empty;
 
     /// <summary>Cover art URL (Deezer), for the thumbnail in the log.</summary>

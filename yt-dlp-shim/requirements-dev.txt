@@ -1,3 +1,0 @@
-# Test-only dependencies. Deliberately not installed into the runtime image --
-# the shim ships flask, gunicorn and requests and nothing else.
-pytest

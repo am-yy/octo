@@ -109,7 +109,6 @@ public sealed class LibraryActionEndpointTests
                 ["Subsonic:AdminUsername"] = "admin",
                 ["Subsonic:AdminPassword"] = "admin-password",
                 ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
                 ["Library:DownloadPath"] = _directory,
                 ["LibraryActions:Enabled"] = "true",
                 ["LibraryActions:DryRun"] = "false",

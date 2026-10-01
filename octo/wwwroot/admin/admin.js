@@ -652,7 +652,7 @@ document.querySelectorAll('form[data-section]').forEach(form => {
 // sources visible so disabling one never destroys the user's chosen order.
 const heartSourceMeta = {
   Soulseek: { title: 'Soulseek', detail: 'Lossless FLAC from slskd peers', mark: 'b-slskd' },
-  YouTube: { title: 'YouTube', detail: 'Lossy MP3 from the yt-dlp shim', mark: 'b-youtube' },
+  Deezer: { title: 'Deezer', detail: 'Downloads from your Deezer account', mark: 'b-deezer' },
   Lidarr: { title: 'Lidarr', detail: 'Album automation through your Lidarr server', mark: 'b-lidarr' },
 };
 let heartSourceSteps = [];
@@ -674,7 +674,7 @@ function normalizeHeartSourceSteps(steps) {
       AlbumEnabled: Boolean(step?.AlbumEnabled ?? step?.albumEnabled ?? legacyEnabled),
     });
   });
-  ['Soulseek', 'YouTube', 'Lidarr'].forEach(source => {
+  ['Soulseek', 'Deezer', 'Lidarr'].forEach(source => {
     if (!seen.has(source)) normalized.push({
       Source: source,
       SongEnabled: source === 'Soulseek',
@@ -733,7 +733,7 @@ function renderHeartSourceOrder(steps = heartSourceSteps) {
 
 function updateStreamSettings() {
   const waitForLossless = document.getElementById('f-wait-for-lossless-on-play')?.checked;
-  const activeSource = waitForLossless ? 'Lossless' : 'YouTube';
+  const activeSource = waitForLossless ? 'Lossless' : 'Deezer';
   document.querySelectorAll('[data-stream-source]').forEach(section => {
     section.hidden = section.dataset.streamSource !== activeSource;
   });
@@ -743,7 +743,7 @@ function syncPlaybackSourceControl() {
   const control = document.getElementById('f-playback-source');
   const wait = document.getElementById('f-wait-for-lossless-on-play');
   if (!control || !wait) return;
-  control.value = wait.checked ? 'Lossless' : 'YouTube';
+  control.value = wait.checked ? 'Lossless' : 'Deezer';
 }
 
 document.getElementById('f-playback-source')?.addEventListener('change', event => {
@@ -2868,7 +2868,7 @@ function heartSourceReachable() {
   if (!enabled.length) return { ok: false, detail: 'No heart source is switched on, so a heart downloads nothing.' };
   const reachable = enabled.filter(source => {
     if (source === 'Soulseek') return services.slskd?.ok;
-    if (source === 'YouTube') return services.ytDlpShim?.ok;
+    if (source === 'Deezer') return services.deezer?.ok && services.deezer?.configured !== false;
     if (source === 'Lidarr') return services.lidarr?.ok && services.lidarr?.configured !== false && !services.lidarr?.warning;
     return false;
   });

@@ -270,7 +270,7 @@ public class SubsonicController : ControllerBase
                 _logger.LogInformation("getRandomSongs radio seed: {Artist} - {Title}", seedArtist, seedTitle);
 
                 // Cap resolution count: Arpeggio's HTTP client times out around 20-30s. Each
-                // YouTube search costs 2-8s through the shim's gate, so we need a tight bound.
+                // Bound recommendation work so large queues cannot hold up playback.
                 var resolveCap = Math.Min(size, 6);
                 var similar = await _lastFmService.GetSimilarTracksAsync(seedArtist!, seedTitle!, resolveCap);
                 if (similar.Count > 0)
@@ -288,7 +288,7 @@ public class SubsonicController : ControllerBase
 
                     if (resolved.Count > 0)
                     {
-                        _logger.LogInformation("getRandomSongs radio: resolved {Count}/{Total} similar tracks via YouTube",
+                        _logger.LogInformation("getRandomSongs radio: resolved {Count}/{Total} similar tracks via Deezer",
                             resolved.Count, similar.Count);
                         return BuildRandomSongsResponse(format, resolved);
                     }
@@ -448,7 +448,7 @@ public class SubsonicController : ControllerBase
             songs = songs.Select(song =>
                 !song.IsLocal && _syncCatalog.TryGetSong(username, song.Id, out var synced) ? synced : song).ToList();
         _radioQueueStore.Register(songs.Select(song => song.Id));
-        _ = _metadataService.PrewarmYouTubeIdsAsync(songs, topN: 8);
+        _ = _metadataService.PrewarmDeezerIdsAsync(songs, topN: 8);
         QueueRefreshIfStale(username);
         return _responseBuilder.CreateRadioPlaylistResponse(format, station, songs);
     }
@@ -511,7 +511,7 @@ public class SubsonicController : ControllerBase
             var preparation = _radioStreams.PrepareForPublicationAsync(
                 session, HttpContext.RequestAborted);
 
-            // A cold starter is a YouTube fetch plus a transcode, tens of seconds on a
+            // A cold starter is a Deezer fetch plus a transcode, tens of seconds on a
             // small box, and many clients give up on a list request well before that.
             // Answer inside the bound instead. The cache produces the track under its
             // own single-flight regardless of who is still waiting, so the station is
@@ -913,7 +913,7 @@ public class SubsonicController : ControllerBase
 
     /// <summary>
     /// Search3 hijack. We OWN search results: ~90% Last.fm-driven external songs
-    /// (YouTube-resolved on play), ~10% local matches at the bottom for things
+    /// (Deezer-resolved on play), ~10% local matches at the bottom for things
     /// that genuinely live in the user's library. This is intentional — the goal
     /// is music DISCOVERY, not library navigation. Library navigation lives in
     /// getAlbumList2, getArtists, etc., which still pass through to Navidrome.
@@ -1473,7 +1473,7 @@ public class SubsonicController : ControllerBase
         {
             // Lossless-on-play remains an explicit opt-in. Normal playback never starts
             // acquisition: owned ids already went to Navidrome above, and missing ids
-            // stream from YouTube below. Hearts are the normal permanent-copy gesture.
+            // stream from Deezer below. Hearts are the normal permanent-copy gesture.
             if (_subsonicSettings.WaitForLosslessOnPlay)
             {
                 var acquisition = _acquisitions.Enqueue(provider!, externalId!, isStar: false,
@@ -1562,12 +1562,8 @@ public class SubsonicController : ControllerBase
     /// </summary>
     private async Task<IActionResult?> TryDirectStreamAsync(string provider, string externalId, string id)
     {
-        // Forward the client's Range header up the chain so the shim can
-        // ask googlevideo for the requested byte range and we can return
-        // a proper 206. iOS Subsonic clients refuse to play non-FLAC
-        // audio without working byte-range support — our prior 200/none
-        // response was what was making Arpeggi/Narjo silently drop
-        // every external song from the queue.
+        // Deezer aligns encrypted stripes internally and returns the requested plaintext
+        // range. Forward its 206/416 headers so probing and seeking work in iOS clients.
         var rangeHeader = Request.Headers.TryGetValue("Range", out var rh) ? rh.ToString() : null;
 
         var directStream = await _downloadService.GetDirectStreamAsync(
@@ -2786,7 +2782,7 @@ public class SubsonicController : ControllerBase
 
         // For each Last.fm recommendation, prefer the local copy if we own it.
         // Tracks the user already has play at full FLAC quality from Navidrome
-        // and avoid the yt-dlp roundtrip entirely. Lookups go in parallel
+        // and avoid the Deezer roundtrip entirely. Lookups go in parallel
         // against Navidrome — at 50ms each that's ~150ms total under a
         // semaphore=10 cap, which fits comfortably inside Arpeggi's HTTP
         // budget.
@@ -2819,12 +2815,11 @@ public class SubsonicController : ControllerBase
         _radioQueueStore.Register(resolvedSongs.Select(s => s.Id));
 
         // Fire-and-forget prewarm for the top of the queue so the first few
-        // taps don't pay the full cold yt-dlp resolve. The prewarm method
-        // handles its own concurrency limit, shared across every trigger, and
-        // marks its shim calls as background so they cannot occupy the slots
-        // the shim reserves for interactive plays. Local songs are skipped
+        // taps don't pay the full cold Deezer resolve. The prewarm method
+        // bounds concurrency across every trigger and uses the catalog background lane.
+        // Local songs are skipped
         // automatically by the prewarmer (they have no registry entry).
-        _ = _metadataService.PrewarmYouTubeIdsAsync(resolvedSongs, topN: 8);
+        _ = _metadataService.PrewarmDeezerIdsAsync(resolvedSongs, topN: 8);
 
         return BuildSimilarSongsResponse(format, resolvedSongs, responseKey);
     }
@@ -2867,7 +2862,7 @@ public class SubsonicController : ControllerBase
     /// Scrobble hijack: every Subsonic client posts here when a track starts
     /// playing (and again at end-of-play). We use the start-of-play signal to
     /// drive the sliding-window prewarm — if the scrobbled song is in a queue
-    /// we registered, fire-and-forget yt-dlp resolution for the next 8
+    /// we registered, fire-and-forget Deezer resolution for the next 8
     /// unresolved external songs so a fast-skip user always has 8 ready ahead.
     ///
     /// Library songs are relayed to Navidrome too, because real scrobbling
@@ -2893,7 +2888,7 @@ public class SubsonicController : ControllerBase
             if (upcoming.Count > 0)
             {
                 _logger.LogDebug("scrobble {Id}: prewarming next {N} from queue", id, upcoming.Count);
-                _ = _metadataService.PrewarmYouTubeIdsForSongIdsAsync(upcoming, topN: 8);
+                _ = _metadataService.PrewarmDeezerIdsForSongIdsAsync(upcoming, topN: 8);
             }
         }
 
@@ -3677,7 +3672,7 @@ public class SubsonicController : ControllerBase
             var songs = await MaterializeStationAsync(stationMatch, parameters);
             _metadataService.CompleteSongLengths(songs);
             _radioQueueStore.Register(songs.Select(song => song.Id));
-            _ = _metadataService.PrewarmYouTubeIdsAsync(songs, 8);
+            _ = _metadataService.PrewarmDeezerIdsAsync(songs, 8);
             var start = Math.Max(0, parameters.TryGetValue("_start", out var startText)
                 && int.TryParse(startText, out var parsedStart) ? parsedStart : 0);
             var end = parameters.TryGetValue("_end", out var endText)
@@ -3773,11 +3768,10 @@ public class SubsonicController : ControllerBase
         var one = new List<Song> { song };
         await _metadataService.EnrichExternalSongsAsync(one);
 
-        // Lazy-resolve the accurate YouTube duration at play. Navidrome-mode clients
+        // Lazy-resolve the accurate Deezer duration at play. Navidrome-mode clients
         // re-fetch this endpoint when a track starts, so this is where the scrub bar
         // gets the real length for results past the search's top-N (which are already
-        // resolved). Backed by the shim's persistent cache, so it is a disk hit for
-        // anything seen before and resolved-once-then-instant otherwise.
+        // resolved). Catalog lookups are cached and the recording ID is persisted.
         await _metadataService.ResolveTopDurationsAsync(one);
 
         var bytes = Encoding.UTF8.GetBytes(BuildNativeSongObject(song).ToJsonString());
@@ -3837,7 +3831,7 @@ public class SubsonicController : ControllerBase
         if (target <= 0) return null;
 
         // Same discovery core as Subsonic search3: Last.fm fan-out, Deezer enrich,
-        // accurate YouTube durations for the top of the list. Shared with search3, so a
+        // accurate Deezer durations for the top of the list. Shared with search3, so a
         // client that searches both ways for one query only pays for it once.
         var externalSongs = (await _externalSearch.GetAsync(term)).Take(target).ToList();
         if (externalSongs.Count == 0) return null;
@@ -3873,12 +3867,12 @@ public class SubsonicController : ControllerBase
         var duration = s.Duration ?? 0;
         // Navidrome-mode clients take their contract from HERE and never from
         // SubsonicResponseBuilder, so this has to follow the same setting or the native
-        // path keeps promising m4a while /rest/stream hands back a FLAC. Note the two
+        // path keeps promising mp3 while /rest/stream hands back a FLAC. Note the two
         // serializers are not symmetric: this one emits no contentType at all, and
         // defaults an unknown duration to 0 where the Subsonic one uses 180.
         var lossless = _subsonicSettings.WaitForLosslessOnPlay;
-        var suffix = lossless ? "flac" : "m4a";
-        var bitRate = lossless ? 950 : 128; // format 140 AAC ~128 kbps; FLAC lands ~850-1000
+        var suffix = lossless ? "flac" : "mp3";
+        var bitRate = lossless ? 950 : 320; // Deezer MP3_320; FLAC estimate
         long size = duration > 0 ? (long)duration * bitRate * 1000L / 8 : 0;
 
         var o = new JsonObject

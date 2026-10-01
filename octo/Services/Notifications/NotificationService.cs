@@ -171,7 +171,7 @@ public sealed class NotificationService
             NotificationEventType.LosslessFallback => new NotificationMessage(
                 evt.Type,
                 $"Lossless miss: {track}",
-                $"Soulseek failed ({evt.Detail ?? "no usable result"}); settling for YouTube MP3.",
+                $"Soulseek failed ({evt.Detail ?? "no usable result"}); trying Deezer ({evt.Format ?? "configured quality"}).",
                 evt.CoverArtUrl),
 
             NotificationEventType.DownloadFailed => new NotificationMessage(

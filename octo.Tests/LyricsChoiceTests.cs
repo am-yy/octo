@@ -123,7 +123,6 @@ public sealed class LyricsChoiceTests : IDisposable
                     ["Subsonic:Url"] = "http://navidrome.test",
                     ["Subsonic:AutoDetectDownloadPath"] = "false",
                     ["Soulseek:BaseUrl"] = "http://127.0.0.1:1",
-                    ["YouTube:ShimUrl"] = "http://127.0.0.1:1",
                     ["Library:DownloadPath"] = _directory,
                     ["Metadata:FetchLyrics"] = fetch ? "true" : "false",
                     ["Metadata:LyricsSources"] = string.Join(',', sources.Select(source => source.Key)),

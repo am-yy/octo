@@ -50,7 +50,7 @@ public class PathHelperTests
     [Fact]
     public void BuildTrackPath_EmptyExtension_ProducesNoTrailingDot()
     {
-        // The yt-dlp shim appends .mp3 itself, so it is handed a path with no extension.
+        // The Deezer resolver appends the selected audio extension.
         var path = PathHelper.BuildTrackPath(Root, "A", "B", "Song", 3, "");
         Assert.EndsWith("03 - Song", path);
     }

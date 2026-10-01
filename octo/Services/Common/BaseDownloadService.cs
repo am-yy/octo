@@ -272,8 +272,7 @@ public abstract class BaseDownloadService : IDownloadService
         DownloadSource? sourceOverride, CancellationToken cancellationToken);
 
     /// <summary>Record a completed download in the fetched-songs log. Best-effort:
-    /// format + source are derived from the file extension (flac -> Soulseek/lossless,
-    /// otherwise -> YouTube/lossy), which matches Octo's two download sources.</summary>
+    /// Format comes from the completed file; acquisition supplies its actual source.</summary>
     private async Task RecordHistoryAsync(Song song, string localPath, bool suppressNotify,
         IReadOnlyList<string>? requestedBy = null)
     {
@@ -313,7 +312,7 @@ public abstract class BaseDownloadService : IDownloadService
                 Album = album ?? string.Empty,
                 Path = localPath,
                 Format = string.IsNullOrEmpty(ext) ? "?" : ext,
-                Source = ext == "FLAC" ? "Soulseek" : "YouTube",
+                Source = song.AcquisitionSource ?? (ext == "FLAC" ? "Soulseek" : "Deezer"),
                 CoverArtUrl = cover,
                 SizeBytes = size,
                 TranscodedFrom = song.TranscodedFrom,
@@ -333,7 +332,7 @@ public abstract class BaseDownloadService : IDownloadService
                     Title = song.Title,
                     Album = album,
                     Format = string.IsNullOrEmpty(ext) ? "?" : ext,
-                    Source = ext == "FLAC" ? "Soulseek" : "YouTube",
+                    Source = song.AcquisitionSource ?? (ext == "FLAC" ? "Soulseek" : "Deezer"),
                     CoverArtUrl = cover,
                     SizeBytes = size,
                     // EnrichAsync and WriteMetadataAsync ran before this hook, so these are the
@@ -543,7 +542,7 @@ public abstract class BaseDownloadService : IDownloadService
             song.LocalPath = localPath;
 
             // Rich tags and real album art, written where the file will stay. Downloads
-            // otherwise arrive bare (YouTube: artist/title and a video thumbnail; Soulseek:
+            // otherwise arrive bare (Deezer: audio bytes only; Soulseek:
             // whatever the peer tagged), so this is what makes every fetched song a
             // properly-tagged library citizen.
             var cover = await WriteMetadataAsync(localPath, song, CancellationToken.None);
@@ -985,7 +984,7 @@ public abstract class BaseDownloadService : IDownloadService
             //
             // Before this, genre was written ONLY when song.Genre was non-empty, and was never
             // cleared. So when Deezer missed and the source had no genre, whatever multi-value
-            // frame the Soulseek peer's file or the yt-dlp output already carried survived
+            // frame the Soulseek peer's file or the Deezer file already carried survived
             // untouched: "People & Blogs" and seven-genres-at-once reached the library through
             // the ABSENCE of a write, not a bad one. The fix has to read the existing frame,
             // normalise it, and write the result back.
@@ -1250,7 +1249,7 @@ public abstract class BaseDownloadService : IDownloadService
             Logger.LogInformation("Placed download in {Layout}: {From} -> {To}", structure, currentPath, target);
 
             // Clean up any now-empty folder the file came from (a Soulseek peer's own layout, or
-            // the YouTube staging folder), never walking above the music root.
+            // the Deezer staging folder), never walking above the music root.
             TryRemoveEmptyParents(Path.GetDirectoryName(currentPath), DownloadPath);
             return new(target, !folderHadAudio);
         }

@@ -85,7 +85,7 @@ public sealed class LastFmRadioWarmupService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    // Startup dependencies such as the yt-dlp shim may still be coming
+                    // Startup dependencies may still be coming
                     // online. The minute scan retries without poisoning station state.
                     _logger.LogWarning(ex, "Radio cache warm failed for {User}; will retry", username);
                 }

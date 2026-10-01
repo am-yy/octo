@@ -378,7 +378,7 @@ internal sealed class SyncWebFactory : WebApplicationFactory<Program>
                 new() { Id = "ph-" + (artist + "-" + title).Replace(' ', '-'), Artist = artist, Title = title,
                     Album = "", Duration = duration ?? 180, IsLocal = false, ExternalProvider = "soulseek" },
             });
-        Metadata.Setup(service => service.PrewarmYouTubeIdsAsync(
+        Metadata.Setup(service => service.PrewarmDeezerIdsAsync(
                 It.IsAny<IEnumerable<Song>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
     }

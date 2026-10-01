@@ -130,9 +130,10 @@ public class NotificationServiceTests
             Artist = "A",
             Title = "B",
             Detail = "No Soulseek FLAC found",
+            Format = "FLAC",
         });
 
-        Assert.Contains("MP3", msg.Body);
+        Assert.Contains("Deezer (FLAC)", msg.Body);
         Assert.Contains("No Soulseek FLAC found", msg.Body);
     }
 

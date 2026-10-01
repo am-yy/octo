@@ -85,7 +85,7 @@ public sealed class LastFmRadioStreamService
             if (tracks.Count == 0) throw new InvalidOperationException("Radio station has no playable tracks");
             var ids = tracks.Select(track => track.ResolvedId!).ToList();
             _queues.Register(ids);
-            _ = _metadata.PrewarmYouTubeIdsForSongIdsAsync(ids, topN: 8);
+            _ = _metadata.PrewarmDeezerIdsForSongIdsAsync(ids, topN: 8);
             // A published session starts with three complete MP3 segments. Keep those
             // exact tracks even if the recommendation snapshot changes before tune-in;
             // the next replenishment crosses onto the current snapshot cleanly.
@@ -154,7 +154,7 @@ public sealed class LastFmRadioStreamService
                         .Select(offset => upcomingTracks[(nextIndex + offset) % upcomingTracks.Count]
                             .ResolvedId!)
                         .ToList();
-                    _ = _metadata.PrewarmYouTubeIdsForSongIdsAsync(upcoming, topN: 8);
+                    _ = _metadata.PrewarmDeezerIdsForSongIdsAsync(upcoming, topN: 8);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

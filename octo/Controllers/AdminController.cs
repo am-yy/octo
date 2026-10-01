@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -569,8 +570,7 @@ public class AdminController : ControllerBase
     /// Returns the *effective* configuration the app sees right now, so the UI
     /// can show users the same values code is using regardless of whether they
     /// came from env var, appsettings.json, or the editable settings file.
-    /// Sensitive keys are returned in clear because this admin endpoint is
-    /// intended for trusted LAN-only access (matches Navidrome's admin pages).
+    /// Deezer ARLs are masked and round-trip through the dashboard.
     /// </summary>
     [HttpGet("settings")]
     public IActionResult GetSettings()
@@ -671,9 +671,11 @@ public class AdminController : ControllerBase
                 ["CompletionMode"] = lidarr.CompletionMode.ToString(),
                 ["ImportTimeoutSeconds"] = lidarr.ImportTimeoutSeconds,
             },
-            ["YouTube"] = new Dictionary<string, object>
+            ["Deezer"] = new Dictionary<string, object>
             {
-                ["ShimUrl"] = _config["YouTube:ShimUrl"] ?? "",
+                ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
+                ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
+                ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
             },
             ["LastFm"] = new Dictionary<string, object>
             {
@@ -908,6 +910,21 @@ public class AdminController : ControllerBase
                 if (secretText != SecretPlaceholder)
                     return BadRequest(new { error = "Retype the whole Last.fm shared secret; it was added to the hidden placeholder." });
                 lastFmSecrets.Remove(secretKey);
+            }
+        }
+
+        if (Child(patch, "Deezer") is JsonObject deezerSecrets)
+        {
+            foreach (var name in new[] { "Arl", "ArlFallback" })
+            {
+                if (KeyOf(deezerSecrets, name) is not { } key
+                    || deezerSecrets[key] is not JsonValue value
+                    || !value.TryGetValue<string>(out var text)
+                    || !text.StartsWith(SecretPlaceholder, StringComparison.Ordinal)) continue;
+
+                if (text != SecretPlaceholder)
+                    return BadRequest(new { error = $"Retype the whole Deezer {name}; it was added to the hidden placeholder." });
+                deezerSecrets.Remove(key);
             }
         }
 
@@ -1397,9 +1414,11 @@ public class AdminController : ControllerBase
                 ["CompletionMode"] = lidarr.CompletionMode.ToString(),
                 ["ImportTimeoutSeconds"] = lidarr.ImportTimeoutSeconds,
             },
-            ["YouTube"] = new JsonObject
+            ["Deezer"] = new JsonObject
             {
-                ["ShimUrl"] = _config["YouTube:ShimUrl"] ?? "",
+                ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
+                ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
+                ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
             },
             ["LastFm"] = new JsonObject
             {
@@ -1571,6 +1590,12 @@ public class AdminController : ControllerBase
                         ["ApiSecret"] = _lastFmOpts.CurrentValue.ApiSecret,
                         ["UserSessions"] = JsonSerializer.SerializeToNode(_lastFmOpts.CurrentValue.UserSessions),
                     },
+                    ["Deezer"] = new JsonObject
+                    {
+                        ["Arl"] = _config["Deezer:Arl"],
+                        ["ArlFallback"] = _config["Deezer:ArlFallback"],
+                        ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                    },
                 };
             RestoreSecretPlaceholders(parsed, existing);
             if (Child(parsed, "Subsonic") is JsonObject savedSubsonic
@@ -1585,6 +1610,15 @@ public class AdminController : ControllerBase
                 && savedSecret.TryGetValue<string>(out var savedSecretText)
                 && savedSecretText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
                 return BadRequest(new { error = "Retype the whole Last.fm shared secret; it was added to the hidden placeholder." });
+            if (Child(parsed, "Deezer") is JsonObject savedDeezer)
+            {
+                foreach (var name in new[] { "Arl", "ArlFallback" })
+                    if (KeyOf(savedDeezer, name) is { } secretKey
+                        && savedDeezer[secretKey] is JsonValue secret
+                        && secret.TryGetValue<string>(out var secretText)
+                        && secretText.StartsWith(SecretPlaceholder, StringComparison.Ordinal))
+                        return BadRequest(new { error = $"Retype the whole Deezer {name}; it was added to the hidden placeholder." });
+            }
             if (SessionKeyTypedIntoPlaceholder(parsed) is { } typedInto)
                 return BadRequest(new { error = $"Connect {typedInto} to Last.fm again, or paste their whole session key; it was added to the hidden placeholder." });
             var pretty = parsed.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
@@ -1651,7 +1685,7 @@ public class AdminController : ControllerBase
             "Lidarr:BaseUrl", "Lidarr:ApiKey", "Lidarr:RootFolderPath",
             "Lidarr:QualityProfileId", "Lidarr:MetadataProfileId",
             "Lidarr:CompletionMode", "Lidarr:ImportTimeoutSeconds",
-            "YouTube:ShimUrl",
+            "Deezer:Arl", "Deezer:ArlFallback", "Deezer:Quality",
             "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
             "LastFm:EnableRadio", "LastFm:RadioTrackCount",
             "LastFm:RadioCacheDurationHours", "LastFm:StarterPublishTimeoutSeconds",
@@ -1685,6 +1719,8 @@ public class AdminController : ControllerBase
             // page doesn't leak credentials.
             var isSecret = k.EndsWith("Password", StringComparison.OrdinalIgnoreCase)
                         || k.EndsWith("ApiKey", StringComparison.OrdinalIgnoreCase)
+                        || k.EndsWith("Arl", StringComparison.OrdinalIgnoreCase)
+                        || k.EndsWith("ArlFallback", StringComparison.OrdinalIgnoreCase)
                         || k.EndsWith("Secret", StringComparison.OrdinalIgnoreCase)
                         // A Discord webhook URL embeds its token, so the whole URL is
                         // the secret; ntfy tokens are credentials outright.
@@ -1706,7 +1742,7 @@ public class AdminController : ControllerBase
     /// <summary>
     /// Quick health snapshot for each backing service. The UI shows a status
     /// dot per service; the user can tell at a glance whether Octo can reach
-    /// Navidrome, slskd, Lidarr, the yt-dlp shim, and Last.fm.
+    /// Navidrome, slskd, Lidarr, Deezer, and Last.fm.
     /// </summary>
     [HttpGet("status")]
     public async Task<IActionResult> GetStatus(CancellationToken ct)
@@ -1717,7 +1753,7 @@ public class AdminController : ControllerBase
             ["navidrome"] = ProbeNavidromeAsync(ct),
             ["slskd"] = ProbeSlskdAsync(ct),
             ["lidarr"] = ProbeLidarrAsync(ct),
-            ["ytDlpShim"] = ProbeYouTubeShimAsync(ct),
+            ["deezer"] = ProbeDeezerAsync(ct),
             ["lastfm"] = ProbeLastFmAsync(ct),
         };
         await Task.WhenAll(probeTasks.Values);
@@ -1833,15 +1869,16 @@ public class AdminController : ControllerBase
         catch (Exception ex) { return new ServiceProbe(false, ex.Message); }
     }
 
-    private async Task<ServiceProbe> ProbeYouTubeShimAsync(CancellationToken ct)
+    private async Task<ServiceProbe> ProbeDeezerAsync(CancellationToken ct)
     {
         try
         {
-            var shimUrl = (_config["YouTube:ShimUrl"] ?? "http://yt-dlp-shim:8080").TrimEnd('/');
-            var http = _httpFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(5);
-            using var resp = await http.GetAsync($"{shimUrl}/health", ct);
-            return new ServiceProbe(resp.IsSuccessStatusCode, $"HTTP {(int)resp.StatusCode}");
+            var resolver = HttpContext.RequestServices
+                .GetRequiredService<Octo.Services.Deezer.DeezerResolver>();
+            if (!resolver.IsConfigured)
+                return new ServiceProbe(true, "ARL is not set. Optional.", Configured: false);
+            var ok = await resolver.IsAvailableAsync(ct);
+            return new ServiceProbe(ok, ok ? "connected" : "unreachable / ARL invalid");
         }
         catch (Exception ex) { return new ServiceProbe(false, ex.Message); }
     }
@@ -1872,10 +1909,7 @@ public class AdminController : ControllerBase
     private record ServiceProbe(bool Ok, string Detail, bool Warning = false, bool Configured = true);
 
     /// <summary>
-    /// What a saved Navidrome admin password reads as through the admin API. The Last.fm shared
-    /// secret and each listener's Last.fm session key read the same way: they were added after
-    /// this was, and neither has ever gone out in clear. Every other secret still does, as it
-    /// always has.
+    /// Placeholder returned for secrets in settings and raw-config responses.
     /// </summary>
     internal const string SecretPlaceholder = "(saved, not shown)";
 
@@ -1891,6 +1925,8 @@ public class AdminController : ControllerBase
     {
         RestorePlaceholder(Child(incoming, "Subsonic"), Child(existingFile, "Subsonic"), "AdminPassword");
         RestorePlaceholder(Child(incoming, "LastFm"), Child(existingFile, "LastFm"), "ApiSecret");
+        RestorePlaceholder(Child(incoming, "Deezer"), Child(existingFile, "Deezer"), "Arl");
+        RestorePlaceholder(Child(incoming, "Deezer"), Child(existingFile, "Deezer"), "ArlFallback");
 
         // Each listener's session the same way, matched by username. An entry whose key is only
         // in the environment is dropped whole, so the environment keeps applying.
@@ -1968,6 +2004,11 @@ public class AdminController : ControllerBase
             if (Child(lastFm, "UserSessions") is JsonObject sessions)
                 foreach (var (_, session) in sessions)
                     MaskIn(session as JsonObject, "SessionKey");
+        }
+        if (Child(copy, "Deezer") is JsonObject deezer)
+        {
+            MaskIn(deezer, "Arl");
+            MaskIn(deezer, "ArlFallback");
         }
         return copy;
     }

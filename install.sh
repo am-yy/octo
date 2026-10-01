@@ -156,13 +156,14 @@ bold "════════════════════════�
 bold "  Octo · installer"
 bold "═══════════════════════════════════════════════════════════"
 echo
-echo "Sets up Octo (admin UI + proxy), yt-dlp shim, and slskd in"
-echo "one Docker Compose stack. Talks to your existing Navidrome."
+echo "Sets up Octo (admin UI + proxy) and slskd in one Docker Compose stack."
+echo "Octo uses Deezer directly and talks to your existing Navidrome."
 echo
 echo "What you'll need handy:"
 echo "  • A Navidrome server URL (running already)"
 echo "  • A free Last.fm API key — https://www.last.fm/api/account/create"
 echo "  • A free Soulseek (slsknet.org) account"
+echo "  • A Deezer ARL session token for external streams and downloads"
 echo "  • Optionally, an existing Lidarr server"
 echo
 require_docker
@@ -219,6 +220,27 @@ LASTFM_API_KEY=$(ask_secret "Last.fm API key" "$(existing LASTFM_API_KEY)")
 echo
 
 # ─────────────────────────────────────────────────────────────────
+# Deezer
+# ─────────────────────────────────────────────────────────────────
+bold "─── Deezer (streams and direct downloads) ──────────────────"
+echo "  ARL is your private Deezer browser session token. Keep it secret."
+echo "  Leave blank to disable Deezer; Soulseek and local playback still work."
+DEEZER_ARL=$(ask_secret "Deezer ARL" "$(existing DEEZER_ARL)")
+DEEZER_ARL_FALLBACK=$(ask_secret "Fallback Deezer ARL (optional)" "$(existing DEEZER_ARL_FALLBACK)")
+DEEZER_QUALITY_DEFAULT=$(existing DEEZER_QUALITY)
+DEEZER_QUALITY_DEFAULT=${DEEZER_QUALITY_DEFAULT:-FLAC}
+while true; do
+  DEEZER_QUALITY=$(ask "Deezer download quality (FLAC, MP3_320, MP3_128)" \
+    "$DEEZER_QUALITY_DEFAULT")
+  DEEZER_QUALITY=${DEEZER_QUALITY^^}
+  case "$DEEZER_QUALITY" in
+    FLAC|MP3_320|MP3_128) break ;;
+    *) yellow "  Choose FLAC, MP3_320, or MP3_128."; DEEZER_QUALITY_DEFAULT=FLAC ;;
+  esac
+done
+echo
+
+# ─────────────────────────────────────────────────────────────────
 # Soulseek
 # ─────────────────────────────────────────────────────────────────
 bold "─── Soulseek (downloads when you star a song) ──────────────"
@@ -233,6 +255,7 @@ echo
 # ─────────────────────────────────────────────────────────────────
 bold "─── Heart download source ──────────────────────────────────"
 echo "  Soulseek — individual lossless tracks (default)"
+echo "  Deezer   — tracks from your configured account and quality"
 echo "  Lidarr   — your existing Lidarr server; always fetches the full album"
 DOWNLOAD_SOURCE=$(ask "Heart download source" "$(existing DOWNLOAD_SOURCE || echo "Soulseek")")
 LIDARR_URL="$(existing LIDARR_URL)"
@@ -310,6 +333,11 @@ SLSKD_DOWNLOAD_TIMEOUT_SECONDS=180
 SLSKD_SOULSEEK_USERNAME=$SLSKD_SOULSEEK_USERNAME
 SLSKD_SOULSEEK_PASSWORD="$SLSKD_SOULSEEK_PASSWORD"
 
+# === Deezer ===
+DEEZER_ARL="$DEEZER_ARL"
+DEEZER_ARL_FALLBACK="$DEEZER_ARL_FALLBACK"
+DEEZER_QUALITY=$DEEZER_QUALITY
+
 # === Existing Lidarr (optional) ===
 LIDARR_URL=$LIDARR_URL
 LIDARR_API_KEY=$LIDARR_API_KEY
@@ -332,11 +360,6 @@ EXPLICIT_FILTER=All
 CACHE_DURATION_HOURS=1
 ENABLE_EXTERNAL_PLAYLISTS=false
 
-# === yt-dlp shim (defaults are fine) ===
-YTDLP_MAX_CONCURRENT=5
-YTDLP_SEARCH_CACHE_MAX=1024
-YTDLP_URL_CACHE_MAX=512
-YTDLP_URL_CACHE_TTL=3600
 EOF
 chmod 600 .env
 green "✓ wrote .env (chmod 600)"
@@ -393,7 +416,7 @@ check_svc() {
 }
 check_svc "Navidrome"  "navidrome"
 check_svc "Last.fm"    "lastfm"
-check_svc "yt-dlp shim" "ytDlpShim"
+check_svc "Deezer"      "deezer"
 check_svc "slskd"      "slskd"
 if [ "${DOWNLOAD_SOURCE,,}" = "lidarr" ]; then
   check_svc "Lidarr" "lidarr"
@@ -416,9 +439,11 @@ echo
 echo "  3. Test it: search for an artist you don't fully own. Owned tracks come"
 echo "     up first; recommendations from Last.fm fill the rest. Tap one to hear"
 if [ "${DOWNLOAD_SOURCE,,}" = "lidarr" ]; then
-  echo "     the YouTube preview. Heart it to send its full album to Lidarr."
+  echo "     the Deezer stream. Heart it to send its full album to Lidarr."
+elif [ "${DOWNLOAD_SOURCE,,}" = "deezer" ] || [ "${DOWNLOAD_SOURCE,,}" = "youtube" ]; then
+  echo "     the Deezer stream. Heart it to download from Deezer at your chosen quality."
 else
-  echo "     the YouTube preview. Heart it to download via Soulseek."
+  echo "     the Deezer stream. Heart it to download via Soulseek."
 fi
 echo
 dim "  slskd web UI:    http://<this-host>:5030    (admin / shown above)"

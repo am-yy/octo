@@ -7,7 +7,7 @@ namespace Octo.Services.Soulseek;
 
 /// <summary>
 /// Server-side registry that maps short opaque IDs (Navidrome-shaped 22-char base62)
-/// to Soulseek/YouTube routing info. Subsonic clients are picky about song-id format —
+/// to Soulseek/Deezer routing info. Subsonic clients are picky about song-id format —
 /// some quietly drop entries with long pipe-delimited IDs from their play queues.
 /// Translating to a short, alphabetic-looking key avoids that whole class of issue.
 ///
@@ -52,6 +52,7 @@ public class ExternalIdRegistry : IDisposable
             // The same for the ISRC an album listing found: a search row for the same song
             // names none, and must not forget it.
             routing.Isrc ??= previous.Isrc;
+            routing.DeezerId ??= previous.DeezerId;
             // And the catalog artist an artist search or page settled on: every album row
             // mints its artist again by name alone, and must not undo that choice.
             routing.ExternalArtistId ??= previous.ExternalArtistId;
@@ -122,12 +123,22 @@ public class ExternalIdRegistry : IDisposable
         return true;
     }
 
+    /// <summary>Pin the catalog recording without changing the client-visible ID.</summary>
+    public void RememberDeezerTrack(string shortId, string? deezerId)
+    {
+        if (string.IsNullOrEmpty(deezerId) || !_byId.TryGetValue(shortId, out var routing)) return;
+        routing.DeezerId = deezerId;
+        Interlocked.Exchange(ref _dirty, 1);
+    }
+
     private static string MakeShortId(SoulseekRouting r)
     {
         // Derive 22 base62 chars from sha256 of routing fields. Same input -> same id.
         // The Kind prefix is critical: a song "Drake - Hotline Bling" must hash to a
         // different id than the album "Hotline Bling" or the artist "Drake", or
         // getCoverArt would return the wrong scope's artwork.
+        // Keep the legacy yt field in the seed so existing playlists/library mappings survive.
+        // DeezerId is a mutable playback hint and must never affect identity.
         var seed = r.Kind switch
         {
             RoutingKind.Album  => $"k:album|a:{r.Artist}|al:{r.Album}",

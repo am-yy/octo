@@ -158,24 +158,12 @@ public sealed class ExternalSearchService
         }
         _logger.LogInformation("External search '{Q}' -> {N} placeholder songs", query, songs.Count);
 
-        // Album/art/year from Deezer (fast), then the ACCURATE duration for the top of the
-        // list from the real YouTube video (so the scrub bar matches the audio and the
-        // client advances correctly). Bounded + cached.
+        // Catalog enrichment also pins the recording and length used for playback.
         await _metadata.EnrichExternalSongsAsync(songs, ct);
         await _metadata.ResolveTopDurationsAsync(songs, ct);
 
-        // Fire-and-forget: pre-resolve YouTube videoIds for the top hits so the first
-        // /rest/stream click doesn't pay the cold yt-dlp double-call cost (ytsearch1: + -g,
-        // 6-16s combined). Arpeggi cancels at ~10s and falls back to a local song; without
-        // this, external playback is unreachable from that client. 12 is about what fits on
-        // the first page of search results.
-        //
-        // It runs LAST on purpose. It used to run before enrichment, where it wrote a
-        // videoId chosen with no duration hint while ResolveTopDurationsAsync was choosing
-        // a different one using the Deezer duration — so for the top rows the two raced and
-        // the loser could leave a song advertising the length of a video that would not be
-        // the one played.
-        _ = _metadata.PrewarmYouTubeIdsAsync(songs, topN: 12);
+        // Warm only the first page; later songs resolve when played.
+        _ = _metadata.PrewarmDeezerIdsAsync(songs, topN: 12);
 
         // Same reasoning, for cover art: a client renders the first screen of results a
         // moment after this returns, and without a prewarm each row's getCoverArt call

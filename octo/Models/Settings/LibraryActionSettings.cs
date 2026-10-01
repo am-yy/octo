@@ -145,7 +145,7 @@ public class LibraryActionSettings
 
     /// <summary>
     /// A "Review" playlist per allowed user, filled with downloads a person can settle by
-    /// listening: AcoustID had never heard the recording, was not sure, or (for YouTube) thought it
+    /// listening: AcoustID had never heard the recording, was not sure, or (for Deezer) thought it
     /// was something else. Empty it by moving tracks into the action playlists, by Keep, or by
     /// removing a track, which counts as an answer too.
     /// Environment variable: LIBRARY_ACTIONS_REVIEW

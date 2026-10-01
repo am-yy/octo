@@ -46,31 +46,30 @@ public interface IMusicMetadataService
     void CompleteSongLengths(IReadOnlyList<Song> songs) { }
 
     /// <summary>
-    /// Resolves the real YouTube video (and its duration) for the top of a search
+    /// Resolves the matched Deezer track (and its duration) for the top of a search
     /// result so the shown length matches the audio that plays. Bounded + cached;
-    /// also stores the videoId so playback reuses the same video.
+    /// also stores the catalog ID so playback reuses the same recording.
     /// </summary>
     Task ResolveTopDurationsAsync(List<Song> songs, CancellationToken ct = default)
         => Task.CompletedTask;
 
     /// <summary>
-    /// Best-effort pre-resolve of upstream identifiers (e.g. YouTube videoIds) for
+    /// Best-effort pre-resolve of upstream identifiers (e.g. Deezer track IDs) for
     /// the first N songs of a freshly-built search result. Called fire-and-forget
-    /// so search3 still returns instantly. Provider-specific (a Deezer/Qobuz
-    /// implementation would no-op); default no-op preserves source compatibility
+    /// so search3 still returns instantly. Provider-specific; default no-op preserves source compatibility
     /// for any provider that doesn't need it.
     /// </summary>
-    Task PrewarmYouTubeIdsAsync(IEnumerable<Song> songs, int topN, CancellationToken ct = default)
+    Task PrewarmDeezerIdsAsync(IEnumerable<Song> songs, int topN, CancellationToken ct = default)
         => Task.CompletedTask;
 
     /// <summary>
-    /// Same as <see cref="PrewarmYouTubeIdsAsync"/> but accepts raw song ids — the
+    /// Same as <see cref="PrewarmDeezerIdsAsync"/> but accepts raw song ids — the
     /// implementation looks each id up in its own routing registry to find the
     /// artist/title to resolve. Used by the scrobble-driven sliding-window
     /// prewarm where the controller only has the scrobbled song id and the
     /// upcoming-songs list it stored at search time.
     /// </summary>
-    Task PrewarmYouTubeIdsForSongIdsAsync(IEnumerable<string> songIds, int topN, CancellationToken ct = default)
+    Task PrewarmDeezerIdsForSongIdsAsync(IEnumerable<string> songIds, int topN, CancellationToken ct = default)
         => Task.CompletedTask;
 
     /// <summary>

@@ -15,7 +15,7 @@ namespace Octo.Tests;
 public sealed class ExternalPlaybackTests
 {
     [Fact]
-    public async Task ExternalPlaybackUsesYouTubeRegardlessOfLegacyStorageMode()
+    public async Task ExternalPlaybackUsesDeezerRegardlessOfLegacyStorageMode()
     {
         var downloads = new Mock<IDownloadService>();
         downloads.Setup(service => service.GetDirectStreamAsync(
@@ -24,7 +24,7 @@ public sealed class ExternalPlaybackTests
             .ReturnsAsync(new DirectStreamInfo
             {
                 AudioStream = new MemoryStream([1, 2, 3]),
-                ContentType = "audio/mp4",
+                ContentType = "audio/mpeg",
                 ContentLength = 3,
                 StatusCode = 200,
             });

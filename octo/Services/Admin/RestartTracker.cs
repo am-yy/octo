@@ -18,7 +18,6 @@ public sealed class RestartTracker
     public static readonly string[] Keys =
     [
         "Library:DownloadPath",             // BaseDownloadService, LocalLibraryService, PlaylistSyncService
-        "YouTube:ShimUrl",                  // YouTubeResolver
         "Subsonic:Url",                     // live in most places; a restart is still the safe advice
         "Subsonic:LibraryPath",
         "Subsonic:WaitForLosslessOnPlay",   // SubsonicResponseBuilder, deliberately

@@ -84,7 +84,8 @@ public sealed class LastFmRadioTrack
     public string? ResolvedId { get; set; }
     public bool IsLocal { get; set; }
     public string? ExternalProvider { get; set; }
-    public string? YouTubeId { get; set; }
+    public string? YouTubeId { get; set; } // Legacy identity, preserved across migration.
+    public string? DeezerId { get; set; }
 }
 
 public sealed class LastFmRadioUserSummary

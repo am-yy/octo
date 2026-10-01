@@ -59,7 +59,7 @@ public class PathHelperLayoutTests
     [Fact]
     public void EmptyExtension_IsHonoured()
     {
-        // The YouTube path passes no extension because the shim appends .mp3 itself.
+        // Deezer staging leaves the extension to the selected media format.
         var path = PathHelper.BuildLayoutPath(FolderStructure.ByArtist, Root,
             "Daft Punk", "Discovery", "Digital Love", 3, "");
 

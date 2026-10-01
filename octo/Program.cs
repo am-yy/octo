@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Octo.Models.Settings;
 using Octo.Services;
 using Octo.Services.Soulseek;
-using Octo.Services.YouTube;
+using Octo.Services.Deezer;
 using Octo.Services.Local;
 using Octo.Services.Validation;
 using Octo.Services.Subsonic;
@@ -70,6 +70,7 @@ builder.Services.Configure<GeneratedPlaylistSettings>(
     builder.Configuration.GetSection("GeneratedPlaylists"));
 builder.Services.Configure<SubsonicSettings>(
     builder.Configuration.GetSection("Subsonic"));
+builder.Services.Configure<DeezerSettings>(builder.Configuration.GetSection("Deezer"));
 builder.Services.Configure<SoulseekSettings>(
     builder.Configuration.GetSection("Soulseek"));
 builder.Services.Configure<LidarrSettings>(
@@ -113,29 +114,19 @@ builder.Services.AddHostedService<LastFmRadioWarmupService>(provider =>
     provider.GetRequiredService<LastFmRadioWarmupService>());
 builder.Services.AddHostedService<LastFmRadioRefreshWorker>();
 
-// Soulseek (FLAC source) + YouTube (instant-preview stream source).
+// Soulseek permanent copies and native Deezer playback/downloads.
 builder.Services.AddSingleton<SoulseekClient>();
-builder.Services.AddSingleton<YouTubeResolver>();
-
-// Two named HTTP clients for the yt-dlp shim:
-//   - search: short timeout, used for /search and /health
-//   - stream: infinite timeout, because /stream stays open for the whole song
-//     and the default 100s HttpClient timeout would kill the read mid-track.
-// Using IHttpClientFactory means the handler is pooled and rotated correctly;
-// disposing the HttpClient before reading the stream (the prior bug) is no
-// longer possible because the factory owns the lifetime.
-builder.Services.AddHttpClient(YouTubeResolver.SearchClientName, c =>
+builder.Services.AddSingleton<DeezerResolver>();
+builder.Services.AddHttpClient(DeezerResolver.ApiClientName, c =>
 {
-    // 60s rather than 30s because back-to-back search3 prewarm bursts can fill
-    // the shim's yt-dlp gate (MAX_CONCURRENT_YTDLP, which ships as 5) and queue
-    // requests behind 5-8s yt-dlp ytsearch1: invocations. 30s was canceling the
-    // tail of every prewarm batch.
-    c.Timeout = TimeSpan.FromSeconds(60);
-});
-builder.Services.AddHttpClient(YouTubeResolver.StreamClientName, c =>
+    c.Timeout = TimeSpan.FromSeconds(10);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
+builder.Services.AddHttpClient(DeezerResolver.StreamClientName, c =>
 {
     c.Timeout = Timeout.InfiniteTimeSpan;
-});
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
 builder.Services.AddSingleton(sp => new ExternalIdRegistry(
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-ids.json"),
     sp.GetRequiredService<ILogger<ExternalIdRegistry>>()));

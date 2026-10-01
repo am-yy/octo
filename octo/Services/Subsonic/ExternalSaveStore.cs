@@ -150,15 +150,21 @@ public sealed class ExternalSaveStore
         }
     }
 
-    /// <summary>Persist resolved Deezer IDs without changing saved ordering or user state.</summary>
-    public Task<bool> RememberDeezerIdAsync(string songId, string deezerId)
+    /// <summary>Persist learned display metadata without changing saved ordering or user state.</summary>
+    public Task<bool> RememberMetadataAsync(string songId, string? deezerId, string? album = null, int? duration = null)
     {
         Require(songId, nameof(songId));
-        Require(deezerId, nameof(deezerId));
         lock (_gate)
         {
             var next = Clone(_state);
             var canonicalId = CanonicalSongIdLocked(next, songId);
+            var requestedAlias = next.Aliases.FirstOrDefault(a => Same(a.AliasId, songId));
+            var canonicalSong = next.Songs.GetValueOrDefault(canonicalId);
+            if (requestedAlias?.Song is { } aliasSong && IsLocalOrImported(next, aliasSong)
+                || canonicalSong is not null && IsLocalOrImported(next, canonicalSong)
+                || next.Songs.TryGetValue(songId, out var requestedSong) && IsLocalOrImported(next, requestedSong))
+                return Task.FromResult(false);
+
             var changed = false;
 
             bool Matches(string? id) => !string.IsNullOrWhiteSpace(id)
@@ -166,9 +172,27 @@ public sealed class ExternalSaveStore
 
             bool Update(Song? song)
             {
-                if (song is null || !Matches(SongId(song)) || Same(song.DeezerId, deezerId)) return false;
-                song.DeezerId = deezerId;
-                return true;
+                if (song is null || !Matches(SongId(song)) || IsLocalOrImported(next, song)) return false;
+                var updated = false;
+                if (!string.IsNullOrWhiteSpace(deezerId) && !Same(song.DeezerId, deezerId))
+                {
+                    song.DeezerId = deezerId;
+                    updated = true;
+                }
+                if (duration is > 0 && song.Duration != duration)
+                {
+                    song.Duration = duration;
+                    updated = true;
+                }
+                var learnedAlbum = album?.Trim();
+                if (!string.IsNullOrWhiteSpace(learnedAlbum)
+                    && string.IsNullOrWhiteSpace(song.Album)
+                    && !Same(song.Album, learnedAlbum))
+                {
+                    song.Album = learnedAlbum;
+                    updated = true;
+                }
+                return updated;
             }
 
             foreach (var (id, song) in next.Songs)
@@ -828,6 +852,9 @@ public sealed class ExternalSaveStore
 
     private bool IsImportedLocked(Song song) =>
         FindAcquisition(_state, song.ExternalProvider ?? string.Empty, song.ExternalId ?? string.Empty)?.Status == "imported";
+
+    private static bool IsLocalOrImported(State state, Song song) => song.IsLocal
+        || FindAcquisition(state, song.ExternalProvider ?? string.Empty, song.ExternalId ?? string.Empty)?.Status == "imported";
 
     private sealed class State
     {

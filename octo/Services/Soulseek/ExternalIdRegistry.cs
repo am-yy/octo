@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Octo.Models.Domain;
 
 namespace Octo.Services.Soulseek;
 
@@ -53,6 +54,7 @@ public class ExternalIdRegistry : IDisposable
             // names none, and must not forget it.
             routing.Isrc ??= previous.Isrc;
             routing.DeezerId ??= previous.DeezerId;
+            if (string.IsNullOrWhiteSpace(routing.Album)) routing.Album = previous.Album;
             // And the catalog artist an artist search or page settled on: every album row
             // mints its artist again by name alone, and must not undo that choice.
             routing.ExternalArtistId ??= previous.ExternalArtistId;
@@ -131,12 +133,25 @@ public class ExternalIdRegistry : IDisposable
         return true;
     }
 
-    /// <summary>Pin the catalog recording without changing the client-visible ID.</summary>
-    public void RememberDeezerTrack(string shortId, string? deezerId)
+    /// <summary>Remember catalog metadata without changing identity or download length expectations.</summary>
+    public void RememberDeezerTrack(string shortId, string? deezerId, string? album = null, int? duration = null)
     {
-        if (string.IsNullOrEmpty(deezerId) || !_byId.TryGetValue(shortId, out var routing)) return;
-        routing.DeezerId = deezerId;
+        if (!_byId.TryGetValue(shortId, out var routing)) return;
+        if (string.IsNullOrWhiteSpace(deezerId) && string.IsNullOrWhiteSpace(album) && duration is not > 0) return;
+        if (!string.IsNullOrEmpty(deezerId)) routing.DeezerId = deezerId;
+        if (string.IsNullOrWhiteSpace(routing.Album) && !string.IsNullOrWhiteSpace(album)) routing.Album = album;
+        SongLength.Remember(routing, duration, LengthSource.Deezer);
         Interlocked.Exchange(ref _dirty, 1);
+    }
+
+    /// <summary>Current display fields for frozen search rows and durable external snapshots. No network.</summary>
+    public (string Album, int? Duration) GetDisplayMetadata(Song song)
+    {
+        if (song.IsLocal) return (song.Album, song.Duration);
+        var routing = Lookup(song.Id) ?? Lookup(song.ExternalId ?? song.Id);
+        var duration = routing is null ? song.Duration : SongLength.Shown(routing).Seconds ?? song.Duration;
+        var album = string.IsNullOrWhiteSpace(song.Album) ? routing?.Album ?? song.Album : song.Album;
+        return (album, duration);
     }
 
     private static string MakeShortId(SoulseekRouting r)

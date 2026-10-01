@@ -223,7 +223,7 @@ public partial class SubsonicResponseBuilder
     {
         var fields = RadioPlaylistFields(station);
         fields["songCount"] = songs.Count;
-        fields["duration"] = songs.Sum(song => song.Duration ?? 180);
+        fields["duration"] = songs.Sum(song => _idRegistry.GetDisplayMetadata(song).Duration ?? 180);
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             var playlist = new Dictionary<string, object>(fields)
@@ -700,7 +700,8 @@ public partial class SubsonicResponseBuilder
         var bitRate  = song.IsLocal ? song.BitRate is > 0 ? song.BitRate.Value : 1411 : losslessExternal ? 950 : 320;
         var suffix   = song.IsLocal ? localSuffix : losslessExternal ? "flac" : "mp3";
         var contentType = song.IsLocal ? ContentTypeFor(localSuffix) : losslessExternal ? "audio/flac" : "audio/mpeg";
-        var duration = song.Duration ?? 180;
+        var metadata = _idRegistry.GetDisplayMetadata(song);
+        var duration = metadata.Duration ?? 180;
         var estSize  = (long)duration * bitRate * 125;
 
         // Resolve a real-looking album for placeholder songs. Last.fm's
@@ -711,9 +712,9 @@ public partial class SubsonicResponseBuilder
         // song. Apple Music represents singles as "song-name = album-name", so
         // doing the same here makes each placeholder look like a single and
         // satisfies the album-required filter.
-        var albumName = string.IsNullOrWhiteSpace(song.Album)
+        var albumName = string.IsNullOrWhiteSpace(metadata.Album)
             ? (song.Title ?? "Singles")
-            : song.Album;
+            : metadata.Album;
 
         var artistId = song.ArtistId ?? _idRegistry.Register(new SoulseekRouting
         {

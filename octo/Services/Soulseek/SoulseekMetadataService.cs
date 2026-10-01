@@ -73,9 +73,8 @@ public class SoulseekMetadataService : IMusicMetadataService
         // record. Stored by rank, so a Deezer length an earlier lookup found for this id
         // still wins, and that is the length this row goes out with.
         _idRegistry.RememberLength(externalId, durationSeconds, LengthSource.LastFm);
-        var remembered = _idRegistry.Lookup(externalId) is { } routing
-            ? SongLength.Shown(routing).Seconds
-            : null;
+        var routing = _idRegistry.Lookup(externalId);
+        var remembered = routing is null ? null : SongLength.Shown(routing).Seconds;
 
         // 180 is the fallback when we don't know the real duration — most songs
         // are 3-5 min so it's a less-bad guess than 0 (which would prevent
@@ -90,8 +89,9 @@ public class SoulseekMetadataService : IMusicMetadataService
                 Id = externalId,
                 Title = title,
                 Artist = artist,
-                Album = "",
+                Album = routing?.Album ?? "",
                 Duration = effectiveDuration,
+                DeezerId = routing?.DeezerId,
                 IsLocal = false,
                 ExternalProvider = ProviderName,
                 ExternalId = externalId
@@ -133,21 +133,15 @@ public class SoulseekMetadataService : IMusicMetadataService
             await sem.WaitAsync(ct);
             try
             {
-                var meta = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true, ct: ct);
+                var meta = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true, ct: ct,
+                    trackId: song.DeezerId ?? _idRegistry.Lookup(song.Id)?.DeezerId);
                 if (meta?.Duration is not > 0) missed.TryAdd(song.Id, 0);
                 if (meta is null) return;
                 if (meta.Duration is int d && d > 0) song.Duration = d;
-                if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
+                if (string.IsNullOrWhiteSpace(song.Album) && !string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
                 if (meta.Year is int y) song.Year = y;
 
-                // Reflect onto the shared routing so getSong stays consistent.
-                var routing = _idRegistry.Lookup(song.Id);
-                if (routing != null)
-                {
-                    if (meta.Duration is int rd && rd > 0) routing.Duration = rd;
-                    if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) routing.Album = meta.AlbumTitle;
-                }
-                _idRegistry.RememberLength(song.Id, meta.Duration, LengthSource.Deezer);
+                _idRegistry.RememberDeezerTrack(song.Id, meta.DeezerId, meta.AlbumTitle, meta.Duration);
             }
             catch { /* best-effort; a miss just leaves the 180s fallback */ }
             finally { sem.Release(); }
@@ -180,20 +174,14 @@ public class SoulseekMetadataService : IMusicMetadataService
         var cold = new List<Song>();
         foreach (var song in songs)
         {
-            var meta = _deezer.CachedTrack(song.Artist, song.Title);
+            var meta = _deezer.CachedTrack(song.Artist, song.Title,
+                song.DeezerId ?? _idRegistry.Lookup(song.Id)?.DeezerId);
             if (meta is null) { cold.Add(song); continue; }
 
             if (meta.Duration is int d && d > 0) song.Duration = d;
-            if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
+            if (string.IsNullOrWhiteSpace(song.Album) && !string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
 
-            // Reflect onto the shared routing so getSong stays consistent.
-            var routing = _idRegistry.Lookup(song.Id);
-            if (routing != null)
-            {
-                if (meta.Duration is int rd && rd > 0) routing.Duration = rd;
-                if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) routing.Album = meta.AlbumTitle;
-            }
-            _idRegistry.RememberLength(song.Id, meta.Duration, LengthSource.Deezer);
+            _idRegistry.RememberDeezerTrack(song.Id, meta.DeezerId, meta.AlbumTitle, meta.Duration);
         }
         return cold;
     }
@@ -236,15 +224,18 @@ public class SoulseekMetadataService : IMusicMetadataService
             if (_idRegistry.Lookup(song.Id) is not { Kind: RoutingKind.Song } routing
                 || !routing.HasArtistTitle) continue;
 
-            // Minting the song already applied whatever the registry remembered.
-            if (SongLength.HasMetadataLength(routing)) continue;
+            var display = _idRegistry.GetDisplayMetadata(song);
+            song.Duration = display.Duration;
+            song.Album = display.Album;
+            if (SongLength.HasMetadataLength(routing) && !string.IsNullOrWhiteSpace(routing.Album)) continue;
 
             // Free: a search for the same song may have asked Deezer already.
-            if (_deezer.CachedTrack(song.Artist, song.Title)?.Duration is int d && d > 0)
+            if (_deezer.CachedTrack(song.Artist, song.Title, routing.DeezerId) is { } meta)
             {
-                song.Duration = d;
-                _idRegistry.RememberLength(song.Id, d, LengthSource.Deezer);
-                continue;
+                _idRegistry.RememberDeezerTrack(song.Id, meta.DeezerId, meta.AlbumTitle, meta.Duration);
+                if (meta.Duration is > 0) song.Duration = meta.Duration;
+                if (string.IsNullOrWhiteSpace(song.Album) && !string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
+                if (meta.Duration is > 0 && !string.IsNullOrWhiteSpace(routing.Album)) continue;
             }
             cold.Add(song);
         }
@@ -261,7 +252,8 @@ public class SoulseekMetadataService : IMusicMetadataService
         foreach (var song in songs)
         {
             if (string.IsNullOrEmpty(song.Id) || string.IsNullOrWhiteSpace(song.Title)) continue;
-            if (_idRegistry.Lookup(song.Id) is not { } routing || SongLength.HasMetadataLength(routing)) continue;
+            if (_idRegistry.Lookup(song.Id) is not { } routing
+                || SongLength.HasMetadataLength(routing) && !string.IsNullOrWhiteSpace(routing.Album)) continue;
             if (!_lengthLookups.TryAdd(song.Id, 0)) continue;
             queued.Add((song.Id, song.Artist ?? "", song.Title));
         }
@@ -287,8 +279,10 @@ public class SoulseekMetadataService : IMusicMetadataService
 
     private async Task LookUpLengthAsync(string id, string artist, string title, CancellationToken ct)
     {
-        var meta = await _deezer.EnrichTrackAsync(artist, title, includeYear: false, background: true, ct: ct);
-        if (_idRegistry.RememberLength(id, meta?.Duration, LengthSource.Deezer)) return;
+        var meta = await _deezer.EnrichTrackAsync(artist, title, includeYear: false, background: true, ct: ct,
+            trackId: _idRegistry.Lookup(id)?.DeezerId);
+        _idRegistry.RememberDeezerTrack(id, meta?.DeezerId, meta?.AlbumTitle, meta?.Duration);
+        if (meta?.Duration is > 0) return;
 
         if (_lastFm is { HasApiKey: true })
         {
@@ -312,11 +306,12 @@ public class SoulseekMetadataService : IMusicMetadataService
             if (!await _prewarmGate.WaitAsync(PrewarmQueueWait, ct)) return;
             try
             {
-                var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct);
+                var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct,
+                    trackId: song.DeezerId ?? _idRegistry.Lookup(song.Id)?.DeezerId);
                 if (hit is null) return;
-                _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId);
-                _idRegistry.RememberLength(song.Id, hit.Duration, LengthSource.Deezer);
+                _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId, hit.AlbumTitle, hit.Duration);
                 if (hit.Duration is > 0) song.Duration = hit.Duration;
+                if (string.IsNullOrWhiteSpace(song.Album) && !string.IsNullOrWhiteSpace(hit.AlbumTitle)) song.Album = hit.AlbumTitle;
             }
             catch { /* best-effort; keeps the existing duration on a miss */ }
             finally { _prewarmGate.Release(); }
@@ -335,12 +330,14 @@ public class SoulseekMetadataService : IMusicMetadataService
 
     public Task PrewarmDeezerIdsForSongIdsAsync(IEnumerable<string> songIds, int topN, CancellationToken ct = default)
     {
-        // Existing catalog IDs need no further search.
+        // Existing catalog IDs need no search, but older entries can still lack display metadata.
         var targets = songIds
             .Where(id => !string.IsNullOrEmpty(id))
             .Select(id => (id, routing: _idRegistry.Lookup(id)))
             .Where(t => t.routing != null
-                        && string.IsNullOrEmpty(t.routing!.DeezerId)
+                        && (string.IsNullOrEmpty(t.routing!.DeezerId)
+                            || string.IsNullOrWhiteSpace(t.routing.Album)
+                            || (SongLength.Shown(t.routing).Seconds ?? t.routing.Duration) is not > 0)
                         && t.routing.HasArtistTitle)
             .Take(topN)
             .ToList();
@@ -356,11 +353,9 @@ public class SoulseekMetadataService : IMusicMetadataService
             try
             {
                 var routing = t.routing!;
-                if (!string.IsNullOrEmpty(routing.DeezerId)) return;
                 var hit = await _deezer.EnrichTrackAsync(routing.Artist, routing.Title,
-                    includeYear: false, background: true, ct: ct);
-                _idRegistry.RememberDeezerTrack(t.id, hit?.DeezerId);
-                _idRegistry.RememberLength(t.id, hit?.Duration, LengthSource.Deezer);
+                    includeYear: false, background: true, ct: ct, trackId: routing.DeezerId);
+                _idRegistry.RememberDeezerTrack(t.id, hit?.DeezerId, hit?.AlbumTitle, hit?.Duration);
             }
             catch { /* best-effort warm; never throw out of fire-and-forget */ }
             finally { _prewarmGate.Release(); }
@@ -518,7 +513,7 @@ public class SoulseekMetadataService : IMusicMetadataService
             Track = routing.Track,
             DiscNumber = routing.DiscNumber,
             TotalTracks = routing.TotalTracks,
-            Duration = routing.Duration,
+            Duration = SongLength.Shown(routing).Seconds ?? routing.Duration,
             Isrc = routing.Isrc,
             DeezerId = routing.DeezerId,
             IsLocal = false,

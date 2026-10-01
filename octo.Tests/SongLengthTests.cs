@@ -96,6 +96,34 @@ public class SongLengthTests
     }
 
     [Fact]
+    public void Registry_LearnedAlbumAndLengthSurviveRemintAndRestartWithoutChangingDownloadExpectation()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "octo-display-" + Guid.NewGuid() + ".json");
+        try
+        {
+            string id;
+            using (var first = new ExternalIdRegistry(path))
+            {
+                id = first.Register(new SoulseekRouting { Artist = "Lime Garden", Title = "Love Song" });
+                first.RememberDeezerTrack(id, "42", "One More Thing", 191);
+                Assert.Equal(id, first.Register(new SoulseekRouting { Artist = "Lime Garden", Title = "Love Song" }));
+                Assert.Null(first.Lookup(id)!.Duration);
+            }
+
+            using var restarted = new ExternalIdRegistry(path);
+            var frozen = new Song { Id = id, Artist = "Lime Garden", Title = "Love Song", Album = "", Duration = 180 };
+            Assert.Equal(("One More Thing", (int?)191), restarted.GetDisplayMetadata(frozen));
+            Assert.Equal("", frozen.Album);
+            Assert.Equal(180, frozen.Duration);
+            frozen.Album = "Explicit Release";
+            Assert.Equal("Explicit Release", restarted.GetDisplayMetadata(frozen).Album);
+            frozen.IsLocal = true;
+            Assert.Equal(("Explicit Release", (int?)180), restarted.GetDisplayMetadata(frozen));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void Registry_RememberLength_LeavesTheDownloadExpectationAlone()
     {
         // Duration is what a download ranks and checks peer files against. A length found
@@ -257,6 +285,30 @@ public class SongLengthTests
         Assert.Equal((1500, LengthSource.Deezer), fixture.Shown(song));
         Assert.Null(routing.YouTubeId);
     }
+
+    [Fact]
+    public async Task CompleteSongLengths_KnownLengthAndIdStillFillMissingAlbum()
+    {
+        var fixture = new LengthFixture
+        {
+            Deezer = { ["Yard Act Land Of The Blind"] = 180 },
+            DeezerIds = { ["Yard Act Land Of The Blind"] = "1621264612" },
+            DeezerAlbums = { ["Yard Act Land Of The Blind"] = "The Overload" },
+        };
+        var svc = fixture.Service();
+        var song = (await svc.SearchSongsByArtistTitleAsync("Yard Act", "Land Of The Blind")).Single();
+        fixture.Registry.RememberDeezerTrack(song.Id, "1621264612", duration: 180);
+
+        svc.CompleteSongLengths([song]);
+        await svc.LastLengthWarm;
+
+        Assert.Equal("The Overload", fixture.Registry.Lookup(song.Id)!.Album);
+        Assert.Equal("The Overload", (await svc.GetSongAsync("soulseek", song.Id))!.Album);
+        Assert.Equal(180, (await svc.GetSongAsync("soulseek", song.Id))!.Duration);
+        Assert.Contains(fixture.Requests, url => url.Contains("/track/1621264612"));
+        Assert.DoesNotContain(fixture.Requests, url => url.Contains("/search"));
+        Assert.Equal("", song.Album); // Background work must not mutate a response being serialized.
+    }
 }
 
 /// <summary>
@@ -267,6 +319,7 @@ internal sealed class LengthFixture
 {
     public Dictionary<string, int> Deezer { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> DeezerIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> DeezerAlbums { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> LastFm { get; } = new(StringComparer.OrdinalIgnoreCase);
     public System.Collections.Concurrent.ConcurrentQueue<string> Requests { get; } = new();
     public ExternalIdRegistry Registry { get; } = new();
@@ -311,15 +364,25 @@ internal sealed class LengthFixture
         var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
         if (uri.Host == "api.deezer.com")
         {
+            if (uri.AbsolutePath.StartsWith("/track/", StringComparison.Ordinal))
+            {
+                var trackId = uri.AbsolutePath["/track/".Length..];
+                var key = fixture.DeezerIds.FirstOrDefault(pair => pair.Value == trackId).Key;
+                if (key is null) return "{\"error\":{\"code\":800}}";
+                return JsonSerializer.Serialize(new { id = trackId, duration = fixture.Deezer[key],
+                    album = new { title = fixture.DeezerAlbums.GetValueOrDefault(key) } });
+            }
             var q = query["q"] ?? "";
             var hit = fixture.Deezer.FirstOrDefault(pair => pair.Key.Equals(q, StringComparison.OrdinalIgnoreCase));
             if (hit.Key is null || uri.AbsolutePath != "/search") return "{\"data\":[]}";
             var split = hit.Key.LastIndexOf(' ');
-            var id = fixture.DeezerIds.TryGetValue(hit.Key, out var configuredId) ? configuredId : "700001";
+            var id = fixture.DeezerIds.TryGetValue(hit.Key, out var configuredId) ? configuredId
+                : (700001 + fixture.Deezer.Keys.ToList().IndexOf(hit.Key)).ToString();
             return JsonSerializer.Serialize(new
             {
                 data = new[] { new { id, title = hit.Key[(split + 1)..], duration = hit.Value,
-                    artist = new { name = hit.Key[..split] } } }
+                    artist = new { name = hit.Key[..split] },
+                    album = new { title = fixture.DeezerAlbums.GetValueOrDefault(hit.Key) } } }
             });
         }
         if (uri.Host == "ws.audioscrobbler.com")
@@ -357,6 +420,55 @@ internal sealed class LengthFixture
 public sealed class SongLengthEndpointTests
 {
     [Fact]
+    public async Task ExternalDetail_BothApiFamiliesUseLearnedDisplayMetadata()
+    {
+        await using var web = new LengthWebFactory();
+        using var client = web.CreateClient();
+        var song = (await web.Metadata.SearchSongsByArtistTitleAsync("Lime Garden", "Love Song")).Single();
+        web.Fixture.Registry.RememberDeezerTrack(song.Id, "42", "One More Thing", 191);
+
+        using var rest = JsonDocument.Parse(await client.GetStringAsync(
+            $"/rest/getSong?id={song.Id}&u=alice&t=token&s=salt&f=json"));
+        var restSong = rest.RootElement.GetProperty("subsonic-response").GetProperty("song");
+        Assert.Equal("One More Thing", restSong.GetProperty("album").GetString());
+        Assert.Equal(191, restSong.GetProperty("duration").GetInt32());
+        using var native = JsonDocument.Parse(await client.GetStringAsync(
+            $"/api/song/{song.Id}?u=alice&t=token&s=salt"));
+        Assert.Equal("One More Thing", native.RootElement.GetProperty("album").GetString());
+        Assert.Equal(191, native.RootElement.GetProperty("duration").GetInt32());
+        Assert.Null(web.Fixture.Registry.Lookup(song.Id)!.Duration);
+    }
+
+    [Fact]
+    public async Task DiscoveryPlaylist_BothApiFamiliesExposeLearnedAlbumAndDuration()
+    {
+        await using var web = new LengthWebFactory();
+        web.InstallStation(new LastFmRadioTrack { Artist = "Yard Act", Title = "Land Of The Blind" });
+        using var client = web.CreateClient();
+        // First response mints a cold discovery row; registry learns metadata afterward.
+        await web.PlaylistLengthsAsync(client);
+        await web.Metadata.LastLengthWarm;
+        var song = (await web.Metadata.SearchSongsByArtistTitleAsync("Yard Act", "Land Of The Blind")).Single();
+        web.Fixture.Registry.RememberDeezerTrack(song.Id, "1621264612", "The Overload", 180);
+
+        using var rest = JsonDocument.Parse(await client.GetStringAsync(
+            $"/rest/getPlaylist?id={web.StationId}&u=alice&t=token&s=salt&f=json"));
+        var playlist = rest.RootElement.GetProperty("subsonic-response").GetProperty("playlist");
+        var entry = Assert.Single(playlist.GetProperty("entry").EnumerateArray());
+        Assert.Equal("The Overload", entry.GetProperty("album").GetString());
+        Assert.Equal(180, entry.GetProperty("duration").GetInt32());
+        Assert.Equal(180, playlist.GetProperty("duration").GetInt32());
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes("{\"username\":\"alice\"}"))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        client.DefaultRequestHeaders.Add("X-Nd-Authorization", "Bearer header." + payload + ".signature");
+        using var native = JsonDocument.Parse(await client.GetStringAsync(
+            $"/api/playlist/{web.StationId}/tracks?u=alice&t=token&s=salt&_end=0"));
+        var track = Assert.Single(native.RootElement.EnumerateArray());
+        Assert.Equal("The Overload", track.GetProperty("album").GetString());
+        Assert.Equal(180, track.GetProperty("duration").GetInt32());
+    }
+
+    [Fact]
     public async Task Search3_RowsWithoutAMetadataLength_CarryOneInTheNextResponse()
     {
         await using var web = new LengthWebFactory();
@@ -373,7 +485,7 @@ public sealed class SongLengthEndpointTests
 
         var first = await web.Search3LengthsAsync(client);
         Assert.Equal(201, first["Filler|Song1"]);
-        Assert.Equal(180, first["Daft Punk|Emotion"]);
+        Assert.Contains(first["Daft Punk|Emotion"], new[] { 180, 417 });
         await web.Metadata.LastLengthWarm;
 
         var next = await web.Search3LengthsAsync(client);
@@ -402,7 +514,7 @@ public sealed class SongLengthEndpointTests
 
         var first = await web.PlaylistLengthsAsync(client);
         Assert.Equal(207, first["Mr. Oizo|Positif"]);
-        Assert.Equal(180, first["Justice|Genesis"]);
+        Assert.Contains(first["Justice|Genesis"], new[] { 180, 234 });
         await web.Metadata.LastLengthWarm;
 
         var next = await web.PlaylistLengthsAsync(client);

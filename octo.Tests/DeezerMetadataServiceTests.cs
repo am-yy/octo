@@ -469,6 +469,60 @@ public class DeezerMetadataServiceTests
     }
 
     // ---- Plain-query regression (Deezer dropped field-qualified search) ------
+
+    [Fact]
+    public async Task EnrichTrackAsync_KnownIdKeepsRecordingAndAlbumInsteadOfSearchingNames()
+    {
+        var sent = new List<HttpRequestMessage>();
+        using var svc = BuildService(new()
+        {
+            ["/track/1621264612"] = """
+                {"id":1621264612,"title":"Land Of The Blind","duration":180,
+                 "album":{"title":"The Overload"},"artist":{"name":"Yard Act"}}
+                """,
+            ["/search"] = """
+                {"data":[{"id":99,"title":"Land Of The Blind","duration":245,
+                 "album":{"title":"Live Edition"},"artist":{"name":"Yard Act"}}]}
+                """
+        }, capture: sent);
+
+        var meta = await svc.EnrichTrackAsync("Yard Act", "Land Of The Blind", includeYear: false, trackId: "1621264612");
+
+        Assert.NotNull(meta);
+        Assert.Equal("The Overload", meta.AlbumTitle);
+        Assert.Equal(180, meta.Duration);
+        Assert.Same(meta, svc.CachedTrack("Yard Act", "Land Of The Blind", "1621264612"));
+        Assert.Null(svc.CachedTrack("Yard Act", "Land Of The Blind", "99"));
+        Assert.Equal("/track/1621264612", Assert.Single(sent).RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task EnrichTrackAsync_KnownIdRejectsDifferentReturnedRecording()
+    {
+        using var svc = BuildService(new()
+        {
+            ["/track/42"] = """
+                {"id":43,"title":"Track","duration":245,"album":{"title":"Wrong Release"}}
+                """
+        });
+
+        Assert.Null(await svc.EnrichTrackAsync("Artist", "Track", includeYear: false, trackId: "42"));
+        Assert.Null(svc.CachedTrack("Artist", "Track", "43"));
+    }
+
+    [Fact]
+    public async Task EnrichTrackAsync_KnownIdRetriesAfterThrottle()
+    {
+        using var svc = BuildSequencedService(new()
+        {
+            ("/track/42", new[] { QuotaEnvelope,
+                """{"id":42,"duration":245,"album":{"title":"Release"}}""" }),
+        }, out var calls);
+
+        Assert.Null(await svc.EnrichTrackAsync("Artist", "Track", includeYear: false, trackId: "42"));
+        Assert.Equal("Release", (await svc.EnrichTrackAsync("Artist", "Track", includeYear: false, trackId: "42"))!.AlbumTitle);
+        Assert.Equal(2, calls("/track/42"));
+    }
     // Octo used to ask for artist:"X" track:"Y". Deezer now reads that as free text, so
     // the literal words "artist" and "track" had to appear in the record and nothing ever
     // matched: every external song lost its album, year and duration and fell back to a

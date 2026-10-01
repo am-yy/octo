@@ -3984,7 +3984,8 @@ public partial class SubsonicController : ControllerBase
     {
         var artistId = string.IsNullOrEmpty(s.ArtistId) ? s.Id + "-ar" : s.ArtistId!;
         var albumId = string.IsNullOrEmpty(s.AlbumId) ? s.Id + "-al" : s.AlbumId!;
-        var duration = s.Duration ?? 0;
+        var metadata = _idRegistry.GetDisplayMetadata(s);
+        var duration = metadata.Duration ?? 0;
         // Navidrome-mode clients take their contract from HERE and never from
         // SubsonicResponseBuilder, so this has to follow the same setting or the native
         // path keeps promising mp3 while /rest/stream hands back a FLAC. Note the two
@@ -3998,9 +3999,9 @@ public partial class SubsonicController : ControllerBase
         var o = new JsonObject
         {
             ["id"] = s.Id,
-            ["path"] = $"{Sanitize(s.Artist)}/{Sanitize(s.Album)}/{Sanitize(s.Title)}.{suffix}",
+            ["path"] = $"{Sanitize(s.Artist)}/{Sanitize(metadata.Album)}/{Sanitize(s.Title)}.{suffix}",
             ["title"] = s.Title,
-            ["album"] = s.Album ?? "",
+            ["album"] = metadata.Album,
             ["artist"] = s.Artist ?? "",
             ["artistId"] = artistId,
             ["albumArtist"] = string.IsNullOrEmpty(s.AlbumArtist) ? s.Artist : s.AlbumArtist,

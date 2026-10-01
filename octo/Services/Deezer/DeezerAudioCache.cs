@@ -405,7 +405,7 @@ public sealed class DeezerAudioCache : BackgroundService
         var hit = await _catalog.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct);
         if (!ValidTrackId(hit?.DeezerId)) return null;
         song.DeezerId = hit!.DeezerId;
-        _ids.RememberDeezerTrack(externalId, hit.DeezerId);
+        _ids.RememberDeezerTrack(externalId, hit.DeezerId, hit.AlbumTitle, hit.Duration);
         return hit.DeezerId;
     }
 

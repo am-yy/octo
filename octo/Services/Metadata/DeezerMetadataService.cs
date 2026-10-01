@@ -187,8 +187,8 @@ public class DeezerMetadataService : IDisposable
         return c;
     }
 
-    private static string TrackKey(string? artist, string? title) =>
-        $"t|{artist}|{title}".ToLowerInvariant();
+    private static string TrackKey(string? artist, string? title, string? trackId = null) =>
+        string.IsNullOrEmpty(trackId) ? $"t|{artist}|{title}".ToLowerInvariant() : $"tid|{trackId}";
 
     /// <summary>
     /// What is already known about a track, or null when nothing is. Never makes a
@@ -197,20 +197,20 @@ public class DeezerMetadataService : IDisposable
     /// <see cref="EnrichTrackAsync"/>, because a lookup keyed differently from the write
     /// would silently never hit.
     /// </summary>
-    public TrackMeta? CachedTrack(string? artist, string? title)
+    public TrackMeta? CachedTrack(string? artist, string? title, string? trackId = null)
     {
-        if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
-        return TryGetCached<TrackMeta?>(TrackKey(artist, title), out var cached) ? cached : null;
+        if (string.IsNullOrEmpty(trackId) && string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
+        return TryGetCached<TrackMeta?>(TrackKey(artist, title, trackId), out var cached) ? cached : null;
     }
 
     /// <summary>Resolve "artist + title" to the real album + artist (name, art, year).
     /// Pass includeYear=false to skip the extra album-detail call (bulk enrichment
     /// wants duration + album fast; the year is fetched lazily by the album view).</summary>
     public async Task<TrackMeta?> EnrichTrackAsync(string? artist, string? title, bool includeYear = true,
-        bool background = false, CancellationToken ct = default)
+        bool background = false, CancellationToken ct = default, string? trackId = null)
     {
-        if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
-        var key = TrackKey(artist, title);
+        if (string.IsNullOrEmpty(trackId) && string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
+        var key = TrackKey(artist, title, trackId);
         if (TryGetCached<TrackMeta?>(key, out var cached)) return cached;
 
         TrackMeta? meta = null;
@@ -220,7 +220,9 @@ public class DeezerMetadataService : IDisposable
         var yearUnresolved = false;
         try
         {
-            var (r, found) = await FindTrackAsync(artist, title, ct, background);
+            var (r, found) = string.IsNullOrEmpty(trackId)
+                ? await FindTrackAsync(artist, title, ct, background)
+                : await FindTrackByIdAsync(trackId, ct, background);
             using var response = r;
             if (r?.Transient == true) return null;
             if (found is JsonElement t)
@@ -263,6 +265,8 @@ public class DeezerMetadataService : IDisposable
         if (yearUnresolved) return meta;
 
         Put(key, meta, meta is null ? NegativeTtl : PositiveTtl);
+        if (meta?.DeezerId is { Length: > 0 } id)
+            Put(TrackKey(artist, title, id), meta, PositiveTtl);
         return meta;
     }
 
@@ -935,6 +939,12 @@ public class DeezerMetadataService : IDisposable
         }
         if (string.IsNullOrEmpty(trackId)) return (null, null);
 
+        return await FindTrackByIdAsync(trackId, ct, background, readableOnly);
+    }
+
+    private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackByIdAsync(
+        string trackId, CancellationToken ct, bool background, bool readableOnly = false)
+    {
         var detail = await GetJsonAsync($"{Base}/track/{Uri.EscapeDataString(trackId)}", ct, background);
         if (detail.Transient) return (detail, null);
         if (detail.Doc is null)

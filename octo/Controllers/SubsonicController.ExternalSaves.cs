@@ -277,7 +277,7 @@ public partial class SubsonicController
         ["id"] = playlist.Id, ["name"] = playlist.Name, ["comment"] = playlist.Comment,
         [native ? "ownerName" : "owner"] = playlist.Owner, ["public"] = playlist.Public,
         ["songCount"] = playlist.Tracks.Count,
-        ["duration"] = playlist.Tracks.Sum(track => track.Song?.Duration ?? 0),
+        ["duration"] = playlist.Tracks.Sum(track => track.Song is { } song ? _idRegistry.GetDisplayMetadata(song).Duration ?? 0 : 0),
         [native ? "updatedAt" : "changed"] = playlist.UpdatedUtc,
     };
 

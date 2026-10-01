@@ -137,8 +137,7 @@ public class SoulseekDownloadService : BaseDownloadService
         if (!routing.HasArtistTitle) return null;
         var hit = await _deezerCatalog.EnrichTrackAsync(routing.Artist, routing.Title, includeYear: false, ct: ct);
         routing.DeezerId = hit?.DeezerId;
-        _idRegistry.RememberDeezerTrack(externalId, hit?.DeezerId);
-        _idRegistry.RememberLength(externalId, hit?.Duration, LengthSource.Deezer);
+        _idRegistry.RememberDeezerTrack(externalId, hit?.DeezerId, hit?.AlbumTitle, hit?.Duration);
         return routing.DeezerId;
     }
 

@@ -46,11 +46,15 @@ public sealed class ExternalSaveWorker(ExternalSaveStore store, DeezerAudioCache
                     _ = AcquireAsync(intent, key, completion);
                 }
                 if (cache.Enabled)
-                {
                     await cache.ReplacePinsAsync(pins, stoppingToken);
-                    foreach (var song in pins.Select(p => p.Song).DistinctBy(s => s.Id))
-                        if (song.DeezerId is { Length: > 0 } deezerId)
-                            await store.RememberDeezerIdAsync(song.Id, deezerId);
+                foreach (var song in pins.Select(p => p.Song).DistinctBy(s => s.Id, StringComparer.OrdinalIgnoreCase))
+                {
+                    var routing = ids.Lookup(song.Id);
+                    var album = routing?.Album;
+                    var duration = routing is null ? null : SongLength.Shown(routing).Seconds;
+                    var deezerId = string.IsNullOrWhiteSpace(song.DeezerId) ? routing?.DeezerId : song.DeezerId;
+                    if (!string.IsNullOrWhiteSpace(deezerId) || !string.IsNullOrWhiteSpace(album) || duration is > 0)
+                        await store.RememberMetadataAsync(song.Id, deezerId, album, duration);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }

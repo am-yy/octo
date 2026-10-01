@@ -24,14 +24,21 @@ public partial class SubsonicController
             await RetrySavedMirrorsAsync(user, parameters, true);
             return (user, null);
         }
-        var auth = new Dictionary<string, string>(parameters) { ["f"] = "json" };
-        var result = await _proxyService.RelaySafeAsync("rest/ping", auth);
-        if (!result.Success || result.Body is null || !IsSuccessfulSubsonicResponse(result.Body, "json"))
+        if (!await HasAcceptedSubsonicCredentialsAsync(parameters))
             return (null, _responseBuilder.CreateError(format, 40, "Wrong username or password"));
         var username = await _requestIdentity.UsernameAsync(parameters, _proxyService);
         if (string.IsNullOrWhiteSpace(username)) return (null, _responseBuilder.CreateError(format, 40, "Navidrome did not identify this caller"));
         await RetrySavedMirrorsAsync(username, parameters, false);
         return (username, null);
+    }
+
+    private async Task<bool> HasAcceptedSubsonicCredentialsAsync(Dictionary<string, string> parameters)
+    {
+        var auth = parameters.Where(pair => pair.Key is "u" or "p" or "t" or "s" or "apiKey" or "jwt" or "c" or "v")
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        auth["f"] = "json";
+        var result = await _proxyService.RelaySafeAsync("rest/ping", auth);
+        return result.Success && result.Body is not null && IsSuccessfulSubsonicResponse(result.Body, "json");
     }
 
     private async Task<Song?> SavedSongAsync(string id, Dictionary<string, string> parameters, bool native)
@@ -73,17 +80,30 @@ public partial class SubsonicController
         LocalPath = row["path"]?.ToString(),
     };
 
+    private static bool IsMissingSubsonicResource(byte[] body, string format)
+    {
+        try
+        {
+            return format == "json"
+                ? JsonNode.Parse(body)?["subsonic-response"]?["error"]?["code"]?.ToString() == "70"
+                : XDocument.Parse(Encoding.UTF8.GetString(body)).Descendants()
+                    .Any(node => node.Name.LocalName == "error" && node.Attribute("code")?.Value == "70");
+        }
+        catch { return false; }
+    }
+
     private static double? Number(JsonNode? node) => double.TryParse(node?.ToString(),
         System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : null;
 
     private async Task<ExternalSavedPlaylist?> LoadSavedPlaylistAsync(string user, string id,
-        Dictionary<string, string> parameters, bool native, bool write)
+        Dictionary<string, string> parameters, bool native, bool write, bool allowMissing = false)
     {
         JsonObject? row;
         JsonArray? tracks;
         if (native)
         {
             var raw = await _proxyService.RelayRawAsync("api/playlist/" + Uri.EscapeDataString(id), new(), "GET");
+            if (allowMissing && raw.Status == 404) return _externalSaves!.GetPlaylist(user, id);
             if (raw.Status != 200) return null;
             row = JsonNode.Parse(raw.Body) as JsonObject;
             if (row is null || write && (row["ownerName"]?.ToString() != user
@@ -100,6 +120,8 @@ public partial class SubsonicController
         {
             var p = new Dictionary<string, string>(parameters) { ["id"] = id, ["f"] = "json" };
             var raw = await _proxyService.RelaySafeAsync("rest/getPlaylist", p);
+            if (allowMissing && raw.Success && raw.Body is not null && IsMissingSubsonicResource(raw.Body, "json"))
+                return _externalSaves!.GetPlaylist(user, id);
             if (!raw.Success || raw.Body is null || !IsSuccessfulSubsonicResponse(raw.Body, "json")) return null;
             row = JsonNode.Parse(raw.Body)?["subsonic-response"]?["playlist"] as JsonObject;
             if (row is null || write && row["owner"]?.ToString() != user) return null;
@@ -141,7 +163,7 @@ public partial class SubsonicController
         ExternalSavedPlaylist? playlist = null;
         if (id.Length > 0)
         {
-            playlist = await LoadSavedPlaylistAsync(user!, id, parameters, false, true);
+            playlist = await LoadSavedPlaylistAsync(user!, id, parameters, false, true, allowMissing: endpoint == "deletePlaylist");
             if (playlist is null) return _responseBuilder.CreateError(format, 50, "Playlist is not editable by this caller");
         }
         try
@@ -149,11 +171,12 @@ public partial class SubsonicController
             if (endpoint == "deletePlaylist")
             {
                 var deleted = await _proxyService.RelaySafeAsync("rest/deletePlaylist", parameters);
-                if (!deleted.Success || deleted.Body is null || !IsSuccessfulSubsonicResponse(deleted.Body, format))
+                if (!deleted.Success || deleted.Body is null || !(IsSuccessfulSubsonicResponse(deleted.Body, format)
+                    || IsMissingSubsonicResource(deleted.Body, format)))
                     return _responseBuilder.CreateError(format, 50, "Unable to delete playlist");
                 await _externalSaves!.RemovePlaylistAsync(user!, id);
                 _saveWorker?.Wake();
-                return File(deleted.Body, deleted.ContentType ?? "application/" + format);
+                return _responseBuilder.CreateResponse(format, "deletePlaylist", new { });
             }
             var songs = new List<Song>();
             foreach (var trackId in adding)
@@ -202,7 +225,7 @@ public partial class SubsonicController
         foreach (var song in songs.Where(song => !song.IsLocal))
         {
             _acquisitionTracker?.Begin(song.ExternalProvider ?? "soulseek", song.ExternalId ?? song.Id,
-                song.Id, user, song.Artist, song.Title, song.Album);
+                song.Id, _subsonicSettings.RecordRequestedBy ? user : null, song.Artist, song.Title, song.Album);
         }
         _saveWorker?.Wake();
         return Task.CompletedTask;
@@ -434,7 +457,8 @@ public partial class SubsonicController
             return BadRequest(new { error = "Use song IDs when editing a mixed playlist" });
         if (replacement is not null && replacement.Any(track => track is not JsonObject))
             return BadRequest(new { error = "Invalid playlist tracks" });
-        var playlist = await LoadSavedPlaylistAsync(user!, id, parameters, true, !HttpMethods.IsGet(Request.Method));
+        var playlist = await LoadSavedPlaylistAsync(user!, id, parameters, true, !HttpMethods.IsGet(Request.Method),
+            allowMissing: HttpMethods.IsDelete(Request.Method) && !tracksEndpoint);
         if (playlist is null) return StatusCode(403, new { error = "Playlist is unavailable or not editable" });
         try
         {
@@ -455,7 +479,7 @@ public partial class SubsonicController
             if (HttpMethods.IsDelete(Request.Method) && !tracksEndpoint)
             {
                 var raw = await _proxyService.RelayRawAsync(endpoint, parameters);
-                if (raw.Status is < 200 or >= 300) return StatusCode(raw.Status);
+                if (raw.Status != 404 && (raw.Status is < 200 or >= 300)) return StatusCode(raw.Status);
                 await _externalSaves.RemovePlaylistAsync(user!, id);
                 _saveWorker?.Wake();
                 return Ok(new { id });
@@ -559,23 +583,26 @@ public partial class SubsonicController
             await MirrorSavedPlaylistAsync(playlist, parameters, native);
         var auth = parameters.Where(kv => kv.Key is "u" or "t" or "s" or "p" or "apiKey" or "c" or "v")
             .ToDictionary(kv => kv.Key, kv => kv.Value);
-        if (native)
-        {
-            var header = Request.Headers["X-Nd-Authorization"].FirstOrDefault() ?? Request.Headers.Authorization.FirstOrDefault();
-            var token = header?.StartsWith("Bearer ") == true ? header[7..] : header;
-            if (_navIdentity.CallerSubsonicAuth(token) is not { } caller) return;
-            auth = new() { ["u"] = caller.user, ["t"] = caller.token, ["s"] = caller.salt };
-        }
         foreach (var mutation in _externalSaves.GetHeartMutations(user).Where(h => h.PendingMirror))
         {
             var canonical = _externalSaves.CanonicalSongId(mutation.SongId);
             if (canonical == mutation.SongId && !mutation.Song.IsLocal) continue;
             try
             {
-                var p = new Dictionary<string, string>(auth) { ["id"] = canonical, ["f"] = "json" };
-                var answer = await _proxyService.RelayAsync(mutation.Hearted ? "rest/star" : "rest/unstar", p);
-                if (IsSuccessfulSubsonicResponse(answer.Body, "json"))
-                    await _externalSaves.MarkHeartMirroredAsync(user, mutation.SongId, mutation.UpdatedUtc);
+                bool mirrored;
+                if (native)
+                {
+                    var body = Encoding.UTF8.GetBytes(new JsonObject { ["starred"] = mutation.Hearted }.ToJsonString());
+                    var answer = await _proxyService.RelayRawAsync("api/song/" + Uri.EscapeDataString(canonical), new(), "PUT", body);
+                    mirrored = answer.Status is >= 200 and < 300;
+                }
+                else
+                {
+                    var p = new Dictionary<string, string>(auth) { ["id"] = canonical, ["f"] = "json" };
+                    var answer = await _proxyService.RelayAsync(mutation.Hearted ? "rest/star" : "rest/unstar", p);
+                    mirrored = IsSuccessfulSubsonicResponse(answer.Body, "json");
+                }
+                if (mirrored) await _externalSaves.MarkHeartMirroredAsync(user, mutation.SongId, mutation.UpdatedUtc);
             }
             catch (Exception ex) { _logger.LogWarning("Heart mirror deferred: {Reason}", ex.GetType().Name); }
         }
@@ -587,6 +614,13 @@ public partial class SubsonicController
     private async Task PrewarmPlaybackAsync(IEnumerable<Song> songs, int topN)
     {
         var visible = songs.Take(topN).ToList();
+        if (_deezerCache?.Enabled == true)
+        {
+            var accepted = Request.Path.StartsWithSegments("/api")
+                ? (await _proxyService.RelayRawAsync("api/playlist", new() { ["_end"] = "0" }, "GET")).Status is >= 200 and < 300
+                : await HasAcceptedSubsonicCredentialsAsync(await ExtractAllParameters());
+            if (!accepted) return;
+        }
         await _metadataService.PrewarmDeezerIdsAsync(visible, topN);
         if (_deezerCache?.Enabled == true) await _deezerCache.PrewarmAsync(visible, topN);
     }

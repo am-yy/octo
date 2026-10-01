@@ -76,6 +76,34 @@ public sealed class ExternalSaveStoreTests
         Assert.Empty(restarted.GetPendingAcquisitions());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RestartRetriesPreparationButNeverReplaysAmbiguousSubmission(bool submitting)
+    {
+        using var temp = new TempDirectory();
+        var store = NewStore(temp.Path);
+        await store.SetHeartAsync("alice", DeezerSong(), true);
+        await store.TryClaimAcquisitionAsync("deezer", "42");
+        await store.AssociateAcquisitionWithAlbumAsync("deezer", "42", "album");
+        Assert.True(await store.TryBeginAlbumSearchAsync("album"));
+        if (submitting)
+        {
+            await store.MarkAlbumSearchSubmittingAsync("album", 17);
+            await store.MarkAcquisitionFailedAsync("deezer", "42", "Connection lost");
+        }
+
+        var restarted = NewStore(temp.Path);
+        Assert.Equal(submitting ? 0 : 1, await restarted.RecoverInterruptedAcquisitionsAsync(afterRestart: true));
+        Assert.Equal(!submitting, await restarted.TryBeginAlbumSearchAsync("album"));
+        if (submitting)
+        {
+            Assert.Empty(restarted.GetPendingAcquisitions());
+            Assert.Equal(17, restarted.GetAlbumSearch("album")!.LidarrAlbumId);
+        }
+        else Assert.Single(restarted.GetPendingAcquisitions());
+    }
+
     [Fact]
     public async Task LosslessImportReplacesAllOccurrencesAndHeartAndKeepsOldIdAlias()
     {

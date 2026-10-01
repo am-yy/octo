@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -35,7 +37,7 @@ public sealed class ExternalPlaybackTests
         await using var factory = CreateFactory(downloads, library, waitForLossless: false);
 
         using var client = factory.CreateClient();
-        using var response = await client.GetAsync("/rest/stream?id=external-track&f=json");
+        using var response = await client.GetAsync("/rest/stream?u=alice&id=external-track&f=json");
 
         response.EnsureSuccessStatusCode();
         Assert.Equal([1, 2, 3], await response.Content.ReadAsByteArrayAsync());
@@ -44,6 +46,23 @@ public sealed class ExternalPlaybackTests
             It.IsAny<CancellationToken>()), Times.Once);
         downloads.Verify(service => service.DownloadAndStreamAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RejectedCallerCannotStartExternalPlayback()
+    {
+        var downloads = new Mock<IDownloadService>();
+        var library = new Mock<ILocalLibraryService>();
+        library.Setup(service => service.ParseSongId("external-track")).Returns((true, "soulseek", "track-id"));
+        await using var factory = CreateFactory(downloads, library, waitForLossless: false);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetStringAsync("/rest/stream?u=bad&id=external-track&f=json");
+
+        Assert.Contains("failed", response);
+        Assert.Contains("40", response);
+        downloads.Verify(service => service.GetDirectStreamAsync(It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -56,7 +75,7 @@ public sealed class ExternalPlaybackTests
 
         await using var factory = CreateFactory(downloads, library, waitForLossless: true);
         using var client = factory.CreateClient();
-        var responseTask = client.GetAsync("/rest/stream?id=external-track&f=json");
+        var responseTask = client.GetAsync("/rest/stream?u=alice&id=external-track&f=json");
 
         var queue = factory.Services.GetRequiredService<TrackAcquisitionQueue>();
         using var dequeueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -106,11 +125,27 @@ public sealed class ExternalPlaybackTests
                 builder.ConfigureServices(services =>
                 {
                     services.RemoveAll<IHostedService>();
+                    services.RemoveAll<IHttpClientFactory>();
+                    var http = new Mock<IHttpClientFactory>();
+                    http.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(() => new HttpClient(new AuthHandler()));
+                    services.AddSingleton(http.Object);
                     services.RemoveAll<IDownloadService>();
                     services.RemoveAll<ILocalLibraryService>();
                     services.AddSingleton(downloads.Object);
                     services.AddSingleton(library.Object);
                 });
             });
+    }
+    private sealed class AuthHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal("/rest/ping", request.RequestUri!.AbsolutePath);
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
+            Assert.False(query.ContainsKey("id"));
+            var status = query.GetValueOrDefault("u") == "alice" ? "ok" : "failed";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = new StringContent("{\"subsonic-response\":{\"status\":\"" + status + "\"}}", Encoding.UTF8, "application/json") });
+        }
     }
 }

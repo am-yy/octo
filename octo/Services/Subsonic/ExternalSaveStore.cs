@@ -437,9 +437,10 @@ public sealed class ExternalSaveStore
         {
             var intent = FindAcquisition(state, provider, externalId);
             if (intent is null || intent.Status == "imported") return;
-            intent.Status = "pending";
+            var search = state.AlbumSearches.FirstOrDefault(s => Same(s.ForeignAlbumId, intent.AlbumForeignId));
+            intent.Status = search?.Status is "in-progress" or "submitted" ? search.Status : "pending";
             intent.LastError = error;
-            intent.RetryAfterUtc = DateTime.UtcNow + RetryDelay;
+            intent.RetryAfterUtc = intent.Status == "pending" ? DateTime.UtcNow + RetryDelay : null;
             intent.UpdatedUtc = DateTime.UtcNow;
         });
         return Task.CompletedTask;
@@ -459,21 +460,28 @@ public sealed class ExternalSaveStore
     }
 
     /// <summary>
-    /// Requeue interrupted metadata resolution only when no durable AlbumSearch claim exists.
-    /// An in-progress claim for an album is never replayed, so a restart cannot duplicate it.
+    /// Requeue preparation after restart. Once command submission could have begun, retain
+    /// its claim: Lidarr has no idempotency key to safely replay a lost response.
     /// </summary>
-    public Task<int> RecoverInterruptedAcquisitionsAsync()
+    public Task<int> RecoverInterruptedAcquisitionsAsync(bool afterRestart = false)
     {
         var recovered = 0;
         Mutate(state =>
         {
+            if (afterRestart)
+                foreach (var search in state.AlbumSearches.Where(s => s.Status == "preparing"))
+                {
+                    search.Status = "failed";
+                    search.LastError = "Album preparation interrupted by restart.";
+                    search.UpdatedUtc = DateTime.UtcNow;
+                }
             var cutoff = DateTime.UtcNow - InterruptedWorkAge;
             foreach (var intent in state.Acquisitions.Where(i => i.Status == "in-progress"
-                && i.UpdatedUtc < cutoff))
+                && (afterRestart || i.UpdatedUtc < cutoff)))
             {
                 var hasAlbumSearchClaim = !string.IsNullOrWhiteSpace(intent.AlbumForeignId)
                     && state.AlbumSearches.Any(s => Same(s.ForeignAlbumId, intent.AlbumForeignId)
-                        && s.Status is "in-progress" or "submitted");
+                        && s.Status is "preparing" or "in-progress" or "submitted");
                 if (hasAlbumSearchClaim) continue;
                 intent.Status = "pending";
                 intent.UpdatedUtc = DateTime.UtcNow;
@@ -496,20 +504,20 @@ public sealed class ExternalSaveStore
         return Task.CompletedTask;
     }
 
-    /// <summary>Persist in-progress before calling Lidarr. This suppresses duplicate commands after a crash.</summary>
+    /// <summary>Claim metadata preparation. Command submission gets a separate durable marker.</summary>
     public Task<bool> TryBeginAlbumSearchAsync(string foreignAlbumId)
     {
         var claimed = false;
         Mutate(state =>
         {
             var search = state.AlbumSearches.FirstOrDefault(s => Same(s.ForeignAlbumId, foreignAlbumId));
-            if (search is { Status: "submitted" or "in-progress" }) return;
+            if (search is { Status: "preparing" or "submitted" or "in-progress" }) return;
             if (search is null)
             {
                 search = new ExternalAlbumSearch { ForeignAlbumId = foreignAlbumId };
                 state.AlbumSearches.Add(search);
             }
-            search.Status = "in-progress";
+            search.Status = "preparing";
             search.LastError = null;
             search.UpdatedUtc = DateTime.UtcNow;
             claimed = true;
@@ -522,6 +530,20 @@ public sealed class ExternalSaveStore
         lock (_gate)
             return _state.AlbumSearches.FirstOrDefault(s => Same(s.ForeignAlbumId, foreignAlbumId)) is { } search
                 ? Clone(search) : null;
+    }
+
+    public Task MarkAlbumSearchSubmittingAsync(string foreignAlbumId, int lidarrAlbumId)
+    {
+        Mutate(state =>
+        {
+            var search = GetOrCreateAlbumSearch(state, foreignAlbumId);
+            search.Status = "in-progress";
+            search.LidarrAlbumId = lidarrAlbumId;
+            search.UpdatedUtc = DateTime.UtcNow;
+            foreach (var intent in state.Acquisitions.Where(i => Same(i.AlbumForeignId, foreignAlbumId)))
+                intent.LidarrAlbumId = lidarrAlbumId;
+        });
+        return Task.CompletedTask;
     }
 
     public Task MarkAlbumSearchSubmittedAsync(string foreignAlbumId, int lidarrAlbumId)

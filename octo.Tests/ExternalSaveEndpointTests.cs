@@ -166,19 +166,143 @@ public sealed class ExternalSaveEndpointTests
         using var client = app.CreateClient();
         var detail = JsonNode.Parse(await client.GetStringAsync("/rest/getSong?id=ext-deezer-123&f=json"));
         Assert.Equal("flac", detail!["subsonic-response"]!["song"]!["suffix"]!.ToString());
-        using var seek = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?id=ext-deezer-123&f=json");
+        using var seek = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&id=ext-deezer-123&f=json");
         seek.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(10, 19);
         using var range = await client.SendAsync(seek);
         Assert.Equal(HttpStatusCode.PartialContent, range.StatusCode);
         Assert.Equal("audio/flac", range.Content.Headers.ContentType!.MediaType);
         Assert.Equal(audio.Payload[10..20], await range.Content.ReadAsByteArrayAsync());
-        using var invalid = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?id=ext-deezer-123&f=json");
+        using var invalid = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&id=ext-deezer-123&f=json");
         invalid.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(audio.Payload.Length + 1, null);
         using var unsatisfied = await client.SendAsync(invalid);
         Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, unsatisfied.StatusCode);
         Assert.Empty(fixture.Store.Snapshot().Acquisitions);
         var state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
         Assert.Null(state!["tracks"]!["123"]!["lastPlayedUtc"]);
+        await client.GetStringAsync("/rest/scrobble?u=bad&id=ext-deezer-123&f=json&submission=false");
+        state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
+        Assert.Null(state!["tracks"]!["123"]!["lastPlayedUtc"]);
+        await client.GetStringAsync("/rest/scrobble?u=alice&id=ext-deezer-123&f=json&submission=false");
+        state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
+        Assert.NotNull(state!["tracks"]!["123"]!["lastPlayedUtc"]);
+    }
+
+    [Fact]
+    public async Task RejectedCallerCannotFillOrReadFlacCache()
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&id=ext-deezer-123&f=json"));
+        Assert.Equal(0, audio.CdnRequests);
+        Assert.Null(audio.Cache.GetReadyPath(new Song { DeezerId = "123" }));
+        await client.GetByteArrayAsync("/rest/stream?u=alice&id=ext-deezer-123&f=json");
+        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&id=ext-deezer-123&f=json"));
+        Assert.Equal(1, audio.CdnRequests);
+    }
+
+    [Fact]
+    public async Task DurableMetadataRecognizesImportBeforeLidarrSubmission()
+    {
+        using var fixture = new SavesFixture();
+        var song = new Song { Id = "ext-deezer-123", Artist = "Artist", Title = "Outside",
+            ExternalProvider = "deezer", ExternalId = "123", DeezerId = "123" };
+        await fixture.Store.SetHeartAsync("alice", song, true);
+        var path = Path.Combine(Path.GetDirectoryName(fixture.StatePath)!, "imported.flac");
+        await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
+        await using var app = fixture.App(imported: new Song { Id = "library-123", IsLocal = true, Suffix = "flac", LocalPath = path });
+        using var client = app.CreateClient();
+        var service = app.Services.GetRequiredService<Octo.Services.Lidarr.ILidarrHeartAcquisitionService>();
+
+        Assert.True(await service.TryAcquireTrackAsync("deezer", "123"));
+        Assert.Equal("imported", fixture.Store.Snapshot().Acquisitions.Single().Status);
+        Assert.Equal("library-123", fixture.Store.CanonicalSongId(song.Id));
+        Assert.Empty(fixture.Upstream.Requests);
+    }
+
+    [Fact]
+    public async Task NativeSessionMirrorsImportedHeartAfterRestartWithoutLoginCapture()
+    {
+        using var fixture = new SavesFixture();
+        await fixture.Store.SetHeartAsync("alice", new Song { Id = "ext-deezer-123", Title = "Outside",
+            ExternalProvider = "deezer", ExternalId = "123" }, true);
+        var path = Path.Combine(Path.GetDirectoryName(fixture.StatePath)!, "imported.flac");
+        await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
+        await fixture.Store.MarkImportedAsync("deezer", "123", "library-123", path);
+        await using var app = fixture.App();
+        using var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Nd-Authorization", "Bearer " + Token("alice"));
+
+        await client.GetStringAsync("/api/song?starred=true");
+
+        Assert.Contains("library-123", fixture.Upstream.MirroredHeartIds);
+        Assert.DoesNotContain(fixture.Store.GetHeartMutations("alice"), h => h.PendingMirror);
+    }
+
+    [Fact]
+    public async Task RejectedScrobbleDoesNotPrefetchUpcomingAudio()
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+        app.Services.GetRequiredService<Octo.Services.Soulseek.RadioQueueStore>()
+            .Register(["ext-deezer-current", "ext-deezer-123"]);
+
+        Assert.Contains("failed", await client.GetStringAsync("/rest/scrobble?u=bad&id=ext-deezer-current&f=json"));
+
+        fixture.Metadata.Verify(m => m.PrewarmDeezerIdsForSongIdsAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, audio.CdnRequests);
+    }
+
+    [Fact]
+    public async Task RejectedCatalogCallerCannotPrefetchAudio()
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        fixture.Metadata.Setup(m => m.GetPlaylistAsync("deezer", "1"))
+            .ReturnsAsync(new Octo.Models.Subsonic.ExternalPlaylist { Id = "pl-deezer-1", Name = "Discovery" });
+        fixture.Metadata.Setup(m => m.GetPlaylistTracksAsync("deezer", "1"))
+            .ReturnsAsync([new Song { Id = "ext-deezer-123", DeezerId = "123", Artist = "Artist", Title = "Outside" }]);
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+
+        await client.GetStringAsync("/rest/getAlbum?u=bad&id=pl-deezer-1&f=json");
+
+        fixture.Metadata.Verify(m => m.PrewarmDeezerIdsAsync(It.IsAny<IEnumerable<Song>>(), It.IsAny<int>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, audio.CdnRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnerCanRetryDurableRemovalWhenUpstreamPlaylistAlreadyDeleted(bool native)
+    {
+        using var fixture = new SavesFixture();
+        await fixture.Store.UpsertPlaylistAsync(new ExternalSavedPlaylist { Id = "p1", UserId = "alice", Owner = "alice",
+            Name = "Saved", Tracks = [new ExternalPlaylistTrack { SongId = "ext-deezer-123",
+                Song = new Song { Id = "ext-deezer-123", ExternalProvider = "deezer", ExternalId = "123" } }] });
+        fixture.Upstream.PlaylistMissing = true;
+        var backup = fixture.StatePath + ".backup";
+        File.Move(fixture.StatePath, backup);
+        Directory.CreateDirectory(fixture.StatePath);
+        await using var app = fixture.App();
+        using var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Nd-Authorization", "Bearer " + Token("alice"));
+        using var failed = native ? await client.DeleteAsync("/api/playlist/p1")
+            : await client.GetAsync("/rest/deletePlaylist?u=alice&f=json&id=p1");
+        Assert.True(native ? failed.StatusCode == HttpStatusCode.InternalServerError
+            : (await failed.Content.ReadAsStringAsync()).Contains("failed"));
+        Assert.NotNull(fixture.Store.GetPlaylist("alice", "p1"));
+        Directory.Delete(fixture.StatePath);
+        File.Move(backup, fixture.StatePath);
+        using var removed = native ? await client.DeleteAsync("/api/playlist/p1")
+            : await client.GetAsync("/rest/deletePlaylist?u=alice&f=json&id=p1");
+        removed.EnsureSuccessStatusCode();
+        if (!native) Assert.Contains("ok", await removed.Content.ReadAsStringAsync());
+        Assert.Null(fixture.Store.GetPlaylist("alice", "p1"));
     }
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
@@ -191,17 +315,20 @@ public sealed class ExternalSaveEndpointTests
         public string StatePath => Path.Combine(_root, "state.json");
         public ExternalSaveStore Store { get; }
         public SaveHandler Upstream { get; } = new();
+        public Mock<IMusicMetadataService> Metadata { get; } = new();
         public SavesFixture()
         {
             Directory.CreateDirectory(_root);
             Store = new ExternalSaveStore(StatePath, NullLogger<ExternalSaveStore>.Instance);
         }
-        public WebApplicationFactory<Program> App(Octo.Services.Deezer.DeezerAudioCache? cache = null)
+        public WebApplicationFactory<Program> App(Octo.Services.Deezer.DeezerAudioCache? cache = null, Song? imported = null)
         {
             var library = new Mock<ILocalLibraryService>();
             library.Setup(l => l.ParseSongId(It.IsAny<string>())).Returns((string id) =>
                 id.StartsWith("ext-deezer-") ? (true, "deezer", id[11..]) : (false, null, null));
-            var metadata = new Mock<IMusicMetadataService>();
+            library.Setup(l => l.FindImportedSongAsync(It.IsAny<Song>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((Song song, CancellationToken _) => song.Artist == "Artist" && song.Title == "Outside" ? imported : null);
+            var metadata = Metadata;
             metadata.Setup(m => m.GetSongAsync("deezer", "123")).ReturnsAsync(new Song
             { Id = "ext-deezer-123", Title = "Outside", Artist = "Artist", Duration = 180,
                 ExternalProvider = "deezer", ExternalId = "123", DeezerId = "123" });
@@ -229,15 +356,21 @@ public sealed class ExternalSaveEndpointTests
 
     private sealed class SaveHandler : HttpMessageHandler
     {
+        public bool PlaylistMissing { get; set; }
+        public List<string> Requests { get; } = [];
         public List<string> MirroredIds { get; } = [];
         public List<string> MirroredHeartIds { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var path = request.RequestUri!.AbsolutePath;
+            Requests.Add(path);
             var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
             if (request.Headers.TryGetValues("X-Nd-Authorization", out var auth) && auth.Any(a => a.Contains("denied")))
                 return Reply("{}", HttpStatusCode.Unauthorized);
             if (query.GetValueOrDefault("u") == "bad") return Reply("""{"subsonic-response":{"status":"failed","error":{"code":40}}}""");
+            if (PlaylistMissing && path is "/rest/getPlaylist" or "/rest/deletePlaylist")
+                return Reply("""{"subsonic-response":{"status":"failed","error":{"code":70}}}""");
+            if (PlaylistMissing && path == "/api/playlist/p1") return Reply("{}", HttpStatusCode.NotFound);
             const string song = """{"id":"real","title":"Owned","artist":"Artist","duration":180,"suffix":"flac"}""";
             const string playlist = """{"id":"p1","name":"Saved","owner":"alice","ownerName":"alice","songCount":1,"duration":180,"entry":[{"id":"real","title":"Owned","artist":"Artist","duration":180,"suffix":"flac"}]}""";
             if (path == "/api/playlist" && request.Method == HttpMethod.Get) return Reply("[" + playlist + "]");
@@ -255,6 +388,13 @@ public sealed class ExternalSaveEndpointTests
                 var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!;
                 MirroredIds.Clear(); MirroredIds.AddRange(body["tracks"]!.AsArray().Select(t => t!["mediaFileId"]!.ToString()));
                 return Reply(playlist);
+            }
+            if (path.StartsWith("/api/song/") && request.Method == HttpMethod.Put)
+            {
+                Assert.Equal("application/json", request.Content!.Headers.ContentType?.MediaType);
+                Assert.True(request.Headers.Contains("X-Nd-Authorization"));
+                var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!;
+                if (body["starred"]?.GetValue<bool>() == true) MirroredHeartIds.Add(path[10..]);
             }
             if (path.StartsWith("/api/song/"))
             { var row = JsonNode.Parse(song)!; row["id"] = path[10..]; return Reply(row.ToJsonString()); }

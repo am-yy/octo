@@ -43,6 +43,7 @@ public sealed class HeartAcquisitionCoordinator
     internal async Task<bool> AcquireTrackAsync(string provider, string externalId,
         string? requestedBy = null)
     {
+        if (!_settings.CurrentValue.RecordRequestedBy) requestedBy = null;
         var steps = EnabledSteps(albumHeart: false);
         for (var index = 0; index < steps.Count; index++)
         {
@@ -92,6 +93,7 @@ public sealed class HeartAcquisitionCoordinator
     internal async Task AcquireAlbumAsync(string provider, string albumExternalId,
         string? requestedBy = null)
     {
+        if (!_settings.CurrentValue.RecordRequestedBy) requestedBy = null;
         var steps = EnabledSteps(albumHeart: true);
         for (var index = 0; index < steps.Count; index++)
         {

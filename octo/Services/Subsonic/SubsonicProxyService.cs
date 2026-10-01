@@ -125,8 +125,10 @@ public class SubsonicProxyService
         if (rawBody != null)
         {
             req.Content = new ByteArrayContent(rawBody);
-            if (!string.IsNullOrEmpty(incoming?.ContentType))
-                req.Content.Headers.TryAddWithoutValidation("Content-Type", bodyOverride is null ? incoming.ContentType : "application/json");
+            if (bodyOverride is not null)
+                req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            else if (!string.IsNullOrEmpty(incoming?.ContentType))
+                req.Content.Headers.TryAddWithoutValidation("Content-Type", incoming.ContentType);
         }
 
         // Forward auth + conditional headers so native Navidrome endpoints work.

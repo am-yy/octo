@@ -520,6 +520,7 @@ public class SoulseekMetadataService : IMusicMetadataService
             TotalTracks = routing.TotalTracks,
             Duration = routing.Duration,
             Isrc = routing.Isrc,
+            DeezerId = routing.DeezerId,
             IsLocal = false,
             ExternalProvider = ProviderName,
             ExternalId = externalId

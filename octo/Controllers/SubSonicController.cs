@@ -1478,6 +1478,8 @@ public partial class SubsonicController : ControllerBase
             parameters["id"] = savedSong.Id;
             return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
         }
+        if (isExternal && !await HasAcceptedSubsonicCredentialsAsync(parameters))
+            return _responseBuilder.CreateError(format, 40, "Wrong username or password");
         if (isExternal && _deezerCache?.Enabled == true)
         {
             try
@@ -2973,18 +2975,7 @@ public partial class SubsonicController : ControllerBase
         var times = await _requestParser.ExtractParameterValuesAsync(Request, "time", HttpContext.RequestAborted);
         var parameters = await ExtractAllParameters();
         if (ids.Count == 0 && parameters.GetValueOrDefault("id") is { Length: > 0 } singleId) ids = [singleId];
-        var id = ids.FirstOrDefault() ?? "";
         var format = parameters.GetValueOrDefault("f", "xml");
-
-        if (!string.IsNullOrEmpty(id))
-        {
-            var upcoming = _radioQueueStore.GetUpcomingFrom(id, count: 16);
-            if (upcoming.Count > 0)
-            {
-                _logger.LogDebug("scrobble {Id}: prewarming next {N} from queue", id, upcoming.Count);
-                _ = PrewarmPlaybackIdsAsync(upcoming, 8);
-            }
-        }
 
         // Library songs pass through so Navidrome's last-played/Now Playing stays accurate.
         // An outside id is not Navidrome's: relayed, it logs "data not found" on every play
@@ -3023,7 +3014,7 @@ public partial class SubsonicController : ControllerBase
         catch (HttpRequestException)
         {
             // Even if upstream is briefly unhappy, return 200 so the client
-            // doesn't think scrobble is broken — the prewarm side already fired.
+            // doesn't think scrobble is broken. Failed authentication never warms audio.
             return _responseBuilder.CreateResponse(format, "scrobble", new { });
         }
     }
@@ -3044,6 +3035,11 @@ public partial class SubsonicController : ControllerBase
         var username = await _requestIdentity.UsernameAsync(authenticatedParameters, _proxyService,
             HttpContext.RequestAborted);
         if (string.IsNullOrEmpty(username)) return;
+        if (ids.FirstOrDefault() is { Length: > 0 } currentId)
+        {
+            var upcoming = _radioQueueStore.GetUpcomingFrom(currentId, count: 16);
+            if (upcoming.Count > 0) _ = PrewarmPlaybackIdsAsync(upcoming, 8);
+        }
         if (_deezerCache?.Enabled == true)
             foreach (var id in ids)
             {

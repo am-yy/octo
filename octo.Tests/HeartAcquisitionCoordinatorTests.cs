@@ -36,6 +36,25 @@ public class HeartAcquisitionCoordinatorTests
     }
 
     [Fact]
+    public async Task DisabledAttributionOmitsCallerFromTrackAndAlbumAcquisition()
+    {
+        var lidarr = new Mock<ILidarrHeartAcquisitionService>();
+        lidarr.Setup(x => x.TryAcquireTrackAsync("deezer", "track", true, null)).ReturnsAsync(true);
+        lidarr.Setup(x => x.TryAcquireAlbumAsync("deezer", "album", true, null)).ReturnsAsync(true);
+        var coordinator = new HeartAcquisitionCoordinator(
+            TestOptions.Monitor(new SubsonicSettings { DownloadSource = DownloadSource.Lidarr, RecordRequestedBy = false }),
+            new TrackAcquisitionQueue(new Mock<ILogger<TrackAcquisitionQueue>>().Object),
+            new Mock<IDownloadService>().Object, lidarr.Object, CoordinatorLogger);
+
+        await coordinator.AcquireTrackAsync("deezer", "track", "alice");
+        await coordinator.AcquireAlbumAsync("deezer", "album", "alice");
+
+        lidarr.Verify(x => x.TryAcquireTrackAsync("deezer", "track", true, null), Times.Once);
+        lidarr.Verify(x => x.TryAcquireAlbumAsync("deezer", "album", true, null), Times.Once);
+        lidarr.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task SoulseekSourceKeepsAlbumOnExistingDirectPath()
     {
         var lidarr = new Mock<ILidarrHeartAcquisitionService>();

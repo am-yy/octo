@@ -132,7 +132,8 @@ public sealed class LidarrClient
         return null;
     }
 
-    public async Task<int> EnsureAlbumAndSearchAsync(LidarrAlbumCandidate candidate, CancellationToken ct = default)
+    public async Task<int> EnsureAlbumAndSearchAsync(LidarrAlbumCandidate candidate, CancellationToken ct = default,
+        Func<int, Task>? beforeSearch = null)
     {
         var settings = RequireSettings(requireProfiles: true);
         var existing = await GetArrayAsync(
@@ -195,6 +196,7 @@ public sealed class LidarrClient
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
 
+        if (beforeSearch is not null) await beforeSearch(albumId);
         await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
         {
             ["name"] = "AlbumSearch",

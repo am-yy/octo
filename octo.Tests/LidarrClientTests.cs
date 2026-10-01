@@ -170,6 +170,29 @@ public class LidarrClientTests
     }
 
     [Fact]
+    public async Task FailedDurableSubmissionMarkerPreventsAlbumSearch()
+    {
+        var handler = new Handler
+        {
+            Respond = req => req.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/album" => "[{\"id\":17}]",
+                "/api/v1/track" => "[{\"id\":1}]",
+                _ => "{}",
+            },
+        };
+
+        await Assert.ThrowsAsync<IOException>(() => Build(handler).EnsureAlbumAndSearchAsync(
+            Candidate("album", "Album", "Artist", 2020), beforeSearch: id =>
+            {
+                Assert.Equal(17, id);
+                throw new IOException("Disk full");
+            }));
+
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command");
+    }
+
+    [Fact]
     public async Task ExistingArtistSettingsArePreservedWhenAddingUnmonitoredAlbum()
     {
         var handler = new Handler

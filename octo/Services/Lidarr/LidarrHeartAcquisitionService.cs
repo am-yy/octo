@@ -94,9 +94,6 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         string? requestedBy = null) =>
         TryAcquireAsync(async () =>
         {
-            // A pending intent can outlive this process. Do not submit an album search for a
-            // recording the lossless import reconciler has already placed in Navidrome.
-            if (await _library.GetLocalIdForExternalSongAsync(provider, externalId) is not null) return;
             var song = _externalSaves?.GetSong(externalId)
                 ?? _externalSaves?.Snapshot().Acquisitions.FirstOrDefault(i =>
                     i.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase)
@@ -105,6 +102,16 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 ?? throw new InvalidOperationException("The starred external track is no longer available.");
             song.ExternalProvider ??= provider;
             song.ExternalId ??= externalId;
+            // Durable metadata survives registry eviction and restart. Check the recording
+            // before claiming acquisition, so an existing import cannot trigger another search.
+            var imported = await _library.FindImportedSongAsync(song);
+            if (imported is { IsLocal: true, Suffix: { } suffix, LocalPath: { Length: > 0 } path }
+                && suffix.Equals("flac", StringComparison.OrdinalIgnoreCase) && File.Exists(path))
+            {
+                if (_externalSaves is not null)
+                    await _externalSaves.MarkImportedAsync(provider, externalId, imported.Id, path);
+                return;
+            }
             if (_externalSaves is not null)
             {
                 await _externalSaves.QueueAcquisitionAsync(provider, externalId, song, requestedBy);
@@ -315,13 +322,17 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         {
             try
             {
-                albumId = await _client.EnsureAlbumAndSearchAsync(candidate);
+                albumId = await _client.EnsureAlbumAndSearchAsync(candidate,
+                    beforeSearch: _externalSaves is null ? null : id =>
+                        _externalSaves.MarkAlbumSearchSubmittingAsync(candidate.ForeignAlbumId, id));
                 if (_externalSaves is not null)
                     await _externalSaves.MarkAlbumSearchSubmittedAsync(candidate.ForeignAlbumId, albumId);
             }
             catch (Exception ex)
             {
-                if (_externalSaves is not null)
+                // A failed response after submission began is ambiguous. Keep the claim
+                // rather than repeat AlbumSearch; import reconciliation remains active.
+                if (_externalSaves?.GetAlbumSearch(candidate.ForeignAlbumId)?.Status == "preparing")
                     await _externalSaves.MarkAlbumSearchFailedAsync(candidate.ForeignAlbumId, ex.Message);
                 throw;
             }

@@ -20,11 +20,13 @@ public sealed class ExternalSaveWorker(ExternalSaveStore store, DeezerAudioCache
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var afterRestart = true;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await store.RecoverInterruptedAcquisitionsAsync();
+                await store.RecoverInterruptedAcquisitionsAsync(afterRestart);
+                afterRestart = false;
                 var state = store.Snapshot();
                 var pins = state.Playlists.SelectMany(p => p.Tracks.Where(t => t.Song is { IsLocal: false })
                     .Select(t => (Song: t.Song!, ReferenceId: $"playlist/{p.UserId}/{p.Id}/{t.OccurrenceId}")))

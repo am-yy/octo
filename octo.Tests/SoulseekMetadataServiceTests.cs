@@ -149,12 +149,14 @@ public class SoulseekMetadataServiceTests
         });
         var albumId = (await svc.SearchAlbumsAsync("test", 10)).Single().Id;
         var trackId = (await svc.GetAlbumAsync(SoulseekMetadataService.ProviderName, albumId))!.Songs[0].Id;
+        _registry.Lookup(trackId)!.DeezerId = "10";
 
         var song = await svc.GetSongAsync(SoulseekMetadataService.ProviderName, trackId);
 
         Assert.NotNull(song);
         Assert.Equal("Test Album", song!.Album);
         Assert.Equal("Track One", song.Title);
+        Assert.Equal("10", song.DeezerId);
     }
 
     [Fact]

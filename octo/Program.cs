@@ -121,7 +121,7 @@ builder.Services.AddHttpClient(DeezerResolver.ApiClientName, c =>
 {
     c.Timeout = TimeSpan.FromSeconds(10);
     c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
-}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
 builder.Services.AddHttpClient(DeezerResolver.StreamClientName, c =>
 {
     c.Timeout = Timeout.InfiniteTimeSpan;
@@ -131,6 +131,15 @@ builder.Services.AddSingleton(sp => new ExternalIdRegistry(
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-ids.json"),
     sp.GetRequiredService<ILogger<ExternalIdRegistry>>()));
 builder.Services.AddSingleton<RadioQueueStore>();
+builder.Services.AddSingleton(sp => new ExternalSaveStore(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-saves.json"),
+    sp.GetRequiredService<ILogger<ExternalSaveStore>>()));
+builder.Services.AddSingleton<ExternalSaveReconciler>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalSaveReconciler>());
+builder.Services.AddSingleton<ExternalSaveWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalSaveWorker>());
+builder.Services.AddSingleton<DeezerAudioCache>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerAudioCache>());
 builder.Services.AddSingleton<Octo.Services.Subsonic.NavidromeIdentityService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SubsonicDiscoveryService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SyncCatalogService>();

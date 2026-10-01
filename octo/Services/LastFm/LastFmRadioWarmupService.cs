@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using Octo.Models.Domain;
+using Octo.Services.Deezer;
 
 namespace Octo.Services.LastFm;
 
@@ -23,13 +25,16 @@ public sealed class LastFmRadioWarmupService : BackgroundService
     private readonly IServiceScopeFactory _scopes;
     private readonly LastFmRadioStateStore _state;
     private readonly ILogger<LastFmRadioWarmupService> _logger;
+    private readonly DeezerAudioCache? _deezerAudioCache;
 
     public LastFmRadioWarmupService(IServiceScopeFactory scopes,
-        LastFmRadioStateStore state, ILogger<LastFmRadioWarmupService> logger)
+        LastFmRadioStateStore state, ILogger<LastFmRadioWarmupService> logger,
+        DeezerAudioCache? deezerAudioCache = null)
     {
         _scopes = scopes;
         _state = state;
         _logger = logger;
+        _deezerAudioCache = deezerAudioCache;
     }
 
     public bool QueueUser(string username)
@@ -46,7 +51,23 @@ public sealed class LastFmRadioWarmupService : BackgroundService
     {
         using var scope = _scopes.CreateScope();
         var streams = scope.ServiceProvider.GetRequiredService<LastFmRadioStreamService>();
-        return await streams.WarmStoredStationsAsync(username, cancellationToken);
+        var result = await streams.WarmStoredStationsAsync(username, cancellationToken);
+        if (_deezerAudioCache is not null)
+        {
+            var starterSongs = _state.GetUser(username).Stations
+                .SelectMany(station => station.Tracks.Take(8))
+                .Where(track => !track.IsLocal && !string.IsNullOrWhiteSpace(track.ResolvedId))
+                .Select(track => new Song
+                {
+                    Id = track.ResolvedId!, ExternalId = track.ResolvedId,
+                    ExternalProvider = track.ExternalProvider, DeezerId = track.DeezerId,
+                    Artist = track.Artist, Title = track.Title, Album = track.Album ?? string.Empty,
+                    Duration = track.Duration, IsLocal = false,
+                }).ToList();
+            _ = _deezerAudioCache.PrewarmAsync(starterSongs, topN: starterSongs.Count,
+                cancellationToken: cancellationToken);
+        }
+        return result;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

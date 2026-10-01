@@ -110,10 +110,61 @@ public class LocalLibraryService : ILocalLibraryService
 
     public async Task<string?> GetLocalIdForExternalSongAsync(string externalProvider, string externalId)
     {
-        // For now, return null as we don't yet have integration
-        // with the Subsonic server to retrieve local ID after scan
-        await Task.CompletedTask;
-        return null;
+        var mappings = await LoadMappingsAsync();
+        mappings.TryGetValue($"{externalProvider}:{externalId}", out var mapping);
+        var route = _idRegistry.Lookup(externalId);
+        var song = new Song { Id = externalId, ExternalProvider = externalProvider, ExternalId = externalId,
+            Title = mapping?.Title ?? route?.Title ?? "", Artist = mapping?.Artist ?? route?.Artist ?? "",
+            Album = mapping?.Album ?? route?.Album ?? "", Duration = route?.Duration, Isrc = route?.Isrc };
+        return (await FindImportedSongAsync(song))?.Id;
+    }
+
+    public async Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(source.Title) || string.IsNullOrWhiteSpace(source.Artist)) return null;
+        var jwt = await _navIdentity.EnsureAdminJwtAsync(ct);
+        if (string.IsNullOrEmpty(jwt) || string.IsNullOrWhiteSpace(_subsonicSettings.Url)) return null;
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"{_subsonicSettings.Url.TrimEnd('/')}/api/song?_end=0&title={Uri.EscapeDataString(source.Title)}");
+        request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
+        using var response = await _httpClient.SendAsync(request, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) _navIdentity.InvalidateAdminJwt(jwt);
+        if (!response.IsSuccessStatusCode) return null;
+        using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+        var root = _navIdentity.EffectiveDownloadPath(_downloadDirectory);
+        var matches = new List<Song>();
+        foreach (var row in document.RootElement.EnumerateArray())
+        {
+            string Text(string key) => row.TryGetProperty(key, out var v) ? v.ToString() : "";
+            if (!Octo.Services.LastFm.LastFmRadioTrackResolver.IsSameRecording(source.Artist, source.Title, Text("artist"), Text("title"))
+                || !string.Equals(Text("suffix"), "flac", StringComparison.OrdinalIgnoreCase)) continue;
+            var duration = row.TryGetProperty("duration", out var d) && d.TryGetDouble(out var n) ? n : 0;
+            if (source.Duration is > 0 && duration > 0 && Math.Abs(source.Duration.Value - duration) > 10) continue;
+            var candidate = new Octo.Services.Library.NavidromeSongPathResolver.Candidate(
+                Text("id"), Text("path"), Text("libraryPath"), 0, "", "", "", "", null,
+                Octo.Services.Library.PathSource.NativeApi);
+            var path = Octo.Services.Library.NavidromeSongPathResolver.CandidatePaths(candidate, root)
+                .FirstOrDefault(IsImportedFlac);
+            if (path is null) continue;
+            var imported = JsonSerializer.Deserialize<Song>(JsonSerializer.Serialize(source))!;
+            imported.Id = Text("id"); imported.LocalPath = path; imported.Suffix = "flac";
+            imported.IsLocal = true; imported.Album = Text("album");
+            matches.Add(imported);
+        }
+        if (!string.IsNullOrWhiteSpace(source.Album))
+        {
+            var release = matches.Where(song => SongIdentity.Key(source.Album) == SongIdentity.Key(song.Album)).ToList();
+            if (release.Count > 0) matches = release;
+        }
+        var unique = matches.DistinctBy(song => song.Id).Take(2).ToList();
+        return unique.Count == 1 ? unique[0] : null;
+    }
+
+    private static bool IsImportedFlac(string path)
+    {
+        if (!File.Exists(path) || !Path.GetExtension(path).Equals(".flac", StringComparison.OrdinalIgnoreCase)) return false;
+        try { using var audio = TagLib.File.Create(path); return audio is TagLib.Flac.File && audio.Properties.Duration > TimeSpan.Zero; }
+        catch { return false; }
     }
 
     public (bool isExternal, string? provider, string? externalId) ParseSongId(string songId)

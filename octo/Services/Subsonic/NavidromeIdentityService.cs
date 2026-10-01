@@ -98,6 +98,14 @@ public class NavidromeIdentityService
     /// kept: /api/library and startScan need admin, and a later non-admin sign-in
     /// must not overwrite a good admin identity.
     /// </summary>
+    private readonly Dictionary<string, (string user, string token, string salt)> _callerSubsonicAuth = new();
+
+    public (string user, string token, string salt)? CallerSubsonicAuth(string? nativeToken)
+    {
+        if (nativeToken is null) return null;
+        lock (_lock) return _callerSubsonicAuth.TryGetValue(nativeToken, out var auth) ? auth : null;
+    }
+
     public void CaptureLogin(byte[] body)
     {
         try
@@ -115,6 +123,10 @@ public class NavidromeIdentityService
                 lock (_lock)
                 {
                     _nativeUsers[token] = loginUsername;
+                    if (root.TryGetProperty("subsonicToken", out var callerToken) && callerToken.GetString() is { Length: > 0 } st
+                        && root.TryGetProperty("subsonicSalt", out var callerSalt) && callerSalt.GetString() is { Length: > 0 } ss)
+                        _callerSubsonicAuth[token] = (loginUsername, st, ss);
+                    while (_callerSubsonicAuth.Count > 100) _callerSubsonicAuth.Remove(_callerSubsonicAuth.Keys.First());
                     while (_nativeUsers.Count > 100) _nativeUsers.Remove(_nativeUsers.Keys.First());
                 }
             }

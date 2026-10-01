@@ -40,7 +40,7 @@ public sealed class HeartAcquisitionCoordinator
         _ = AcquireAlbumAsync(provider, albumExternalId, requestedBy);
     }
 
-    internal async Task AcquireTrackAsync(string provider, string externalId,
+    internal async Task<bool> AcquireTrackAsync(string provider, string externalId,
         string? requestedBy = null)
     {
         var steps = EnabledSteps(albumHeart: false);
@@ -55,7 +55,7 @@ public sealed class HeartAcquisitionCoordinator
                 SourceName(steps[index]));
             if (steps[index] == HeartDownloadSource.Lidarr)
             {
-                if (await _lidarr.TryAcquireTrackAsync(provider, externalId, isLast, requestedBy)) return;
+                if (await _lidarr.TryAcquireTrackAsync(provider, externalId, isLast, requestedBy)) return true;
                 continue;
             }
 
@@ -67,7 +67,7 @@ public sealed class HeartAcquisitionCoordinator
                     // Passed on every step, not only the first. A track that fails its way
                     // down the source chain is still the same person's star.
                     requestedBy: requestedBy);
-                return;
+                return true;
             }
             catch (Exception ex)
             {
@@ -78,7 +78,7 @@ public sealed class HeartAcquisitionCoordinator
                 if (isLast)
                 {
                     _tracker?.Fail(provider, externalId, ex.Message);
-                    return;
+                    return false;
                 }
                 // The next enabled source owns the fallback.
             }
@@ -86,6 +86,7 @@ public sealed class HeartAcquisitionCoordinator
         // Only reached when the last source was Lidarr and it said no. It records its own
         // reason first; this is the fallback when it could not.
         _tracker?.Fail(provider, externalId, "No download source could get this song.");
+        return false;
     }
 
     internal async Task AcquireAlbumAsync(string provider, string albumExternalId,

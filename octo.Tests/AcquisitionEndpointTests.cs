@@ -75,6 +75,10 @@ public sealed class AcquisitionEndpointTests
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IHostedService>();
+                services.RemoveAll<Octo.Services.Subsonic.ExternalSaveStore>();
+                services.AddSingleton(new Octo.Services.Subsonic.ExternalSaveStore(
+                    Path.Combine(_directory, "external-saves.json"),
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<Octo.Services.Subsonic.ExternalSaveStore>.Instance));
                 services.RemoveAll<IHttpClientFactory>();
                 services.AddSingleton<IHttpClientFactory>(new ReviewFixtures.OneClientFactory(Navidrome));
             });

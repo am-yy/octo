@@ -375,12 +375,12 @@
             <div class="set-row playback-source-row">
               <div class="set-info">
                 <div class="set-info-t">When a song is missing</div>
-                <div class="set-info-d">Deezer starts at once. Soulseek waits for a lossless copy, then plays.</div>
+                <div class="set-info-d">Deezer playback uses its audio cache when enabled. Soulseek waits for a permanent lossless copy.</div>
               </div>
               <div class="set-ctrl">
                 <div class="seg" data-seg-for="f-playback-source"><span class="seg-thumb"></span></div>
                 <select id="f-playback-source" class="seg-src" hidden aria-label="Primary missing-track playback source">
-                  <option value="Deezer">Deezer MP3 stream</option>
+                  <option value="Deezer">Deezer playback</option>
                   <option value="Lossless">Soulseek download</option>
                 </select>
               </div>
@@ -389,7 +389,7 @@
             <div class="set-row stack">
               <div class="set-info">
                 <div class="set-info-t"><svg class="icon brand" aria-hidden="true"><use href="#b-deezer"/></svg>Deezer ARL</div>
-                <div class="set-info-d">Streams MP3_320 when available, with MP3_128 fallback. ARL is your private Deezer session token.</div>
+                <div class="set-info-d">ARL is your private Deezer session token. The FLAC playback cache requires lossless access.</div>
               </div>
               <input class="set-input" id="f-deezer-arl" name="Deezer.Arl" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste Deezer ARL" />
             </div>
@@ -410,6 +410,22 @@
                 <option value="MP3_320">MP3 320 kbps</option>
                 <option value="MP3_128">MP3 128 kbps</option>
               </select>
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">FLAC playback cache</div><div class="set-info-d">Download and share strict FLAC copies outside your music library. Playback waits for completion; saves keep their copies pinned until library import.</div></div>
+              <label class="switch"><input type="checkbox" name="Deezer.CacheEnabled" data-restart="true" aria-label="Enable FLAC playback cache" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+            </div>
+            <div class="set-row stack">
+              <label class="set-info-t" for="f-deezer-cache-path">Cache directory</label>
+              <input class="set-input" id="f-deezer-cache-path" name="Deezer.CachePath" data-restart="true" />
+            </div>
+            <div class="set-row">
+              <label class="set-info-t" for="f-deezer-cache-max">Unpinned cache limit (GiB)</label>
+              <input class="set-input" id="f-deezer-cache-max" name="Deezer.CacheMaxGiB" type="number" min="0" step="0.5" />
+            </div>
+            <div class="set-row">
+              <label class="set-info-t" for="f-deezer-cache-days">Unpinned retention (days)</label>
+              <input class="set-input" id="f-deezer-cache-days" name="Deezer.CacheRetentionDays" type="number" min="0" />
             </div>
             <div class="set-row stack" data-stream-source="Lossless" hidden>
               <div class="set-info">

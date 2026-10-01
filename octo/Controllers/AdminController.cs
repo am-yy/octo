@@ -676,6 +676,10 @@ public class AdminController : ControllerBase
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
                 ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
+                ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
+                ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
+                ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
             },
             ["LastFm"] = new Dictionary<string, object>
             {
@@ -1419,6 +1423,10 @@ public class AdminController : ControllerBase
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
                 ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
+                ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
+                ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
+                ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
             },
             ["LastFm"] = new JsonObject
             {
@@ -1595,6 +1603,10 @@ public class AdminController : ControllerBase
                         ["Arl"] = _config["Deezer:Arl"],
                         ["ArlFallback"] = _config["Deezer:ArlFallback"],
                         ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
+                ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
+                ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
+                ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
                     },
                 };
             RestoreSecretPlaceholders(parsed, existing);
@@ -1686,6 +1698,7 @@ public class AdminController : ControllerBase
             "Lidarr:QualityProfileId", "Lidarr:MetadataProfileId",
             "Lidarr:CompletionMode", "Lidarr:ImportTimeoutSeconds",
             "Deezer:Arl", "Deezer:ArlFallback", "Deezer:Quality",
+            "Deezer:CacheEnabled", "Deezer:CachePath", "Deezer:CacheMaxGiB", "Deezer:CacheRetentionDays",
             "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
             "LastFm:EnableRadio", "LastFm:RadioTrackCount",
             "LastFm:RadioCacheDurationHours", "LastFm:StarterPublishTimeoutSeconds",

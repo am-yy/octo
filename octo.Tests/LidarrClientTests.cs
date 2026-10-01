@@ -99,7 +99,43 @@ public class LidarrClientTests
     }
 
     [Fact]
-    public async Task NewAlbumUsesChosenDefaultsAndDoesNotMonitorFutureReleases()
+    public void ReleaseTitleAliasMatchesOnlySameArtistAndPrefersCanonicalTitle()
+    {
+        const string edition = "Beverly Hells (Special Edition)";
+        var alias = Candidate("a", "Beverly Hells", "SWIMM", 2015);
+        alias.Resource["releases"] = new JsonArray(new JsonObject { ["title"] = edition });
+        var duplicateReleaseGroup = Candidate("b", "Beverly Hells", "SWIMM", 2025);
+        duplicateReleaseGroup.Resource["releases"] = alias.Resource["releases"]!.DeepClone();
+        var canonical = Candidate("c", edition, "SWIMM", 2016);
+
+        Assert.Equal("a", LidarrClient.SelectBestAlbum([alias, alias], "Swimm", edition, null)!.ForeignAlbumId);
+        Assert.Null(LidarrClient.SelectBestAlbum([alias], "Other", edition, null));
+        Assert.Null(LidarrClient.SelectBestAlbum([alias], "Swimm", "Beverly Hells (Deluxe)", null));
+        Assert.Null(LidarrClient.SelectBestAlbum([alias, duplicateReleaseGroup], "Swimm", edition, null));
+        Assert.Equal("a", LidarrClient.SelectBestAlbum([alias, duplicateReleaseGroup], "Swimm", edition, 2015)!.ForeignAlbumId);
+        Assert.Equal("c", LidarrClient.SelectBestAlbum([alias, canonical], "Swimm", edition, null)!.ForeignAlbumId);
+    }
+
+    [Fact]
+    public async Task AlbumLookupAcceptsEditionTitleUnderCanonicalGroupTitle()
+    {
+        var handler = new Handler
+        {
+            Respond = _ => """
+                [{"foreignAlbumId":"b99f5cb1-0032-4548-a2b4-a52226d920bf","title":"Beverly Hells",
+                  "releaseDate":"2015-08-28","artist":{"artistName":"SWIMM"},
+                  "releases":[{"title":"Beverly Hells (Special Edition)"},{"title":"Beverly Hells"}]}]
+                """,
+        };
+
+        var album = await Build(handler).ResolveAlbumAsync("Swimm", "Beverly Hells (Special Edition)", 2016);
+
+        Assert.Equal("b99f5cb1-0032-4548-a2b4-a52226d920bf", album.ForeignAlbumId);
+        Assert.Equal("Beverly Hells", album.Title);
+    }
+
+    [Fact]
+    public async Task NewAlbumUsesChosenDefaultsAndSearchesWithoutMonitoring()
     {
         var handler = new Handler
         {
@@ -108,6 +144,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/album") => "[]",
                 ("GET", "/api/v1/artist") => "[]",
                 ("POST", "/api/v1/album") => "{\"id\":42}",
+                ("GET", "/api/v1/track") => "[{\"id\":1}]",
                 ("POST", "/api/v1/command") => "{\"id\":9}",
                 _ => "[]",
             },
@@ -117,11 +154,15 @@ public class LidarrClientTests
 
         Assert.Equal(42, id);
         var add = JsonNode.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Path == "/api/v1/album").Body!)!;
+        Assert.False(add["monitored"]!.GetValue<bool>());
+        Assert.False(add["addOptions"]!["searchForNewAlbum"]!.GetValue<bool>());
         Assert.Equal("/data/music", add["artist"]!["rootFolderPath"]!.GetValue<string>());
         Assert.Equal(3, add["artist"]!["qualityProfileId"]!.GetValue<int>());
         Assert.Equal(4, add["artist"]!["metadataProfileId"]!.GetValue<int>());
+        Assert.False(add["artist"]!["monitored"]!.GetValue<bool>());
         Assert.Equal("none", add["artist"]!["monitorNewItems"]!.GetValue<string>());
         Assert.Equal("unknown", add["artist"]!["addOptions"]!["monitor"]!.GetValue<string>());
+        Assert.False(add["artist"]!["addOptions"]!["searchForMissingAlbums"]!.GetValue<bool>());
         Assert.Equal("mbid", add["artist"]!["addOptions"]!["albumsToMonitor"]![0]!.GetValue<string>());
         var command = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command").Body!;
         Assert.Contains("AlbumSearch", command);
@@ -129,7 +170,7 @@ public class LidarrClientTests
     }
 
     [Fact]
-    public async Task ExistingArtistSettingsArePreservedWhenAddingAlbum()
+    public async Task ExistingArtistSettingsArePreservedWhenAddingUnmonitoredAlbum()
     {
         var handler = new Handler
         {
@@ -137,8 +178,9 @@ public class LidarrClientTests
             {
                 ("GET", "/api/v1/album") => "[]",
                 ("GET", "/api/v1/artist") =>
-                    "[{\"id\":7,\"foreignArtistId\":\"artist-mbid\",\"path\":\"/existing/Artist\",\"qualityProfileId\":9,\"metadataProfileId\":10}]",
+                    "[{\"id\":7,\"foreignArtistId\":\"artist-mbid\",\"path\":\"/existing/Artist\",\"qualityProfileId\":9,\"metadataProfileId\":10,\"monitored\":true,\"monitorNewItems\":\"all\"}]",
                 ("POST", "/api/v1/album") => "{\"id\":42}",
+                ("GET", "/api/v1/track") => "[{\"id\":1}]",
                 ("POST", "/api/v1/command") => "{\"id\":9}",
                 _ => "[]",
             },
@@ -152,10 +194,14 @@ public class LidarrClientTests
         Assert.Equal("/existing/Artist", add["artist"]!["path"]!.GetValue<string>());
         Assert.Equal(9, add["artist"]!["qualityProfileId"]!.GetValue<int>());
         Assert.Equal(10, add["artist"]!["metadataProfileId"]!.GetValue<int>());
+        Assert.False(add["monitored"]!.GetValue<bool>());
+        Assert.True(add["artist"]!["monitored"]!.GetValue<bool>());
+        Assert.Equal("all", add["artist"]!["monitorNewItems"]!.GetValue<string>());
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Put);
     }
 
     [Fact]
-    public async Task UnmonitoredExistingArtistIsMonitoredAndOtherwiseUnchanged()
+    public async Task ExistingAlbumSearchPreservesAlbumAndArtistMonitoring()
     {
         var handler = new Handler
         {
@@ -163,9 +209,7 @@ public class LidarrClientTests
             {
                 ("GET", "/api/v1/album") =>
                     "[{\"id\":12,\"foreignAlbumId\":\"mbid\",\"monitored\":true,\"artist\":{\"id\":7,\"monitored\":false}}]",
-                ("GET", "/api/v1/artist/7") =>
-                    "{\"id\":7,\"monitored\":false,\"monitorNewItems\":\"none\",\"qualityProfileId\":9}",
-                ("PUT", "/api/v1/artist/7") => "{\"id\":7,\"monitored\":true}",
+                ("GET", "/api/v1/track") => "[{\"id\":1}]",
                 ("POST", "/api/v1/command") => "{\"id\":9}",
                 _ => "[]",
             },
@@ -173,14 +217,12 @@ public class LidarrClientTests
 
         await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020));
 
-        var update = JsonNode.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Put).Body!)!;
-        Assert.True(update["monitored"]!.GetValue<bool>());
-        Assert.Equal("none", update["monitorNewItems"]!.GetValue<string>());
-        Assert.Equal(9, update["qualityProfileId"]!.GetValue<int>());
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Put);
+        Assert.DoesNotContain(handler.Requests, r => r.Path == "/api/v1/artist");
     }
 
     [Fact]
-    public async Task ExistingAlbumIsMonitoredWithoutChangingItsArtist()
+    public async Task ExistingAlbumSearchDoesNotChangeMonitoring()
     {
         var handler = new Handler
         {
@@ -188,7 +230,7 @@ public class LidarrClientTests
             {
                 ("GET", "/api/v1/album") =>
                     "[{\"id\":12,\"foreignAlbumId\":\"mbid\",\"monitored\":false,\"artist\":{\"id\":7,\"qualityProfileId\":9}}]",
-                ("PUT", "/api/v1/album/12") => "{\"id\":12,\"monitored\":true}",
+                ("GET", "/api/v1/track") => "[{\"id\":1}]",
                 ("POST", "/api/v1/command") => "{\"id\":9}",
                 _ => "[]",
             },
@@ -197,10 +239,36 @@ public class LidarrClientTests
         var id = await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020));
 
         Assert.Equal(12, id);
-        var update = JsonNode.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Put).Body!)!;
-        Assert.True(update["monitored"]!.GetValue<bool>());
-        Assert.Equal(9, update["artist"]!["qualityProfileId"]!.GetValue<int>());
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Put);
         Assert.DoesNotContain(handler.Requests, r => r.Path == "/api/v1/artist");
+        var command = JsonNode.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Post).Body!)!;
+        Assert.Equal("AlbumSearch", command["name"]!.GetValue<string>());
+        Assert.Equal(12, command["albumIds"]![0]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task AlbumSearchWaitsForLidarrTrackMetadata()
+    {
+        var trackReads = 0;
+        var handler = new Handler
+        {
+            Respond = req =>
+            {
+                if (req.RequestUri!.AbsolutePath == "/api/v1/track")
+                    return ++trackReads == 1 ? "[]" : "[{\"id\":1}]";
+                if (req.RequestUri.AbsolutePath == "/api/v1/command")
+                {
+                    Assert.True(trackReads >= 2, "Search must wait for album tracks to load.");
+                    return "{\"id\":9}";
+                }
+                return req.Method == HttpMethod.Post ? "{\"id\":42}" : "[]";
+            },
+        };
+
+        Assert.Equal(42, await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020)));
+        Assert.Single(handler.Requests, r => r.Path == "/api/v1/command");
+        Assert.All(handler.Requests.Where(r => r.Path.StartsWith("/api/v1/track")),
+            r => Assert.Equal("/api/v1/track?albumId=42", r.Path));
     }
 
     [Fact]

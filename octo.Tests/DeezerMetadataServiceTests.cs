@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
+using Octo.Models.Domain;
 using Octo.Models.Settings;
+using Octo.Services.Lidarr;
 using Octo.Services.Metadata;
 using System.Net;
 
@@ -611,6 +613,128 @@ public class DeezerMetadataServiceTests
     }
 
     // ---- A throttled year must not cost the whole track -------------------------
+
+    [Fact]
+    public async Task LidarrTrackAcquisitionResolvesSingleToContainingAlbum()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = """
+                {"data":[
+                    {"id":9,"title":"Crisps","record_type":"album","artist":{"name":"Other Artist"}},
+                    {"id":4,"title":"EP","record_type":"ep","artist":{"name":"Getdown Services"}},
+                    {"id":2,"title":"Live","record_type":"album","artist":{"name":"Getdown Services"}},
+                    {"id":3,"title":"Crisps","record_type":"album","artist":{"name":"Getdown Services"}}]}
+                """,
+            ["/album/2/tracks"] = """
+                {"data":[{"title":"Evil On Tap (Live)","duration":170,"artist":{"name":"Getdown Services"}}]}
+                """,
+            ["/album/2"] = """
+                {"title":"Live","nb_tracks":1,"artist":{"name":"Getdown Services"}}
+                """,
+            ["/album/3/tracks"] = """
+                {"data":[{"title":"Crisps","duration":307,"track_position":1},
+                    {"title":"Evil On Tap","duration":170,"track_position":6,"disk_number":1}]}
+                """,
+            ["/album/3"] = """
+                {"title":"Crisps","nb_tracks":2,"release_date":"2023-11-09","cover_xl":"https://cdn/crisps.jpg",
+                    "artist":{"name":"Getdown Services"}}
+                """,
+            ["/album/1"] = """{"release_date":"2022-01-01"}""",
+            ["/search"] = """
+                {"data":[{"title":"Evil On Tap","duration":170,"album":{"id":1,"title":"Evil On Tap"},
+                    "artist":{"name":"Getdown Services"}}]}
+                """,
+        }, capture: sent);
+        var song = new Song { Title = "Evil On Tap", Artist = "Getdown Services", Album = "Evil On Tap",
+            Track = 1, Duration = 123, ExternalProvider = "radio", ExternalId = "radio-id" };
+
+        var album = await LidarrHeartAcquisitionService.ResolveTrackAlbumAsync(song, svc);
+
+        Assert.Equal("Crisps", album.Title);
+        Assert.Equal(2023, album.Year);
+        Assert.Equal("https://cdn/crisps.jpg", album.CoverArtUrl);
+        Assert.Same(song, Assert.Single(album.Songs));
+        Assert.Equal("Crisps", song.Album);
+        Assert.Equal(6, song.Track);
+        Assert.Equal(1, song.DiscNumber);
+        Assert.Equal("radio-id", song.ExternalId);
+        Assert.DoesNotContain(sent, r => r.RequestUri!.AbsolutePath.StartsWith("/album/9")
+            || r.RequestUri.AbsolutePath.StartsWith("/album/4"));
+    }
+
+    [Fact]
+    public async Task LidarrTrackAcquisitionKeepsKnownAlbumWithoutReadingOtherTrackLists()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = """
+                {"data":[{"id":3,"title":"Crisps","record_type":"album","artist":{"name":"Getdown Services"}}]}
+                """,
+            ["/album/3"] = """{"release_date":"2023-11-09"}""",
+            ["/search"] = """
+                {"data":[{"title":"Evil On Tap","album":{"id":3,"title":"Crisps"},
+                    "artist":{"name":"Getdown Services"}}]}
+                """,
+        }, capture: sent);
+
+        var album = await LidarrHeartAcquisitionService.ResolveTrackAlbumAsync(
+            new Song { Title = "Evil On Tap", Artist = "Getdown Services" }, svc);
+
+        Assert.Equal("Crisps", album.Title);
+        Assert.DoesNotContain(sent, r => r.RequestUri!.AbsolutePath.EndsWith("/tracks"));
+    }
+
+    [Theory]
+    [InlineData("Getdown Services", "Evil On Tap (Live)", 170)]
+    [InlineData("Other Artist", "Evil On Tap", 170)]
+    [InlineData("Getdown Services", "Evil On Tap", 250)]
+    public async Task LidarrTrackAcquisitionDoesNotChooseDifferentRecording(
+        string trackArtist, string trackTitle, int duration)
+    {
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = """
+                {"data":[{"id":3,"title":"Crisps","record_type":"album","artist":{"name":"Getdown Services"}}]}
+                """,
+            ["/album/3/tracks"] = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                data = new[] { new { title = trackTitle, duration, artist = new { name = trackArtist } } },
+            }),
+            ["/album/3"] = """{"title":"Crisps","nb_tracks":1,"artist":{"name":"Getdown Services"}}""",
+            ["/album/1"] = """{"release_date":"2023-10-01"}""",
+            ["/search"] = """
+                {"data":[{"title":"Evil On Tap","duration":170,"album":{"id":1,"title":"Evil On Tap"},
+                    "artist":{"name":"Getdown Services"}}]}
+                """,
+        });
+
+        var album = await LidarrHeartAcquisitionService.ResolveTrackAlbumAsync(
+            new Song { Title = "Evil On Tap", Artist = "Getdown Services", Track = 1 }, svc);
+
+        Assert.Equal("Evil On Tap", album.Title);
+        Assert.Equal(1, Assert.Single(album.Songs).Track);
+    }
+
+    [Fact]
+    public async Task LidarrTrackAcquisitionRetainsSingleWhenAlbumCatalogueUnavailable()
+    {
+        var svc = BuildService(new()
+        {
+            ["/album/1"] = """{"release_date":"2023-10-01"}""",
+            ["/search?q="] = """
+                {"data":[{"title":"Evil On Tap","album":{"id":1,"title":"Evil On Tap"},
+                    "artist":{"name":"Getdown Services"}}]}
+                """,
+        });
+
+        var album = await LidarrHeartAcquisitionService.ResolveTrackAlbumAsync(
+            new Song { Title = "Evil On Tap", Artist = "Getdown Services" }, svc);
+
+        Assert.Equal("Evil On Tap", album.Title);
+    }
 
     [Fact]
     public async Task EnrichTrackAsync_ThrottledYear_KeepsAlbumAndDuration()

@@ -26,10 +26,11 @@ public partial class SubsonicResponseBuilder
     private readonly bool _externalsAreLossless;
 
     public SubsonicResponseBuilder(ExternalIdRegistry idRegistry,
-        Microsoft.Extensions.Options.IOptions<Models.Settings.SubsonicSettings> subsonicSettings)
+        Microsoft.Extensions.Options.IOptions<Models.Settings.SubsonicSettings> subsonicSettings,
+        Microsoft.Extensions.Options.IOptions<Models.Settings.DeezerSettings>? deezerSettings = null)
     {
         _idRegistry = idRegistry;
-        _externalsAreLossless = subsonicSettings.Value.WaitForLosslessOnPlay;
+        _externalsAreLossless = deezerSettings?.Value.CacheEnabled == true || subsonicSettings.Value.WaitForLosslessOnPlay;
     }
 
     /// <summary>
@@ -682,7 +683,7 @@ public partial class SubsonicResponseBuilder
         // Subsonic clients (Arpeggio in particular) drop entries whose cover-art
         // request 404s, so making these ids resolvable is what gets external songs
         // queued and played at all.
-        // Native Deezer playback is MP3_320 with MP3_128 fallback. The declared
+        // Cache playback is strict FLAC; direct Deezer playback uses MP3 fallback. The declared
         // container must match both; estimated bitrate is never sent for outside songs.
         // With WaitForLosslessOnPlay on, /rest/stream serves the fetched FLAC under this
         // same id, so it has to be declared as one. 950 rather than 1411 because that

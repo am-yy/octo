@@ -22,7 +22,7 @@ namespace Octo.Controllers;
 
 [ApiController]
 [Route("")]
-public class SubsonicController : ControllerBase
+public partial class SubsonicController : ControllerBase
 {
     // IOptionsMonitor, not IOptions: the admin UI writes settings.json and the
     // config provider reloads it, but IOptions.Value is resolved once and this is a
@@ -76,6 +76,9 @@ public class SubsonicController : ControllerBase
     private readonly SearchSongOrderCache _searchSongOrders;
     private readonly RequestIdentity _requestIdentity;
     private readonly RecentScrobbles _recentScrobbles;
+    private readonly Octo.Services.Deezer.DeezerAudioCache? _deezerCache;
+    private readonly ExternalSaveStore? _externalSaves;
+    private readonly ExternalSaveWorker? _saveWorker;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -119,8 +122,14 @@ public class SubsonicController : ControllerBase
         SearchSongOrderCache? searchSongOrders = null,
         LastFmScrobbleService? lastFmScrobbles = null,
         RequestIdentity? requestIdentity = null,
-        RecentScrobbles? recentScrobbles = null)
+        RecentScrobbles? recentScrobbles = null,
+        Octo.Services.Deezer.DeezerAudioCache? deezerCache = null,
+        ExternalSaveStore? externalSaves = null,
+        ExternalSaveWorker? saveWorker = null)
     {
+        _deezerCache = deezerCache;
+        _externalSaves = externalSaves;
+        _saveWorker = saveWorker;
         _recentScrobbles = recentScrobbles ?? new RecentScrobbles();
         _lastFmScrobbles = lastFmScrobbles;
         _requestIdentity = requestIdentity
@@ -340,7 +349,8 @@ public class SubsonicController : ControllerBase
                 ? File(relay.Body, relay.ContentType ?? $"application/{format}")
                 : _responseBuilder.CreateError(format, 0, "Unable to authenticate with Navidrome");
 
-        var username = parameters.GetValueOrDefault("u", "");
+        var username = await _requestIdentity.UsernameAsync(parameters, _proxyService) ?? "";
+        if (_externalSaves is not null && username.Length > 0) await RetrySavedMirrorsAsync(username, parameters, false);
 
         // Navidrome answered ok above, so `u` is authenticated. Ensure this user's action
         // playlists exist, using the body we already have so the common case costs no extra
@@ -355,7 +365,7 @@ public class SubsonicController : ControllerBase
         var generated = _generatedPlaylists is not null && mixSettings is { Enabled: true }
             ? await _generatedPlaylists.ListAsync(username, parameters)
             : [];
-        if (stations.Count == 0 && generated.Count == 0)
+        if (stations.Count == 0 && generated.Count == 0 && _externalSaves is null)
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
         try
         {
@@ -367,6 +377,7 @@ public class SubsonicController : ControllerBase
                 response["playlists"] = playlists;
                 var rows = playlists["playlist"] as JsonArray ?? new JsonArray();
                 playlists["playlist"] = rows;
+                ApplySavedPlaylistRows(rows, username, false);
                 foreach (var station in stations)
                     rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.RadioPlaylistFields(station)));
                 foreach (var mix in generated)
@@ -378,6 +389,7 @@ public class SubsonicController : ControllerBase
             var ns = responseElement.Name.Namespace;
             var playlistsElement = responseElement.Elements().FirstOrDefault(element => element.Name.LocalName == "playlists");
             if (playlistsElement is null) { playlistsElement = new XElement(ns + "playlists"); responseElement.Add(playlistsElement); }
+            ApplySavedPlaylistXml(playlistsElement, username);
             foreach (var station in stations)
                 playlistsElement.Add(new XElement(ns + "playlist",
                     _responseBuilder.RadioPlaylistFields(station).Select(pair =>
@@ -418,6 +430,14 @@ public class SubsonicController : ControllerBase
             return _responseBuilder.CreateGeneratedPlaylistResponse(format, mix, _generatedSettings.CurrentValue, entries);
         }
 
+        if (_externalSaves?.Snapshot().Playlists.Any(p => p.Id == id) == true)
+        {
+            var saved = await LoadSavedPlaylistAsync(username, id, parameters, false, false);
+            if (saved is null) return _responseBuilder.CreateError(format, 50, "Playlist unavailable");
+            if (saved.PendingMirror && saved.UserId == username) await MirrorSavedPlaylistAsync(saved, parameters, false);
+            if (_deezerCache is not null) _ = _deezerCache.PrewarmAsync(saved.Tracks.Select(t => t.Song).OfType<Song>(), 8);
+            return SavedSubsonicPlaylist(saved, format, username);
+        }
         var station = PlaylistStations(username).FirstOrDefault(item => item.Id == id);
         if (station is null)
         {
@@ -448,7 +468,7 @@ public class SubsonicController : ControllerBase
             songs = songs.Select(song =>
                 !song.IsLocal && _syncCatalog.TryGetSong(username, song.Id, out var synced) ? synced : song).ToList();
         _radioQueueStore.Register(songs.Select(song => song.Id));
-        _ = _metadataService.PrewarmDeezerIdsAsync(songs, topN: 8);
+        _ = PrewarmPlaybackAsync(songs, 8);
         QueueRefreshIfStale(username);
         return _responseBuilder.CreateRadioPlaylistResponse(format, station, songs);
     }
@@ -690,6 +710,13 @@ public class SubsonicController : ControllerBase
         if (IsOctoPlaylistId(id))
             return _responseBuilder.CreateError(format, 70, "Octo's generated playlists are read-only");
         var endpoint = Request.Path.Value?.Split('/').LastOrDefault()?.Replace(".view", "") ?? "updatePlaylist";
+        if (_externalSaves is not null)
+        {
+            var additions = await _requestParser.ExtractParameterValuesAsync(Request,
+                endpoint == "createPlaylist" ? "songId" : "songIdToAdd");
+            if (_externalSaves.Snapshot().Playlists.Any(p => p.Id == id) || additions.Any(IsSavedSongReference))
+                return await MutateSavedPlaylistAsync(endpoint, parameters, format);
+        }
         var relay = await _proxyService.RelaySafeAsync("rest/" + endpoint, parameters);
         return relay.Success && relay.Body is not null
             ? File(relay.Body, relay.ContentType ?? $"application/{format}")
@@ -1436,7 +1463,53 @@ public class SubsonicController : ControllerBase
             return BadRequest(new { error = "Missing id parameter" });
         }
 
+        var savedSong = _externalSaves?.GetSong(id);
         var (isExternal, provider, externalId) = _localLibraryService.ParseSongId(id);
+        if (savedSong is { IsLocal: false })
+            (isExternal, provider, externalId) = (true, savedSong.ExternalProvider ?? "soulseek", savedSong.ExternalId ?? id);
+        if (savedSong is { IsLocal: true, LocalPath: { } aliasPath } && IsPlayableFlac(aliasPath))
+        {
+            if (await SavedSongAsync(savedSong.Id, parameters, false) is null)
+                return _responseBuilder.CreateError(format, 70, "Song unavailable to this caller");
+            return File(System.IO.File.OpenRead(aliasPath), "audio/flac", enableRangeProcessing: true);
+        }
+        if (savedSong is { IsLocal: true })
+        {
+            parameters["id"] = savedSong.Id;
+            return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
+        }
+        if (isExternal && _deezerCache?.Enabled == true)
+        {
+            try
+            {
+                var song = savedSong ?? await _metadataService.GetSongAsync(provider!, externalId!);
+                if (song is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+                song.DeezerId ??= _idRegistry.Lookup(id)?.DeezerId;
+                var local = await _localLibraryService.GetLocalPathForExternalSongAsync(provider!, externalId!);
+                if (IsPlayableFlac(local)) return File(System.IO.File.OpenRead(local!), "audio/flac", enableRangeProcessing: true);
+                var imported = await _localLibraryService.FindImportedSongAsync(song);
+                if (IsPlayableFlac(imported?.LocalPath)) return File(System.IO.File.OpenRead(imported!.LocalPath!), "audio/flac", enableRangeProcessing: true);
+                var completed = await _deezerCache.EnsureAsync(song, cancellationToken: HttpContext.RequestAborted);
+                var lease = completed is null ? null : _deezerCache.OpenRead(song);
+                if (lease is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+                Response.RegisterForDispose(lease);
+                Response.OnCompleted(async () =>
+                {
+                    if (!HttpMethods.IsHead(Request.Method) && !Request.Headers.ContainsKey("Range") && Response.StatusCode == 200)
+                    {
+                        try { await _deezerCache.MarkPlayedAsync(song); }
+                        catch (Exception ex) { _logger.LogWarning("Could not persist playback timestamp: {Reason}", ex.GetType().Name); }
+                    }
+                });
+                return File(lease.Stream, "audio/flac", enableRangeProcessing: true);
+            }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { return new EmptyResult(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Deezer FLAC playback failed for {Id}: {Reason}", id, ex.GetType().Name);
+                return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+            }
+        }
 
         // Verbose entry log: every stream call gets a single line tagged with
         // the client + id + isExternal + Range + UA + key headers. Diagnostics
@@ -1620,6 +1693,14 @@ public class SubsonicController : ControllerBase
             return _responseBuilder.CreateError(format, 10, "Missing id parameter");
         }
 
+        if (_externalSaves?.GetSong(id) is { } kept)
+        {
+            var (caller, authError) = await SavedCallerAsync(parameters, false, format);
+            if (authError is not null) return authError;
+            if (kept.IsLocal && await SavedSongAsync(kept.Id, parameters, false) is null)
+                return _responseBuilder.CreateError(format, 70, "Song unavailable to this caller");
+            return SavedSongResponse(kept, id, caller!, format);
+        }
         var (isExternal, provider, externalId) = _localLibraryService.ParseSongId(id);
 
         if (!isExternal)
@@ -1835,6 +1916,7 @@ public class SubsonicController : ControllerBase
                 }
                 
                 // Convert to album response (playlist as album)
+                _ = PrewarmPlaybackAsync(tracks, 8);
                 return _responseBuilder.CreatePlaylistAsAlbumResponse(format, playlist, tracks);
             }
             catch (Exception ex)
@@ -2280,6 +2362,11 @@ public class SubsonicController : ControllerBase
             isJson,
             trailingLocalSongs);
 
+        var visibleIds = mergedSongs.Take(12).Select(row => isJson
+            ? JsonSerializer.SerializeToNode(row)?["id"]?.ToString()
+            : (row as XElement)?.Attribute("id")?.Value).ToHashSet();
+        _ = PrewarmPlaybackAsync(externalResult.Songs.Where(song => visibleIds.Contains(song.Id)), 12);
+
         if (isJson)
         {
             // Dictionary rather than an anonymous type because the envelope name is
@@ -2355,6 +2442,13 @@ public class SubsonicController : ControllerBase
         var parameters = await ExtractAllParameters();
         var format = parameters.GetValueOrDefault("f", "xml");
         
+        if (_externalSaves is not null)
+        {
+            var saved = await MutateSavedHeartsAsync(parameters, format, true);
+            if (saved is not null) return saved;
+            var (_, authError) = await SavedCallerAsync(parameters, false, format);
+            if (authError is not null) return authError;
+        }
         var itemId = parameters.GetValueOrDefault("id", "");
         
         // Check if this is a playlist
@@ -2819,7 +2913,7 @@ public class SubsonicController : ControllerBase
         // bounds concurrency across every trigger and uses the catalog background lane.
         // Local songs are skipped
         // automatically by the prewarmer (they have no registry entry).
-        _ = _metadataService.PrewarmDeezerIdsAsync(resolvedSongs, topN: 8);
+        _ = PrewarmPlaybackAsync(resolvedSongs, 8);
 
         return BuildSimilarSongsResponse(format, resolvedSongs, responseKey);
     }
@@ -2888,7 +2982,7 @@ public class SubsonicController : ControllerBase
             if (upcoming.Count > 0)
             {
                 _logger.LogDebug("scrobble {Id}: prewarming next {N} from queue", id, upcoming.Count);
-                _ = _metadataService.PrewarmDeezerIdsForSongIdsAsync(upcoming, topN: 8);
+                _ = PrewarmPlaybackIdsAsync(upcoming, 8);
             }
         }
 
@@ -2950,6 +3044,19 @@ public class SubsonicController : ControllerBase
         var username = await _requestIdentity.UsernameAsync(authenticatedParameters, _proxyService,
             HttpContext.RequestAborted);
         if (string.IsNullOrEmpty(username)) return;
+        if (_deezerCache?.Enabled == true)
+            foreach (var id in ids)
+            {
+                try
+                {
+                    var parsed = _localLibraryService.ParseSongId(id);
+                    var played = _externalSaves?.GetSong(id)
+                        ?? (parsed.isExternal ? await _metadataService.GetSongAsync(parsed.provider!, parsed.externalId!) : null);
+                    if (played is { IsLocal: false } && _deezerCache.GetReadyPath(played) is not null)
+                        await _deezerCache.MarkPlayedAsync(played);
+                }
+                catch (Exception ex) { _logger.LogWarning("Could not persist playback timestamp: {Reason}", ex.GetType().Name); }
+            }
         var learning = _radioStateStore is not null && _lastFmSettings.EnableRadio
             && _lastFmSettings.EnablePersonalizedStations;
         var submitting = _listenBrainz is not null && _listenBrainz.IsEnabledFor(username);
@@ -3519,6 +3626,20 @@ public class SubsonicController : ControllerBase
         var parameters = await ExtractAllParameters();
         var format = parameters.GetValueOrDefault("f", "xml");
 
+        if (_externalSaves is not null)
+        {
+            try
+            {
+                var saved = await TryServeSavedEndpointAsync(endpoint, parameters, format);
+                if (saved is not null) return saved;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return endpoint.StartsWith("api/", StringComparison.OrdinalIgnoreCase)
+                    ? BadRequest(new { error = "Invalid JSON request" })
+                    : _responseBuilder.CreateError(format, 10, "Invalid JSON request");
+            }
+        }
         var nativeRadio = await TryServeNativeRadioAsync(endpoint, parameters);
         if (nativeRadio != null) return nativeRadio;
 
@@ -3633,7 +3754,7 @@ public class SubsonicController : ControllerBase
             // Page after merging, so Radio rows cannot disappear merely because the
             // upstream page was already full.
             relayParameters["_start"] = "0";
-            relayParameters["_end"] = "1000";
+            relayParameters["_end"] = "0";
         }
         var raw = await _proxyService.RelayRawAsync(relayEndpoint, relayParameters);
         if (raw.Status is < 200 or >= 300)
@@ -3642,6 +3763,7 @@ public class SubsonicController : ControllerBase
             return File(raw.Body, raw.ContentType ?? "application/json");
         }
         var username = NativeUsername(parameters);
+        if (_externalSaves is not null && username.Length > 0) await RetrySavedMirrorsAsync(username, parameters, true);
         var stations = PlaylistStations(username);
         if (tail.Length == 0)
         {
@@ -3650,12 +3772,13 @@ public class SubsonicController : ControllerBase
                 var node = JsonNode.Parse(raw.Body);
                 var rows = node as JsonArray;
                 if (rows is null) return File(raw.Body, raw.ContentType ?? "application/json");
+                ApplySavedPlaylistRows(rows, username, true);
                 foreach (var station in stations) rows.Add(NativeStation(station));
                 var total = rows.Count;
                 var start = Math.Max(0, parameters.TryGetValue("_start", out var startText)
                     && int.TryParse(startText, out var parsedStart) ? parsedStart : 0);
                 var end = parameters.TryGetValue("_end", out var endText)
-                    && int.TryParse(endText, out var parsedEnd) ? parsedEnd : total;
+                    && int.TryParse(endText, out var parsedEnd) && parsedEnd > 0 ? parsedEnd : total;
                 var page = new JsonArray(rows.Skip(start).Take(Math.Max(0, end - start))
                     .Select(row => row?.DeepClone()).ToArray());
                 Response.Headers["X-Total-Count"] = total.ToString();
@@ -3672,11 +3795,11 @@ public class SubsonicController : ControllerBase
             var songs = await MaterializeStationAsync(stationMatch, parameters);
             _metadataService.CompleteSongLengths(songs);
             _radioQueueStore.Register(songs.Select(song => song.Id));
-            _ = _metadataService.PrewarmDeezerIdsAsync(songs, 8);
+            _ = PrewarmPlaybackAsync(songs, 8);
             var start = Math.Max(0, parameters.TryGetValue("_start", out var startText)
                 && int.TryParse(startText, out var parsedStart) ? parsedStart : 0);
             var end = parameters.TryGetValue("_end", out var endText)
-                && int.TryParse(endText, out var parsedEnd) ? parsedEnd : songs.Count;
+                && int.TryParse(endText, out var parsedEnd) && parsedEnd > 0 ? parsedEnd : songs.Count;
             var page = new JsonArray(songs.Skip(start).Take(Math.Max(0, end - start))
                 .Select(song => (JsonNode)BuildNativeSongObject(song)).ToArray());
             Response.Headers["X-Total-Count"] = songs.Count.ToString();
@@ -3700,7 +3823,7 @@ public class SubsonicController : ControllerBase
 
     private string NativeUsername(IReadOnlyDictionary<string, string> parameters)
     {
-        if (parameters.GetValueOrDefault("u") is { Length: > 0 } username) return username;
+        if (!Request.Path.StartsWithSegments("/api") && parameters.GetValueOrDefault("u") is { Length: > 0 } username) return username;
         var header = Request.Headers["X-Nd-Authorization"].FirstOrDefault()
             ?? Request.Headers.Authorization.FirstOrDefault();
         var token = header?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
@@ -3835,6 +3958,7 @@ public class SubsonicController : ControllerBase
         // client that searches both ways for one query only pays for it once.
         var externalSongs = (await _externalSearch.GetAsync(term)).Take(target).ToList();
         if (externalSongs.Count == 0) return null;
+        _ = PrewarmPlaybackAsync(externalSongs.Take(Math.Max(0, 12 - realArr.Count)), 12);
 
         foreach (var s in externalSongs)
             realArr.Add(BuildNativeSongObject(s));
@@ -3870,9 +3994,9 @@ public class SubsonicController : ControllerBase
         // path keeps promising mp3 while /rest/stream hands back a FLAC. Note the two
         // serializers are not symmetric: this one emits no contentType at all, and
         // defaults an unknown duration to 0 where the Subsonic one uses 180.
-        var lossless = _subsonicSettings.WaitForLosslessOnPlay;
-        var suffix = lossless ? "flac" : "mp3";
-        var bitRate = lossless ? 950 : 320; // Deezer MP3_320; FLAC estimate
+        var lossless = s.IsLocal ? s.Suffix == "flac" : _deezerCache?.Enabled == true || _subsonicSettings.WaitForLosslessOnPlay;
+        var suffix = s.IsLocal ? s.Suffix ?? "flac" : lossless ? "flac" : "mp3";
+        var bitRate = s.IsLocal ? s.BitRate ?? 950 : lossless ? 950 : 320; // Deezer MP3_320; FLAC estimate
         long size = duration > 0 ? (long)duration * bitRate * 1000L / 8 : 0;
 
         var o = new JsonObject

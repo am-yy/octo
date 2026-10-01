@@ -5,6 +5,7 @@ using Octo.Models.Download;
 using Octo.Models.Settings;
 using Octo.Services.Common;
 using Octo.Services.Fingerprint;
+using Octo.Services.LastFm;
 using Octo.Services.Local;
 using Octo.Services.Metadata;
 using Octo.Services.Notifications;
@@ -52,6 +53,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     /// accepted, landed, done and failed from here.</summary>
     private readonly AcquisitionTracker? _tracker;
     private readonly MusicBrainzClient? _musicBrainz;
+    private readonly ExternalSaveStore? _externalSaves;
 
     public LidarrHeartAcquisitionService(
         LidarrClient client,
@@ -66,10 +68,12 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         NotificationService notifications,
         ILogger<LidarrHeartAcquisitionService> logger,
         AcquisitionTracker? tracker = null,
-        MusicBrainzClient? musicBrainz = null)
+        MusicBrainzClient? musicBrainz = null,
+        ExternalSaveStore? externalSaves = null)
     {
         _tracker = tracker;
         _musicBrainz = musicBrainz;
+        _externalSaves = externalSaves;
         _client = client;
         _metadata = metadata;
         _deezer = deezer;
@@ -90,8 +94,22 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         string? requestedBy = null) =>
         TryAcquireAsync(async () =>
         {
-            var song = await _metadata.GetSongAsync(provider, externalId)
+            // A pending intent can outlive this process. Do not submit an album search for a
+            // recording the lossless import reconciler has already placed in Navidrome.
+            if (await _library.GetLocalIdForExternalSongAsync(provider, externalId) is not null) return;
+            var song = _externalSaves?.GetSong(externalId)
+                ?? _externalSaves?.Snapshot().Acquisitions.FirstOrDefault(i =>
+                    i.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase)
+                    && i.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase))?.Song
+                ?? await _metadata.GetSongAsync(provider, externalId)
                 ?? throw new InvalidOperationException("The starred external track is no longer available.");
+            song.ExternalProvider ??= provider;
+            song.ExternalId ??= externalId;
+            if (_externalSaves is not null)
+            {
+                await _externalSaves.QueueAcquisitionAsync(provider, externalId, song, requestedBy);
+                if (await _externalSaves.TryClaimAcquisitionAsync(provider, externalId) is null) return;
+            }
 
             // Deezer names the release a hit came out on first, usually the single, which Lidarr
             // then cannot match. MusicBrainz knows which studio album the song belongs to.
@@ -111,25 +129,62 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 return;
             }
 
-            var enriched = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true);
-            var albumTitle = enriched?.AlbumTitle;
-            if (string.IsNullOrWhiteSpace(albumTitle)) albumTitle = song.Album;
-            if (string.IsNullOrWhiteSpace(albumTitle))
-                throw new InvalidOperationException($"Could not resolve an album for '{song.Artist} - {song.Title}'.");
-
-            song.Album = albumTitle;
-            song.CoverArtUrl ??= enriched?.AlbumCoverUrl;
-            song.Year ??= enriched?.Year;
-            var album = new Album
-            {
-                Title = albumTitle,
-                Artist = enriched?.ArtistName ?? song.Artist,
-                Year = enriched?.Year,
-                CoverArtUrl = enriched?.AlbumCoverUrl,
-                Songs = new List<Song> { song },
-            };
+            var album = await ResolveTrackAlbumAsync(song, _deezer);
             await QueueResolvedAlbumAsync(album, requestedBy);
         }, "track", provider, externalId, notifyFailure);
+
+    internal static async Task<Album> ResolveTrackAlbumAsync(Song song, DeezerMetadataService deezer)
+    {
+        var enriched = await deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: true);
+        var title = enriched?.AlbumTitle;
+        if (string.IsNullOrWhiteSpace(title)) title = song.Album;
+        var artist = enriched?.ArtistName ?? song.Artist;
+        var year = enriched?.Year ?? song.Year;
+        var cover = enriched?.AlbumCoverUrl;
+
+        // Track search often reports only a single, even when Deezer lists its studio album.
+        // ponytail: inspect first 25 artist album hits; paginate discography if later releases matter.
+        var albums = (await deezer.SearchAlbumsAsync(artist, 25))
+            .Where(a => SongIdentity.Key(a.Artist) == SongIdentity.Key(artist)
+                && (a.RecordType == "album" || a.RecordType == "ep"))
+            .ToList();
+        if (!albums.Any(a => SongIdentity.Key(a.Title) == SongIdentity.Key(title)))
+        {
+            foreach (var hit in albums.OrderBy(a => a.RecordType == "album" ? 0 : 1))
+            {
+                var detail = await deezer.GetAlbumDetailAsync(hit.DeezerId);
+                if (detail is null || SongIdentity.Key(detail.Artist) != SongIdentity.Key(artist))
+                    continue;
+                var track = detail.Tracks.FirstOrDefault(t =>
+                    LastFmRadioTrackResolver.IsSameRecording(song.Artist, song.Title, t.Artist, t.Title)
+                    && ((enriched?.Duration ?? song.Duration) is not int duration || duration <= 0
+                        || t.Duration is not int got || got <= 0 || Math.Abs(duration - got) <= 10));
+                if (track is null) continue;
+                title = detail.Title;
+                artist = detail.Artist;
+                year = detail.Year;
+                cover = detail.CoverUrl;
+                song.Track = track.TrackPosition;
+                song.DiscNumber = track.DiscNumber;
+                song.TotalTracks = detail.Tracks.Count;
+                break;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(title))
+            throw new InvalidOperationException($"Could not resolve an album for '{song.Artist} - {song.Title}'.");
+
+        song.Album = title;
+        song.CoverArtUrl = cover ?? song.CoverArtUrl;
+        song.Year = year ?? song.Year;
+        return new Album
+        {
+            Title = title,
+            Artist = artist,
+            Year = year,
+            CoverArtUrl = cover,
+            Songs = new List<Song> { song },
+        };
+    }
 
     public Task<bool> TryAcquireAlbumAsync(
         string provider, string externalId, bool notifyFailure = true,
@@ -138,6 +193,12 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         {
             var album = await _metadata.GetAlbumAsync(provider, externalId)
                 ?? throw new InvalidOperationException("The starred external album is no longer available.");
+            if (_externalSaves is not null)
+                foreach (var song in album.Songs.Where(s => !string.IsNullOrWhiteSpace(s.ExternalId)))
+                {
+                    song.ExternalProvider ??= provider;
+                    await _externalSaves.QueueAcquisitionAsync(song.ExternalProvider!, song.ExternalId!, song, requestedBy);
+                }
             // No walk runs on this path, so the track list is announced here instead.
             _tracker?.Announce(provider, externalId, null, album.Songs
                 .Where(s => !string.IsNullOrEmpty(s.ExternalId))
@@ -165,6 +226,11 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             throw new InvalidOperationException("Lidarr requires an album artist and title.");
 
         var candidate = resolved ?? await _client.ResolveAlbumAsync(album.Artist, album.Title, album.Year);
+        if (_externalSaves is not null)
+            foreach (var song in album.Songs.Where(s => !string.IsNullOrWhiteSpace(s.ExternalProvider)
+                                                        && !string.IsNullOrWhiteSpace(s.ExternalId)))
+                await _externalSaves.AssociateAcquisitionWithAlbumAsync(
+                    song.ExternalProvider!, song.ExternalId!, candidate.ForeignAlbumId);
         // Before GetOrAdd, so a caller that joins an existing job is still recorded.
         AddRequester(candidate.ForeignAlbumId, requestedBy);
         var lazy = _albumJobs.GetOrAdd(candidate.ForeignAlbumId,
@@ -231,7 +297,35 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         LidarrAlbumCandidate candidate, Album album)
     {
         var snapshot = _settings.CurrentValue;
-        var albumId = await _client.EnsureAlbumAndSearchAsync(candidate);
+        int albumId;
+        var prior = _externalSaves?.GetAlbumSearch(candidate.ForeignAlbumId);
+        if (prior is { Status: "submitted", LidarrAlbumId: int submittedId })
+        {
+            albumId = submittedId;
+        }
+        else if (_externalSaves is not null && !await _externalSaves.TryBeginAlbumSearchAsync(candidate.ForeignAlbumId))
+        {
+            // A durable in-progress marker may be all that survived shutdown. Do not issue a
+            // second AlbumSearch; the periodic import reconciler keeps checking for its files.
+            var current = _externalSaves.GetAlbumSearch(candidate.ForeignAlbumId);
+            if (current?.LidarrAlbumId is not int knownId) return;
+            albumId = knownId;
+        }
+        else
+        {
+            try
+            {
+                albumId = await _client.EnsureAlbumAndSearchAsync(candidate);
+                if (_externalSaves is not null)
+                    await _externalSaves.MarkAlbumSearchSubmittedAsync(candidate.ForeignAlbumId, albumId);
+            }
+            catch (Exception ex)
+            {
+                if (_externalSaves is not null)
+                    await _externalSaves.MarkAlbumSearchFailedAsync(candidate.ForeignAlbumId, ex.Message);
+                throw;
+            }
+        }
         _logger.LogInformation("Lidarr accepted AlbumSearch for '{Artist} - {Album}' ({ForeignId}, local id {Id})",
             album.Artist, album.Title, candidate.ForeignAlbumId, albumId);
         _notifications.Notify(new NotificationEvent
@@ -492,6 +586,14 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         catch (Exception ex)
         {
             _logger.LogError(ex, "Lidarr {Kind} heart failed for {Id}", kind, externalId);
+            if (kind == "track" && _externalSaves is not null)
+            {
+                try { await _externalSaves.MarkAcquisitionFailedAsync(provider, externalId, ex.Message); }
+                catch (Exception storeError)
+                {
+                    _logger.LogError(storeError, "Could not persist failed acquisition for {Provider}:{Id}", provider, externalId);
+                }
+            }
             // notifyFailure is true only for the last source in the chain, which is also the
             // only failure the progress list may show.
             if (notifyFailure)

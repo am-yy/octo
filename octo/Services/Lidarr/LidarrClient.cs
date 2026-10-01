@@ -107,8 +107,14 @@ public sealed class LidarrClient
     {
         var wantedArtist = SongIdentity.Key(artist);
         var wantedAlbum = SongIdentity.Key(album);
-        var exact = candidates
-            .Where(c => SongIdentity.Key(c.Artist) == wantedArtist && SongIdentity.Key(c.Title) == wantedAlbum)
+        var sameArtist = candidates.Where(c => SongIdentity.Key(c.Artist) == wantedArtist).ToList();
+        var exact = sameArtist.Where(c => SongIdentity.Key(c.Title) == wantedAlbum).ToList();
+        // Lidarr names release groups canonically; edition names are aliases on releases.
+        if (exact.Count == 0)
+            exact = sameArtist.Where(c => c.Resource["releases"] is JsonArray releases
+                && releases.OfType<JsonObject>().Any(release => SongIdentity.Key(Str(release, "title")) == wantedAlbum))
+                .ToList();
+        exact = exact
             .GroupBy(c => c.ForeignAlbumId, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .ToList();
@@ -135,20 +141,14 @@ public sealed class LidarrClient
         int albumId;
         if (existing.Count > 0)
         {
-            var resource = existing[0];
-            albumId = Int(resource, "id");
-            if (!(resource["monitored"]?.GetValue<bool>() ?? false))
-            {
-                resource["monitored"] = true;
-                await SendJsonAsync(HttpMethod.Put, $"/api/v1/album/{albumId}", resource, ct);
-            }
-            await EnsureArtistMonitoredAsync(resource["artist"] as JsonObject, ct);
+            // Explicit AlbumSearch works without monitoring. Preserve user's choices.
+            albumId = Int(existing[0], "id");
         }
         else
         {
             var resource = (JsonObject)candidate.Resource.DeepClone();
             resource.Remove("id");
-            resource["monitored"] = true;
+            resource["monitored"] = false;
             resource["addOptions"] = new JsonObject { ["searchForNewAlbum"] = false };
 
             var artist = resource["artist"] as JsonObject
@@ -170,10 +170,9 @@ public sealed class LidarrClient
                 artist["rootFolderPath"] = settings.RootFolderPath;
                 artist["qualityProfileId"] = settings.QualityProfileId;
                 artist["metadataProfileId"] = settings.MetadataProfileId;
-                artist["monitored"] = true;
+                artist["monitored"] = false;
                 artist["monitorNewItems"] = "none";
                 artist["tags"] = new JsonArray();
-                // "none" would unmonitor the artist and, after its first refresh, this album too.
                 artist["addOptions"] = new JsonObject
                 {
                     ["monitor"] = "unknown",
@@ -184,7 +183,16 @@ public sealed class LidarrClient
 
             var added = await SendJsonAsync(HttpMethod.Post, "/api/v1/album", resource, ct);
             albumId = Int(added, "id");
-            await EnsureArtistMonitoredAsync(existingArtist, ct);
+        }
+
+        // POST /album returns before metadata refresh loads its tracks. Searching earlier can
+        // finish successfully while producing no downloads.
+        var metadataDeadline = DateTime.UtcNow.AddSeconds(Math.Max(1, settings.ImportTimeoutSeconds));
+        while ((await GetArrayAsync($"/api/v1/track?albumId={albumId}", ct)).Count == 0)
+        {
+            if (DateTime.UtcNow >= metadataDeadline)
+                throw new TimeoutException("Lidarr did not load album track metadata before the search deadline.");
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
 
         await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
@@ -193,16 +201,6 @@ public sealed class LidarrClient
             ["albumIds"] = new JsonArray(albumId),
         }, ct);
         return albumId;
-    }
-
-    /// <summary>Lidarr neither upgrades nor re-searches albums of an unmonitored artist.</summary>
-    private async Task EnsureArtistMonitoredAsync(JsonObject? artist, CancellationToken ct)
-    {
-        if (artist is null || artist["monitored"]?.GetValue<bool>() != false) return;
-        var id = Int(artist, "id");
-        var full = await GetObjectAsync($"/api/v1/artist/{id}", ct);
-        full["monitored"] = true;
-        await SendJsonAsync(HttpMethod.Put, $"/api/v1/artist/{id}", full, ct);
     }
 
     public async Task<IReadOnlyList<LidarrImportedTrack>> GetAlbumTracksAsync(int albumId, CancellationToken ct = default)

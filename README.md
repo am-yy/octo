@@ -507,6 +507,22 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 Tracks already in your library play locally through Navidrome. Missing external results stream from Deezer as MP3 without acquiring a permanent copy; heart the song or album to run the configured source priority.
 
+Enable `Deezer:CacheEnabled` for strict FLAC track playback independent of permanent acquisition.
+Set `Deezer:CachePath` to a persistent directory outside the music library (mount it into Docker).
+Cold playback waits for a shared, validated download; completed files support byte ranges.
+`CacheMaxGiB` defaults to 20 and `CacheRetentionDays` to seven, measured from explicit playback,
+or download completion for never-played files. Prefetch and range probes do not refresh retention.
+Search prefetches the first 12 visible results; playlists, queues and radio starters prefetch eight.
+Two transfers run at once, with playback taking priority. Continuous radio keeps MP3 transport.
+
+Song hearts and mixed playlists edited through Octo save immediately to
+`/app/config/external-saves.json`, including duplicates, order, metadata and acquisition intents.
+Manual references pin one shared cache copy until a usable FLAC import replaces them in place;
+generated playlists do not pin, and pinned copies may exceed the cache budget. Imports reconcile
+every minute after restart; ambiguous or lossy matches remain virtual. Old external IDs remain
+playback aliases. Navidrome writes use the caller's authorized session and retry on later sessions.
+Direct Navidrome displays only imported entries. Store no caller credentials on disk.
+
 Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. An optional `DEEZER_ARL_FALLBACK` gives Octo another session to try if the primary expires or is rate-limited. Both ARLs are masked when read back. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. Settings changed in the dashboard apply without restarting Octo.
 
 Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. The setting also changes what searches advertise for external tracks, so it needs a restart, and clients that cached earlier results should re-search after you change it.

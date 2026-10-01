@@ -75,6 +75,14 @@ public class ExternalIdRegistry : IDisposable
         return null;
     }
 
+    public void Restore(string id, SoulseekRouting routing)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        _byId.TryAdd(id, routing);
+        Touch(id);
+        Trim();
+    }
+
     /// <summary>
     /// The songs a song row filed under the album <paramref name="album"/> by
     /// <paramref name="artist"/>, newest first, one per recording. A row names its album

@@ -69,6 +69,7 @@ public sealed class DeezerResolverTests
         Assert.Equal(["arl=primary", "arl=fallback"], fixture.AuthCookies);
         Assert.All(fixture.PageCookies, cookie => Assert.Equal("arl=fallback; sid=fallback-session", cookie));
         Assert.Contains("fallback-license", fixture.MediaBodies.Single());
+        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
     }
 
     [Fact]
@@ -99,6 +100,63 @@ public sealed class DeezerResolverTests
         opened.stream.Dispose(); opened.owner.Dispose();
         Assert.Equal(["arl=primary", "arl=primary"], fixture.AuthCookies);
         Assert.Equal(2, fixture.MediaBodies.Count);
+    }
+
+    [Fact]
+    public async Task StrictFlacRequestDoesNotAskForOrFallBackToMp3()
+    {
+        using var fixture = new Fixture { AvailableFormats = ["MP3_320", "MP3_128"] };
+
+        var opened = await fixture.Resolver.OpenFlacStreamAsync("42");
+
+        Assert.Null(opened);
+        Assert.NotEmpty(fixture.MediaBodies);
+        foreach (var body in fixture.MediaBodies)
+        {
+            using var document = JsonDocument.Parse(body);
+            var formats = document.RootElement.GetProperty("media")[0].GetProperty("formats")
+                .EnumerateArray().Select(item => item.GetProperty("format").GetString()).ToArray();
+            Assert.Equal("FLAC", Assert.Single(formats));
+        }
+        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
+    }
+
+    [Fact]
+    public async Task StrictFlacRequestRefreshesExpiredCdnUrlWithoutLossyFallback()
+    {
+        using var fixture = new Fixture { RejectFirstUrl = true };
+
+        var opened = await fixture.Resolver.OpenFlacStreamAsync("42");
+
+        Assert.NotNull(opened);
+        Assert.Equal("audio/flac", opened.Value.contentType);
+        opened.Value.stream.Dispose();
+        opened.Value.owner.Dispose();
+        Assert.Equal(2, fixture.MediaBodies.Count);
+        Assert.All(fixture.MediaBodies, body => Assert.Contains("FLAC", body));
+        Assert.All(fixture.MediaBodies, body => Assert.DoesNotContain("MP3", body));
+        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
+    }
+
+    [Fact]
+    public async Task LossyFallbackMediaCacheCannotSatisfyStrictFlacRequest()
+    {
+        using var fixture = new Fixture { AvailableFormats = ["MP3_320"] };
+        var fallback = (await fixture.Resolver.OpenStreamAsync("42", quality: "FLAC"))!.Value;
+        Assert.Equal("audio/mpeg", fallback.contentType);
+        fallback.stream.Dispose();
+        fallback.owner.Dispose();
+
+        fixture.AvailableFormats = ["FLAC"];
+        var strict = await fixture.Resolver.OpenFlacStreamAsync("42");
+
+        Assert.NotNull(strict);
+        Assert.Equal("audio/flac", strict.Value.contentType);
+        strict.Value.stream.Dispose();
+        strict.Value.owner.Dispose();
+        Assert.Equal(2, fixture.MediaBodies.Count);
+        Assert.DoesNotContain("MP3", fixture.MediaBodies.Last());
+        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
     }
 
     [Fact]
@@ -206,10 +264,12 @@ public sealed class DeezerResolverTests
         public bool RejectFirstUrl { get; init; }
         public bool RejectPrimaryCdn { get; init; }
         public int AdvertisedExtraBytes { get; init; }
+        public string[] AvailableFormats { get; set; } = ["MP3_128", "MP3_320", "FLAC"];
         public List<string> AuthCookies { get; } = [];
         public List<string> PageCookies { get; } = [];
         public List<string> PageIds { get; } = [];
         public List<string> MediaBodies { get; } = [];
+        public List<string> MediaCookies { get; } = [];
         public List<string?> CdnRanges { get; } = [];
         private readonly DeezerMetadataService _catalog;
         public Fixture()
@@ -243,13 +303,14 @@ public sealed class DeezerResolverTests
             }
             if (request.RequestUri.Host == "media.deezer.com")
             {
+                MediaCookies.Add(cookie);
                 var body = await request.Content!.ReadAsStringAsync(ct);
                 MediaBodies.Add(body);
                 if (FallbackTrack && body.Contains("token-42")) return Json(new { data = new[] { new { media = Array.Empty<object>() } } });
                 using var doc = JsonDocument.Parse(body);
                 var account = doc.RootElement.GetProperty("license_token").GetString()!.Split('-')[0];
                 // Deliberately reversed preference order: resolver must choose requested quality.
-                return Json(new { data = new[] { new { media = new[] { "MP3_128", "MP3_320", "FLAC" }
+                return Json(new { data = new[] { new { media = AvailableFormats
                     .Select(format => new { format, sources = new[] { new { url = $"https://cdn.deezer.test/{format}?account={account}&version={MediaBodies.Count}" } } }).ToArray() } } });
             }
             if (request.RequestUri.Host == "api.deezer.com")

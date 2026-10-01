@@ -65,6 +65,59 @@ public class LocalLibraryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DelayedImportRequiresUniqueUsableFlacOfSameRecordingAndSurvivesRestart()
+    {
+        var path = Path.Combine(_testDownloadPath, "import.flac");
+        await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
+        var row = new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = "local-import", ["artist"] = "Artist", ["title"] = "Track (Live)",
+            ["album"] = "Album", ["duration"] = 180, ["suffix"] = "flac", ["path"] = path,
+        };
+        var rows = new System.Text.Json.Nodes.JsonArray(row);
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected().Setup<Task<HttpResponseMessage>>("SendAsync",
+            ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .Returns(() => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = new StringContent(rows.ToJsonString()) }));
+        var factory = new Mock<IHttpClientFactory>();
+        factory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(() => new HttpClient(handler.Object));
+        var options = TestOptions.Monitor(new SubsonicSettings { Url = "http://navidrome.invalid", AutoDetectDownloadPath = false });
+        var identity = new Octo.Services.Subsonic.NavidromeIdentityService(options, factory.Object,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Octo.Services.Subsonic.NavidromeIdentityService>.Instance);
+        identity.CaptureLogin(System.Text.Encoding.UTF8.GetBytes("""{"username":"admin","isAdmin":true,"token":"accepted"}"""));
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            { ["Library:DownloadPath"] = _testDownloadPath }).Build();
+        using var registry = new Octo.Services.Soulseek.ExternalIdRegistry();
+        var library = new LocalLibraryService(config, factory.Object, options, registry, identity,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalLibraryService>.Instance);
+        var statePath = Path.Combine(_testDownloadPath, "saved.json");
+        var store = new Octo.Services.Subsonic.ExternalSaveStore(statePath,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Octo.Services.Subsonic.ExternalSaveStore>.Instance);
+        var song = new Song { Id = "ext-deezer-42", ExternalId = "42", ExternalProvider = "deezer",
+            Artist = "Artist", Title = "Track", Album = "Album", Duration = 180 };
+        await store.SetHeartAsync("alice", song, true);
+        var restarted = new Octo.Services.Subsonic.ExternalSaveStore(statePath,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Octo.Services.Subsonic.ExternalSaveStore>.Instance);
+        var reconcile = new Octo.Services.Subsonic.ExternalSaveReconciler(restarted, library,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Octo.Services.Subsonic.ExternalSaveReconciler>.Instance);
+        await reconcile.ReconcileImportedAsync();
+        Assert.False(restarted.GetSong(song.Id)!.IsLocal);
+        row["title"] = "Track";
+        row["suffix"] = "mp3";
+        await reconcile.ReconcileImportedAsync();
+        Assert.False(restarted.GetSong(song.Id)!.IsLocal);
+        row["suffix"] = "flac";
+        var duplicate = row.DeepClone(); duplicate["id"] = "another-copy"; rows.Add(duplicate);
+        await reconcile.ReconcileImportedAsync();
+        Assert.False(restarted.GetSong(song.Id)!.IsLocal);
+        rows.RemoveAt(1);
+        await reconcile.ReconcileImportedAsync();
+        Assert.Equal("local-import", restarted.CanonicalSongId(song.Id));
+        Assert.True(restarted.IsHearted("alice", song.Id));
+    }
+
+    [Fact]
     public void ParseSongId_WithExternalId_ReturnsCorrectParts()
     {
         // Act

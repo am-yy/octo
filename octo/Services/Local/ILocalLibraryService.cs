@@ -25,6 +25,7 @@ public interface ILocalLibraryService
     /// Gets the mapping between external ID and local ID
     /// </summary>
     Task<string?> GetLocalIdForExternalSongAsync(string externalProvider, string externalId);
+    Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct = default);
     
     /// <summary>
     /// Parses a song ID to determine if it is external or local

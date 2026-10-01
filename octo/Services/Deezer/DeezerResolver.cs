@@ -70,7 +70,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     }
 
     private async Task<Media> ResolveMediaAsync(string trackId, string quality, CancellationToken ct,
-        IReadOnlySet<string> rejectedAccounts)
+        IReadOnlySet<string> rejectedAccounts, bool strictFlac = false)
     {
         if (!ValidTrackId(trackId)) throw new ArgumentException("Invalid Deezer track ID.", nameof(trackId));
         var settings = Settings;
@@ -79,7 +79,9 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         {
             foreach (var arl in Accounts(settings).Where(arl => !rejectedAccounts.Contains(arl)))
             {
-                var key = $"{arl}\0{trackId}\0{quality}";
+                var key = strictFlac
+                    ? $"{arl}\0{trackId}\0{quality}\0strict-flac"
+                    : $"{arl}\0{trackId}\0{quality}";
                 if (_mediaCache.TryGetValue(key, out Media? cached)) return cached!;
                 try
                 {
@@ -100,11 +102,11 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                             using var media = await PostAsync("https://media.deezer.com/v1/get_url", new
                             {
                                 license_token = session.LicenseToken,
-                                media = new[] { new { type = "FULL", formats = Formats(quality)
+                                media = new[] { new { type = "FULL", formats = Formats(quality, strictFlac)
                                     .Select(format => new { cipher = "BF_CBC_STRIPE", format }).ToArray() } },
                                 track_tokens = new[] { trackToken },
-                            }, session.Cookie, ct);
-                            if (SelectMedia(media.RootElement, actualId, quality) is { } found)
+                            }, cookie: null, ct: ct);
+                            if (SelectMedia(media.RootElement, actualId, quality, strictFlac) is { } found)
                             {
                                 found = found with { Account = arl };
                                 _mediaCache.Set(key, found, new MemoryCacheEntryOptions
@@ -145,19 +147,24 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         finally { _mediaGate.Release(); }
     }
 
-    internal static string[] Formats(string? quality) => quality?.Trim().ToUpperInvariant() switch
+    internal static string[] Formats(string? quality, bool strictFlac = false)
+    {
+        if (strictFlac) return ["FLAC"];
+        return quality?.Trim().ToUpperInvariant() switch
     {
         "MP3_128" => ["MP3_128"],
         "MP3_320" => ["MP3_320", "MP3_128"],
         _ => ["FLAC", "MP3_320", "MP3_128"],
     };
+    }
 
-    private static Media? SelectMedia(JsonElement root, string trackId, string quality)
+    private static Media? SelectMedia(JsonElement root, string trackId, string quality,
+        bool strictFlac = false)
     {
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array
             || data.GetArrayLength() == 0 || !data[0].TryGetProperty("media", out var media)
             || media.ValueKind != JsonValueKind.Array) return null;
-        foreach (var format in Formats(quality))
+        foreach (var format in Formats(quality, strictFlac))
             foreach (var item in media.EnumerateArray())
                 if (Text(item, "format") == format
                     && item.TryGetProperty("sources", out var sources) && sources.ValueKind == JsonValueKind.Array)
@@ -171,6 +178,16 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     public async Task<(Stream stream, string contentType, long? contentLength, int statusCode,
         string? contentRange, HttpResponseMessage owner)?> OpenStreamAsync(string trackId,
         string? rangeHeader = null, CancellationToken ct = default, string quality = "MP3_320")
+        => await OpenStreamCoreAsync(trackId, rangeHeader, ct, quality, strictFlac: false);
+
+    /// <summary>Opens only FLAC media. Playback caches must never accept a lossy fallback.</summary>
+    public Task<(Stream stream, string contentType, long? contentLength, int statusCode,
+        string? contentRange, HttpResponseMessage owner)?> OpenFlacStreamAsync(string trackId,
+        CancellationToken ct = default) => OpenStreamCoreAsync(trackId, null, ct, "FLAC", strictFlac: true);
+
+    private async Task<(Stream stream, string contentType, long? contentLength, int statusCode,
+        string? contentRange, HttpResponseMessage owner)?> OpenStreamCoreAsync(string trackId,
+        string? rangeHeader, CancellationToken ct, string quality, bool strictFlac)
     {
         var rejectedAccounts = new HashSet<string>();
         var refreshed = false;
@@ -180,7 +197,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             Media? media = null;
             try
             {
-                media = await ResolveMediaAsync(trackId, quality, ct, rejectedAccounts);
+                media = await ResolveMediaAsync(trackId, quality, ct, rejectedAccounts, strictFlac);
                 var http = httpFactory.CreateClient(StreamClientName);
                 // Read headers first to learn total size, including for suffix ranges.
                 response = await http.GetAsync(media.Url, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -237,7 +254,10 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                 response?.Dispose();
                 logger.LogWarning("Deezer stream unavailable for track {TrackId}: {Type}", trackId, ex.GetType().Name);
                 if (media is null) return null;
-                _mediaCache.Remove($"{media.Account}\0{trackId}\0{quality}");
+                var key = strictFlac
+                    ? $"{media.Account}\0{trackId}\0{quality}\0strict-flac"
+                    : $"{media.Account}\0{trackId}\0{quality}";
+                _mediaCache.Remove(key);
                 if (refreshed) rejectedAccounts.Add(media.Account);
                 refreshed = true;
             }
@@ -272,7 +292,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         }
     }
 
-    private async Task<JsonDocument> PostAsync(string url, object body, string cookie, CancellationToken ct)
+    private async Task<JsonDocument> PostAsync(string url, object body, string? cookie, CancellationToken ct)
     {
         using var request = JsonRequest(url, body, cookie);
         using var response = await httpFactory.CreateClient(ApiClientName).SendAsync(request, ct);
@@ -280,11 +300,11 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
     }
 
-    private static HttpRequestMessage JsonRequest(string url, object body, string cookie)
+    private static HttpRequestMessage JsonRequest(string url, object body, string? cookie)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, url)
             { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
-        request.Headers.Add("Cookie", cookie);
+        if (!string.IsNullOrWhiteSpace(cookie)) request.Headers.Add("Cookie", cookie);
         return request;
     }
     private static string Gateway(string method, string token) =>

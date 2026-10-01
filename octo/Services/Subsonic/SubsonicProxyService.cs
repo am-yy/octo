@@ -97,7 +97,9 @@ public class SubsonicProxyService
 
     public async Task<RawRelayResult> RelayRawAsync(
         string endpoint,
-        Dictionary<string, string> parameters)
+        Dictionary<string, string> parameters,
+        string? methodOverride = null,
+        byte[]? bodyOverride = null)
     {
         if (string.IsNullOrWhiteSpace(_subsonicSettings.Url)
             || !Uri.TryCreate(_subsonicSettings.Url, UriKind.Absolute, out _))
@@ -110,8 +112,8 @@ public class SubsonicProxyService
 
         var ctx = _httpContextAccessor.HttpContext;
         var incoming = ctx?.Request;
-        var method = incoming?.Method ?? "GET";
-        var rawBody = ctx?.Items.TryGetValue("Octo.RawBody", out var rb) == true
+        var method = methodOverride ?? incoming?.Method ?? "GET";
+        var rawBody = methodOverride is not null ? bodyOverride : ctx?.Items.TryGetValue("Octo.RawBody", out var rb) == true
             && rb is byte[] bytes && bytes.Length > 0 ? bytes : null;
 
         var query = await BuildQueryAsync(parameters, bodyForwarded: rawBody != null);
@@ -124,13 +126,14 @@ public class SubsonicProxyService
         {
             req.Content = new ByteArrayContent(rawBody);
             if (!string.IsNullOrEmpty(incoming?.ContentType))
-                req.Content.Headers.TryAddWithoutValidation("Content-Type", incoming.ContentType);
+                req.Content.Headers.TryAddWithoutValidation("Content-Type", bodyOverride is null ? incoming.ContentType : "application/json");
         }
 
         // Forward auth + conditional headers so native Navidrome endpoints work.
         if (incoming != null)
         {
             foreach (var h in ForwardRequestHeaders)
+                if (methodOverride is null || h is "Authorization" or "X-Nd-Authorization" or "X-Nd-Client-Unique-Id")
                 if (incoming.Headers.TryGetValue(h, out var vals))
                     req.Headers.TryAddWithoutValidation(h, vals.ToArray());
         }

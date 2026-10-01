@@ -21,6 +21,8 @@ public sealed class RestartTracker
         "Subsonic:Url",                     // live in most places; a restart is still the safe advice
         "Subsonic:LibraryPath",
         "Subsonic:WaitForLosslessOnPlay",   // SubsonicResponseBuilder, deliberately
+        "Deezer:CacheEnabled",              // SubsonicResponseBuilder
+        "Deezer:CachePath",                 // DeezerAudioCache
         "Soulseek:BaseUrl",                 // SoulseekClient and SoulseekDownloadService take IOptions
         "Soulseek:Username",
         "Soulseek:Password",

@@ -125,6 +125,7 @@ public class Song
     /// ID on the external provider (for downloading)
     /// </summary>
     public string? ExternalId { get; set; }
+    public string? DeezerId { get; set; }
     
     /// <summary>
     /// Local file path (if available)
@@ -175,4 +176,3 @@ public class Song
     [System.Text.Json.Serialization.JsonIgnore]
     public Octo.Services.Fingerprint.VerificationResult? Verification { get; set; }
 }
-

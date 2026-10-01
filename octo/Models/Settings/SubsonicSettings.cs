@@ -191,7 +191,7 @@ public class SubsonicSettings
     /// <summary>
     /// Legacy storage mode for direct-download jobs (default: Permanent).
     /// Environment variable: STORAGE_MODE
-    /// Ordinary external playback always streams from Deezer unless lossless waiting is enabled.
+    /// Ordinary external playback uses the Deezer cache when enabled, otherwise direct streaming.
     /// </summary>
     public StorageMode StorageMode { get; set; } = StorageMode.Permanent;
     
@@ -284,8 +284,8 @@ public class SubsonicSettings
     /// Environment variable: RECORD_REQUESTED_BY
     /// The username reaches the fetched-songs log and the download notification, so on a
     /// shared library you can tell one person's acquisitions from another's. Turning it off
-    /// stops the name being captured at all rather than hiding it afterwards, so nothing
-    /// downstream ever holds it. Entries written while it was on keep their names.
+    /// omits attribution from acquisition logs and notifications. Per-user saved playlists
+    /// and hearts still retain their owner. Existing attribution is not removed.
     /// </summary>
     public bool RecordRequestedBy { get; set; } = true;
 
@@ -294,10 +294,10 @@ public class SubsonicSettings
     /// (default: false).
     /// Environment variable: WAIT_FOR_LOSSLESS_ON_PLAY
     ///
-    /// This also decides what search results DECLARE for external tracks, which is why it
+    /// Together with Deezer:CacheEnabled, this decides what search results DECLARE, which is why it
     /// is restart-required. A Subsonic client picks its decoder from the declared suffix
     /// and content type, so those have to describe the bytes that will actually arrive:
-    /// off, an external id is always the lossy stream and the lossless copy shows up as a
+    /// with both settings off, an external id is the lossy stream and the lossless copy shows up as a
     /// separate library track after the rescan; on, the id is declared lossless and the
     /// request waits for it.
     ///

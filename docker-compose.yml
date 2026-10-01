@@ -50,6 +50,10 @@ services:
       Deezer__Arl: ${DEEZER_ARL:-}
       Deezer__ArlFallback: ${DEEZER_ARL_FALLBACK:-}
       Deezer__Quality: ${DEEZER_QUALITY:-FLAC}
+      Deezer__CacheEnabled: ${DEEZER_CACHE_ENABLED:-false}
+      Deezer__CachePath: /app/cache/deezer
+      Deezer__CacheMaxGiB: ${DEEZER_CACHE_MAX_GIB:-20}
+      Deezer__CacheRetentionDays: ${DEEZER_CACHE_RETENTION_DAYS:-7}
 
       # ----- slskd (Soulseek) sidecar -----
       Soulseek__BaseUrl: http://slskd:5030
@@ -193,6 +197,7 @@ services:
       # Editable settings file — admin UI writes here, ASP.NET hot-reloads on
       # change. Bind-mounted to host so values survive `docker compose up`.
       - ./octo-config:/app/config
+      - ${DEEZER_CACHE_HOST_PATH:-./octo-cache/deezer}:/app/cache/deezer
     depends_on:
       - slskd
 

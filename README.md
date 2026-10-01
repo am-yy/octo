@@ -10,7 +10,7 @@ Play songs you don't own yet, and keep the ones you like as FLAC.
 [![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4)](https://dotnet.microsoft.com/)
 [![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED)](https://docs.docker.com/compose/)
-[![CI](https://github.com/winters27/octo/actions/workflows/ci.yml/badge.svg)](https://github.com/winters27/octo/actions/workflows/ci.yml)
+[![CI](https://github.com/am-yy/octo/actions/workflows/ci.yml/badge.svg)](https://github.com/am-yy/octo/actions/workflows/ci.yml)
 
 </div>
 
@@ -43,7 +43,7 @@ The desktop app runs on Windows and Linux, and the Android app on Android 10 and
 
 Octo sits in front of Navidrome and adds what a streaming service gives you: search past your own library, radio, and stations that learn from what you play. Missing songs stream from Deezer. The songs you keep arrive from Soulseek, Deezer, or your own Lidarr as tagged files in your library.
 
-- **Search finds music you don't own**, and Deezer streams it right away without saving a file.
+- **Search finds music you don't own**, and Deezer plays it directly or from the optional FLAC cache.
 - **Radio and stations grow from your listening:** Your Mix, discovery, artist and genre stations, plus optional genre and decade mixes from your own library.
 - **Keep what you like.** Octo downloads it, tags it, files it under the right album and tells Navidrome to rescan. Whole albums work too.
 - **Downloads are checked.** A "lossless" file made from an MP3 is caught, and optional Review and Duplicates playlists show what Octo couldn't confirm and what you have twice.
@@ -82,7 +82,7 @@ Setup: **tell Octo where Navidrome is**, add the **Deezer ARL**, then **point yo
 Then:
 
 ```bash
-git clone https://github.com/winters27/octo.git
+git clone https://github.com/am-yy/octo.git
 cd octo
 ./install.sh
 ```
@@ -164,7 +164,8 @@ To pin to a release instead of tracking `main`:
 git checkout 2026.07.29 && ./install.sh
 ```
 
-Prebuilt multi-arch images are also published to `ghcr.io/winters27/octo`, tagged `latest`, the release date, and the commit sha.
+Upstream publishes multi-arch images to `ghcr.io/winters27/octo`. Build this fork from source
+with the included Compose file to get its native FLAC cache and durable-save changes.
 
 ## Admin dashboard
 
@@ -249,15 +250,15 @@ Use **Streams & hearts → Heart download priority** in the admin UI to order So
 
 Lidarr works at album level, so enabling it for song hearts still fetches the song's full album. It is last and disabled by default; configure its URL, API key, root folder, and profiles on the Lidarr page, then enable the heart types you want in the priority list.
 
-To stop downloading altogether, turn off both heart types for every source. On an env-only installation, set `Subsonic__DownloadOnStar=false` and `Subsonic__DownloadAlbumOnStar=false`. A heart on a song Octo found for you then downloads nothing and is not kept, because Navidrome has no such song to favourite.
+To stop permanent acquisition, turn off both heart types for every source. On an env-only installation, set `Subsonic__DownloadOnStar=false` and `Subsonic__DownloadAlbumOnStar=false`. Octo still saves the heart immediately. With the FLAC cache enabled, it protects a playable copy independently of permanent acquisition.
 
 `RECORD_REQUESTED_BY` (on by default) names the Subsonic user who asked for each download on
 its entry in **Fetched songs** and on the download notification, so on a shared library you can
 tell one person's acquisitions from another's. A track that two people star while it is still
 downloading lists both, because the second star joins the transfer already running rather than
 starting a second one. Acquisitions Octo starts itself are unattributed, as are all entries
-written before this existed. Turning it off stops the username being captured at all rather
-than hiding it afterwards, so nothing downstream holds it; names already written stay.
+written before this existed. Turning it off omits attribution from acquisition logs and notifications; existing names stay.
+Per-user saved playlists and hearts still retain their owner.
 
 ### Why is Octo a refactor of [octo-radiostarr](https://github.com/winters27/octo-radiostarr)?
 
@@ -267,7 +268,7 @@ The earlier project leaned on SquidWTF (a public TIDAL proxy) for streaming. In 
 
 Octo's earliest commits descended from [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) (via [bransoned/octo-fiestarr](https://github.com/bransoned/octo-fiestarr)). Octo's Deezer resolver adapts the account-session and audio-decryption flow from octo-fiesta, while preserving Octo's own Subsonic proxy, radio, acquisition, and file-management paths:
 
-- **Playback:** an unowned song streams as MP3 from Deezer without writing a file. Radio and ordinary track playback use the same resolver.
+- **Playback:** an unowned song uses the optional strict FLAC cache, or streams MP3 directly when caching is disabled. Continuous radio keeps MP3 transport. Both reuse the native Deezer resolver.
 - **Acquisition:** heart a song or album to download from Soulseek, Deezer, or Lidarr in the order you choose. Deezer download quality defaults to FLAC and falls back to MP3 when unavailable.
 
 Octo-fiesta supports multiple catalogs and Subsonic-proxy behaviors that Octo does not. Octo adds its Last.fm stations, admin UI, ordered acquisition sources, and multi-peer Soulseek retry around Deezer playback.
@@ -287,7 +288,7 @@ Subsonic clients ──▶ Octo ──▶ Navidrome
 ```
 
 - **`octo`** (port 5274): the proxy + admin UI. Personalized Radio, its state store, recommendation queue, and refresh worker all run in this process. Octo hijacks the Subsonic endpoints that need enrichment and passes everything else through to Navidrome.
-- **Deezer**: direct HTTPS playback and downloads use the configured ARL. Stream audio is MP3; download quality is configurable.
+- **Deezer**: direct HTTPS playback and downloads use the configured ARL. Ordinary playback supports a strict FLAC cache; continuous radio uses MP3. Permanent download quality is configurable.
 - **`slskd`** (port 5030): Soulseek client with REST API. Octo authenticates and queues downloads.
 
 Navidrome is **not** part of the stack. Octo just talks to whatever Navidrome you already have.
@@ -505,15 +506,21 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 ### Playback and acquisition
 
-Tracks already in your library play locally through Navidrome. Missing external results stream from Deezer as MP3 without acquiring a permanent copy; heart the song or album to run the configured source priority.
+Tracks already in your library play locally through Navidrome. Missing external results play from the optional FLAC cache or stream MP3 directly when caching is disabled; heart the song or album to run the configured permanent acquisition priority.
 
 Enable `Deezer:CacheEnabled` for strict FLAC track playback independent of permanent acquisition.
 Set `Deezer:CachePath` to a persistent directory outside the music library (mount it into Docker).
+With the included Compose file, set `DEEZER_CACHE_ENABLED=true`; `DEEZER_CACHE_HOST_PATH`
+defaults to `./octo-cache/deezer`, mounted at `/app/cache/deezer`. Size and retention use
+`DEEZER_CACHE_MAX_GIB` and `DEEZER_CACHE_RETENTION_DAYS`. Restart after enabling the cache.
 Cold playback waits for a shared, validated download; completed files support byte ranges.
 `CacheMaxGiB` defaults to 20 and `CacheRetentionDays` to seven, measured from explicit playback,
 or download completion for never-played files. Prefetch and range probes do not refresh retention.
 Search prefetches the first 12 visible results; playlists, queues and radio starters prefetch eight.
 Two transfers run at once, with playback taking priority. Continuous radio keeps MP3 transport.
+Lidarr preparation retries after restart, while accepted album searches are not repeated.
+If Octo loses the response during command submission, it keeps the claim and checks imports;
+Lidarr offers no idempotency key, so that ambiguous window requires checking Lidarr before a manual retry.
 
 Song hearts and mixed playlists edited through Octo save immediately to
 `/app/config/external-saves.json`, including duplicates, order, metadata and acquisition intents.
@@ -562,7 +569,7 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `getInternetRadioStations` | append startup-warmed authenticated Octo stations immediately, with a one-starter same-request fallback, while preserving ordinary internet radio |
 | `createInternetRadioStation`, `updateInternetRadioStation`, `deleteInternetRadioStation` | protect Octo stations while relaying ordinary internet-radio mutations |
 | `/radio/stream/{token}` | consume the ready MP3 pool, optionally frame its existing artist/title as client-requested ICY metadata, and replenish it until disconnect |
-| `stream` | Deezer MP3 stream with stable `audio/mpeg` metadata |
+| `stream` | local FLAC first, completed strict FLAC cache with range support when enabled, otherwise a direct Deezer MP3 stream |
 | `getCoverArt` | Deezer → iTunes → Last.fm aggregator with Octo watermark |
 | `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` |
 | `getAlbum` | external album tracklists, and fills in tracks you're missing from an album you own |

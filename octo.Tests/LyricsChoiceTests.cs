@@ -323,15 +323,16 @@ public sealed class LyricsChoiceTests : IDisposable
     }
 
     /// <summary>A source that takes longer than the interactive budget to answer.</summary>
-    private sealed class SlowSource(TimeSpan delay) : ILyricsSource
+    private sealed class SlowSource : ILyricsSource
     {
         public string Key => "kugou";
         public int Finds;
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task<LyricsLookup> FindAsync(LyricsQuery query, CancellationToken ct)
         {
             Interlocked.Increment(ref Finds);
-            await Task.Delay(delay, ct);
+            await Release.Task.WaitAsync(ct);
             return new LyricsLookup(new LyricsResult("KuGou", "[00:01.00]found late", null, false), false);
         }
     }
@@ -339,7 +340,7 @@ public sealed class LyricsChoiceTests : IDisposable
     [Fact]
     public async Task SlowLookup_TellsTheOctoAppNotYet_ThenServesWhatItFoundInTheBackground()
     {
-        var slow = new SlowSource(TimeSpan.FromSeconds(5.5));
+        var slow = new SlowSource();
         await using var factory = new Factory(fetch: true, slow);
         using var client = factory.CreateClient();
         var id = factory.External();
@@ -350,7 +351,7 @@ public sealed class LyricsChoiceTests : IDisposable
         Assert.Contains("Still looking", first.GetProperty("error").GetProperty("message").GetString());
 
         // The lookup kept going and was kept, so the next ask gets the lyrics at once.
-        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        slow.Release.SetResult();
         var second = await GetJson(client, $"/rest/getLyricsBySongId?id={id}&f=json&{Auth()}");
         Assert.Equal("ok", second.GetProperty("status").GetString());
         var line = second.GetProperty("lyricsList").GetProperty("structuredLyrics")[0].GetProperty("line")[0];
@@ -361,12 +362,14 @@ public sealed class LyricsChoiceTests : IDisposable
     [Fact]
     public async Task SlowLookup_OtherClientsStillGetTheOrdinaryEmptyList()
     {
-        await using var factory = new Factory(fetch: true, new SlowSource(TimeSpan.FromSeconds(10)));
+        var slow = new SlowSource();
+        await using var factory = new Factory(fetch: true, slow);
         using var client = factory.CreateClient();
         var id = factory.External();
 
         var other = await GetJson(client, $"/rest/getLyricsBySongId?id={id}&f=json&{Auth().Replace("c=Octo", "c=Symfonium")}");
 
+        slow.Release.SetResult();
         Assert.Equal("ok", other.GetProperty("status").GetString());
         Assert.False(other.GetProperty("lyricsList").TryGetProperty("structuredLyrics", out var lyrics)
             && lyrics.GetArrayLength() > 0);

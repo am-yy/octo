@@ -903,7 +903,55 @@ public class DeezerMetadataService : IDisposable
             if (BestMatch(r.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (r, hit);
             r.Dispose();
         }
-        return (null, null);
+
+        // Some Deezer tracks are absent from track search but present on their album.
+        // Keep recovery narrow: only inspect a matching album named for this title,
+        // then require the track itself to pass the same identity checks as search hits.
+        var query = PlainQuery(artist, title);
+        if (query.Length == 0) return (null, null);
+        var albums = await GetJsonAsync($"{Base}/search/album?q={Uri.EscapeDataString(query)}&limit={MatchCandidates}", ct, background);
+        if (albums.Transient) return (albums, null);
+
+        string? albumId = null;
+        using (albums)
+        {
+            if (BestMatch(albums.Doc, artist, title) is JsonElement album
+                && album.TryGetProperty("id", out var id)
+                && id.ValueKind == JsonValueKind.Number)
+                albumId = id.ToString();
+        }
+        if (string.IsNullOrEmpty(albumId)) return (null, null);
+
+        // ponytail: inspect first 300 album tracks; paginate if larger releases need recovery.
+        var tracklist = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(albumId)}/tracks?limit=300", ct, background);
+        if (tracklist.Transient) return (tracklist, null);
+
+        string? trackId = null;
+        using (tracklist)
+        {
+            if (BestMatch(tracklist.Doc, artist, title, excluded, readableOnly) is JsonElement track
+                && track.TryGetProperty("id", out var id))
+                trackId = id.ToString();
+        }
+        if (string.IsNullOrEmpty(trackId)) return (null, null);
+
+        var detail = await GetJsonAsync($"{Base}/track/{Uri.EscapeDataString(trackId)}", ct, background);
+        if (detail.Transient) return (detail, null);
+        if (detail.Doc is null)
+        {
+            detail.Dispose();
+            return (null, null);
+        }
+
+        var root = detail.Doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("id", out var detailId) || detailId.ToString() != trackId
+            || readableOnly && root.TryGetProperty("readable", out var readable) && readable.ValueKind != JsonValueKind.True)
+        {
+            detail.Dispose();
+            return (null, null);
+        }
+        return (detail, root);
     }
 
     /// <summary>Find another readable copy using the same identity guards as normal search.</summary>

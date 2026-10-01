@@ -492,6 +492,44 @@ public class DeezerMetadataServiceTests
     }
 
     [Fact]
+    public async Task EnrichTrackAsync_FindsTrackInMatchingAlbumWhenTrackSearchMisses()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new()
+        {
+            ["/search/album"] = """
+                {"data":[
+                  {"id":9,"title":"Fixer Upper","artist":{"name":"Other Artist"}},
+                  {"id":159610842,"title":"Fixer Upper","artist":{"name":"Yard Act"}}]}
+                """,
+            ["/album/159610842/tracks"] = """
+                {"total":2,"data":[
+                  {"id":1016092511,"title":"Fixer Upper","readable":true,"artist":{"name":"Other Artist"}},
+                  {"id":1016092512,"title":"Fixer Upper","readable":true,"artist":{"name":"Yard Act"}}]}
+                """,
+            ["/track/1016092512"] = """
+                {"id":1016092512,"title":"Fixer Upper","duration":177,"isrc":"GBCSG2000118",
+                 "album":{"id":159610842,"title":"Fixer Upper"},"artist":{"name":"Yard Act"}}
+                """,
+            ["/search?"] = """
+                {"data":[{"id":77,"title":"Fixer Upper","duration":99,
+                  "album":{"id":1,"title":"Wrong Album"},"artist":{"name":"Another Artist"}}]}
+                """
+        }, capture: sent);
+
+        var meta = await svc.EnrichTrackAsync("Yard Act", "Fixer Upper", includeYear: false);
+
+        Assert.NotNull(meta);
+        Assert.Equal("1016092512", meta.DeezerId);
+        Assert.Equal(177, meta.Duration);
+        Assert.Equal("Fixer Upper", meta.AlbumTitle);
+        Assert.Contains(sent, request => request.RequestUri!.AbsolutePath.EndsWith("/album/159610842/tracks"));
+        Assert.Contains(sent, request => request.RequestUri!.AbsolutePath.EndsWith("/track/1016092512"));
+        var albumSearch = sent.Single(request => request.RequestUri!.AbsolutePath.EndsWith("/search/album"));
+        Assert.Equal("Yard Act Fixer Upper", Uri.UnescapeDataString(albumSearch.RequestUri!.Query).TrimStart('?').Split('&')[0][2..]);
+    }
+
+    [Fact]
     public async Task EnrichTrackFullAsync_SendsPlainTerms_WithoutFieldQualifiers()
     {
         var json = @"{""data"":[{""title"":""Teardrop"",""duration"":330,""isrc"":""X"",

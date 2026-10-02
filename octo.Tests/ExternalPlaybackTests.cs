@@ -38,7 +38,7 @@ public sealed class ExternalPlaybackTests
         await using var factory = CreateFactory(downloads, library, waitForLossless: false);
 
         using var client = factory.CreateClient();
-        using var response = await client.GetAsync("/rest/stream?u=alice&id=external-track&f=json");
+        using var response = await client.GetAsync("/rest/stream?u=alice&t=tok&s=salt&id=external-track&f=json");
 
         response.EnsureSuccessStatusCode();
         Assert.Equal([1, 2, 3], await response.Content.ReadAsByteArrayAsync());
@@ -58,7 +58,7 @@ public sealed class ExternalPlaybackTests
         await using var factory = CreateFactory(downloads, library, waitForLossless: false);
         using var client = factory.CreateClient();
 
-        var response = await client.GetStringAsync("/rest/stream?u=bad&id=external-track&f=json");
+        var response = await client.GetStringAsync("/rest/stream?u=bad&t=tok&s=salt&id=external-track&f=json");
 
         Assert.Contains("failed", response);
         Assert.Contains("40", response);
@@ -76,10 +76,12 @@ public sealed class ExternalPlaybackTests
 
         await using var factory = CreateFactory(downloads, library, waitForLossless: true);
         using var client = factory.CreateClient();
-        var responseTask = client.GetAsync("/rest/stream?u=alice&id=external-track&f=json");
+        var responseTask = client.GetAsync("/rest/stream?u=alice&t=tok&s=salt&id=external-track&f=json");
 
         var queue = factory.Services.GetRequiredService<TrackAcquisitionQueue>();
-        using var dequeueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // Only a guard against hanging: under a full-suite load the first request through a
+        // fresh host, sign-in check included, has taken over 5 seconds to reach the queue.
+        using var dequeueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var request = await queue.DequeueAsync(dequeueTimeout.Token);
         Assert.NotNull(request);
         Assert.False(request.IsStar);
@@ -124,7 +126,7 @@ public sealed class ExternalPlaybackTests
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Head,
-            "/rest/stream?u=alice&id=external-track&f=json");
+            "/rest/stream?u=alice&t=tok&s=salt&id=external-track&f=json");
         using var response = await client.SendAsync(request);
 
         response.EnsureSuccessStatusCode();

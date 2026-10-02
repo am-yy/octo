@@ -82,6 +82,7 @@ public partial class SubsonicController : ControllerBase
     private readonly IOptionsMonitor<DeezerSettings>? _deezerSettingsOptions;
     private readonly ExternalSaveStore? _externalSaves;
     private readonly ExternalSaveWorker? _saveWorker;
+    private readonly CredentialCheck _credentialCheck;
 
     public SubsonicController(
         IOptionsMonitor<SubsonicSettings> subsonicSettings,
@@ -130,7 +131,8 @@ public partial class SubsonicController : ControllerBase
         ExternalSaveStore? externalSaves = null,
         ExternalSaveWorker? saveWorker = null,
         DeezerDeliveryService? deezerDelivery = null,
-        IOptionsMonitor<DeezerSettings>? deezerSettings = null)
+        IOptionsMonitor<DeezerSettings>? deezerSettings = null,
+        CredentialCheck? credentialCheck = null)
     {
         _deezerCache = deezerCache;
         _deezerDelivery = deezerDelivery;
@@ -141,6 +143,8 @@ public partial class SubsonicController : ControllerBase
         _lastFmScrobbles = lastFmScrobbles;
         _requestIdentity = requestIdentity
             ?? new RequestIdentity(Microsoft.Extensions.Logging.Abstractions.NullLogger<RequestIdentity>.Instance);
+        _credentialCheck = credentialCheck
+            ?? new CredentialCheck(Microsoft.Extensions.Logging.Abstractions.NullLogger<CredentialCheck>.Instance);
         _libraryActions = libraryActions;
         _searchSongOrders = searchSongOrders ?? new SearchSongOrderCache();
         _acquisitionTracker = acquisitionTracker;
@@ -1522,8 +1526,9 @@ public partial class SubsonicController : ControllerBase
             parameters["id"] = savedSong.Id;
             return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
         }
-        if (isExternal && !await HasAcceptedSubsonicCredentialsAsync(parameters))
-            return _responseBuilder.CreateError(format, 40, "Wrong username or password");
+        // Navidrome checks the sign-in on everything relayed to it, but it never sees an outside
+        // song, so without this anyone who can reach Octo could play through it with no account.
+        if (isExternal && await RefuseUnlessSignedInAsync(parameters, format) is { } refused) return refused;
         if (isExternal)
         {
             string? losslessPath = null;
@@ -1536,7 +1541,7 @@ public partial class SubsonicController : ControllerBase
                 {
                     var acquisition = _acquisitions.Enqueue(provider!, externalId!, isStar: false,
                         triggerAlbumDownload: false, forcePermanent: true,
-                        requestedBy: RequesterFor(parameters));
+                        requestedBy: RequesterFor(await SignedInUserAsync(parameters)));
                     return await ServeAcquiredAsync(acquisition, provider!, externalId!, id, format,
                         allowPreviewFallback: true, parameters);
                 }
@@ -2534,7 +2539,10 @@ public partial class SubsonicController : ControllerBase
             {
                 return _responseBuilder.CreateError(format, 0, "Playlist functionality is not enabled");
             }
-            
+
+            // Navidrome never sees this id, so nothing else would check who is asking.
+            if (await RefuseUnlessSignedInAsync(parameters, format) is { } refused) return refused;
+
             _logger.LogInformation("Starring external playlist {PlaylistId}, triggering download", itemId);
             
             // Trigger playlist download in background
@@ -2565,6 +2573,9 @@ public partial class SubsonicController : ControllerBase
         if (!string.IsNullOrEmpty(albumCandidate)
             && _idRegistry.Lookup(albumCandidate)?.Kind == RoutingKind.Album)
         {
+            // Navidrome never sees this id, so nothing else would check who is asking.
+            if (await RefuseUnlessSignedInAsync(parameters, format) is { } refused) return refused;
+
             if (!_subsonicSettings.EffectiveHeartDownloadSources()
                     .Any(step => step.AlbumEnabled == true))
             {
@@ -2601,11 +2612,12 @@ public partial class SubsonicController : ControllerBase
             // tracks that are downloaded or in flight and isolates per-track failures.
             //
             // The progress list is claimed first, so the chain's first step already has a row
-            // to move. Its name is the one the request authenticated as, not RequesterFor: it
-            // decides who may see the row, and it is never written anywhere.
-            _acquisitionTracker?.BeginAlbum(albumProviderName, albumCandidate, NativeUsername(parameters));
-            _heartAcquisitions.QueueAlbum(albumProviderName, albumCandidate,
-                RequesterFor(parameters));
+            // to move. Its name is the one the request signed in as (for an API key, its owner
+            // as Navidrome names it), not RequesterFor: it decides who may see the row, and it
+            // is never written anywhere.
+            var who = await SignedInUserAsync(parameters);
+            _acquisitionTracker?.BeginAlbum(albumProviderName, albumCandidate, who);
+            _heartAcquisitions.QueueAlbum(albumProviderName, albumCandidate, RequesterFor(who));
 
             // Navidrome has never seen this id, so relaying the star would just error.
             return _responseBuilder.CreateResponse(format, "starred", new { });
@@ -2617,6 +2629,9 @@ public partial class SubsonicController : ControllerBase
         if (isExternal && _subsonicSettings.EffectiveHeartDownloadSources()
                 .Any(step => step.SongEnabled == true))
         {
+            // Navidrome never sees this id, so nothing else would check who is asking.
+            if (await RefuseUnlessSignedInAsync(parameters, format) is { } refused) return refused;
+
             // No storage-mode gate any more. It used to exclude Permanent on the grounds
             // that playing a track there already downloads it, but that was only ever true
             // through the blocking play path — so in Permanent mode a star fell through to
@@ -2629,10 +2644,11 @@ public partial class SubsonicController : ControllerBase
 
             // Keyed by what the pipeline knows, labelled with the id the client starred so the
             // app can find its row. Named from the routing, which is already in memory.
+            var who = await SignedInUserAsync(parameters);
             var routing = _idRegistry.Lookup(externalId!);
-            _acquisitionTracker?.Begin(provider!, externalId!, itemId, NativeUsername(parameters),
+            _acquisitionTracker?.Begin(provider!, externalId!, itemId, who,
                 routing?.Artist, routing?.Title, routing?.Album);
-            _heartAcquisitions.QueueTrack(provider!, externalId!, RequesterFor(parameters));
+            _heartAcquisitions.QueueTrack(provider!, externalId!, RequesterFor(who));
 
             // Return success response immediately
             return _responseBuilder.CreateResponse(format, "starred", new { });
@@ -2682,7 +2698,7 @@ public partial class SubsonicController : ControllerBase
         if (!IsSuccessfulSubsonicResponse(check.Body, format))
             return _responseBuilder.CreateError(format, 40, "Wrong username or password");
 
-        var username = NativeUsername(parameters);
+        var username = await SignedInUserAsync(parameters);
         var rows = _acquisitionTracker is not null && !string.IsNullOrWhiteSpace(username)
             ? _acquisitionTracker.ForUser(username)
             : [];
@@ -3476,6 +3492,31 @@ public partial class SubsonicController : ControllerBase
         return null;
     }
 
+    /// <summary>
+    /// Null when Navidrome accepts the request's sign-in, else the error to answer with, in the
+    /// format asked for. An outage refuses too: an outside song is Octo fetching from the
+    /// internet for whoever asks, and a broken Navidrome must not make that anyone at all.
+    /// </summary>
+    private async Task<IActionResult?> RefuseUnlessSignedInAsync(
+        IReadOnlyDictionary<string, string> parameters, string format)
+    {
+        var verdict = await _credentialCheck.CheckAsync(SubsonicCredential.From(parameters),
+            _proxyService, HttpContext.RequestAborted);
+        return verdict switch
+        {
+            CredentialVerdict.Accepted => null,
+            CredentialVerdict.Unreachable =>
+                _responseBuilder.CreateError(format, 0, "Octo can't reach Navidrome to check who is asking"),
+            _ => _responseBuilder.CreateError(format, 40, "Wrong username or password"),
+        };
+    }
+
+    /// <summary>Who an accepted request signed in as: u, or its API key's owner as Navidrome
+    /// names it, else the native token's name. Ask only after the sign-in is accepted.</summary>
+    private async Task<string> SignedInUserAsync(IReadOnlyDictionary<string, string> parameters) =>
+        await _requestIdentity.UsernameAsync(parameters, _proxyService, HttpContext.RequestAborted)
+        ?? NativeUsername(parameters);
+
     /// <summary>What lyrics are looked up by, for an outside song from the registry and for a
     /// library song from Navidrome as the caller sees it.</summary>
     private async Task<Song?> SongForLyricsAsync(IReadOnlyDictionary<string, string> parameters, string id)
@@ -3830,12 +3871,8 @@ public partial class SubsonicController : ControllerBase
     /// Gated here rather than at the history write, so with the setting off no username is
     /// captured in the first place and nothing downstream is ever holding one.
     /// </summary>
-    private string? RequesterFor(IReadOnlyDictionary<string, string> parameters)
-    {
-        if (!_subsonicSettings.RecordRequestedBy) return null;
-        var username = NativeUsername(parameters);
-        return string.IsNullOrWhiteSpace(username) ? null : username;
-    }
+    private string? RequesterFor(string? username) =>
+        _subsonicSettings.RecordRequestedBy && !string.IsNullOrWhiteSpace(username) ? username : null;
 
     private string NativeUsername(IReadOnlyDictionary<string, string> parameters)
     {

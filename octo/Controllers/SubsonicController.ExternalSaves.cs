@@ -32,14 +32,11 @@ public partial class SubsonicController
         return (username, null);
     }
 
-    private async Task<bool> HasAcceptedSubsonicCredentialsAsync(Dictionary<string, string> parameters)
-    {
-        var auth = parameters.Where(pair => pair.Key is "u" or "p" or "t" or "s" or "apiKey" or "jwt" or "c" or "v")
-            .ToDictionary(pair => pair.Key, pair => pair.Value);
-        auth["f"] = "json";
-        var result = await _proxyService.RelaySafeAsync("rest/ping", auth);
-        return result.Success && result.Body is not null && IsSuccessfulSubsonicResponse(result.Body, "json");
-    }
+    // Cached per sign-in, so ranged reads and prewarms do not ping Navidrome each time. No
+    // request token: prewarm can run after the response, and the check bounds its own wait.
+    private async Task<bool> HasAcceptedSubsonicCredentialsAsync(Dictionary<string, string> parameters) =>
+        await _credentialCheck.CheckAsync(SubsonicCredential.From(parameters), _proxyService)
+            == CredentialVerdict.Accepted;
 
     private async Task<Song?> SavedSongAsync(string id, Dictionary<string, string> parameters, bool native)
     {

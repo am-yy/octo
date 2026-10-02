@@ -100,10 +100,10 @@ public sealed class ExternalSaveEndpointTests
         Assert.Equal("library-123", rows[1]!["mediaFileId"]!.ToString());
         Assert.True(rows[1]!["starred"]!.GetValue<bool>());
         Assert.Equal(before, fixture.Store.GetPlaylist("alice", "p1")!.Tracks.Select(t => t.OccurrenceId));
-        var detail = await client.GetStringAsync("/rest/getSong?u=alice&f=json&id=ext-deezer-123");
+        var detail = await client.GetStringAsync("/rest/getSong?u=alice&t=tok&s=salt&f=json&id=ext-deezer-123");
         Assert.Contains("library-123", detail);
         Assert.Contains("library-123", fixture.Upstream.MirroredHeartIds);
-        using var aliasPlay = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&f=json&id=ext-deezer-123");
+        using var aliasPlay = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&t=tok&s=salt&f=json&id=ext-deezer-123");
         aliasPlay.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 3);
         using var audio = await client.SendAsync(aliasPlay);
         Assert.Equal(HttpStatusCode.PartialContent, audio.StatusCode);
@@ -111,7 +111,7 @@ public sealed class ExternalSaveEndpointTests
         var restarted = new ExternalSaveStore(fixture.StatePath, NullLogger<ExternalSaveStore>.Instance);
         Assert.Equal("library-123", restarted.CanonicalSongId("ext-deezer-123"));
         Assert.True(restarted.IsHearted("alice", "ext-deezer-123"));
-        var unheart = await client.GetStringAsync("/rest/unstar?u=alice&f=json&id=ext-deezer-123");
+        var unheart = await client.GetStringAsync("/rest/unstar?u=alice&t=tok&s=salt&f=json&id=ext-deezer-123");
         Assert.Contains("\"ok\"", unheart);
         Assert.Empty(fixture.Store.GetHearts("alice"));
     }
@@ -134,10 +134,10 @@ public sealed class ExternalSaveEndpointTests
         using var fixture = new SavesFixture();
         await using var app = fixture.App();
         using var client = app.CreateClient();
-        var denied = await client.GetStringAsync("/rest/star?u=bad&f=json&id=ext-deezer-123");
+        var denied = await client.GetStringAsync("/rest/star?u=bad&t=tok&s=salt&f=json&id=ext-deezer-123");
         Assert.Contains("failed", denied);
         Assert.Empty(fixture.Store.Snapshot().Hearts);
-        var owner = await client.GetStringAsync("/rest/updatePlaylist?u=bob&f=json&playlistId=p1&songIdToAdd=ext-deezer-123");
+        var owner = await client.GetStringAsync("/rest/updatePlaylist?u=bob&t=tok&s=salt&f=json&playlistId=p1&songIdToAdd=ext-deezer-123");
         Assert.Contains("failed", owner);
         Assert.Empty(fixture.Store.Snapshot().Playlists);
         client.DefaultRequestHeaders.Add("X-Nd-Authorization", "Bearer denied");
@@ -153,7 +153,7 @@ public sealed class ExternalSaveEndpointTests
         Directory.CreateDirectory(fixture.StatePath);
         await using var app = fixture.App();
         using var client = app.CreateClient();
-        var result = await client.GetStringAsync("/rest/star?u=alice&f=json&id=ext-deezer-123");
+        var result = await client.GetStringAsync("/rest/star?u=alice&t=tok&s=salt&f=json&id=ext-deezer-123");
         Assert.Contains("failed", result);
         Assert.Empty(fixture.Store.Snapshot().Hearts);
     }
@@ -167,23 +167,23 @@ public sealed class ExternalSaveEndpointTests
         using var client = app.CreateClient();
         var detail = JsonNode.Parse(await client.GetStringAsync("/rest/getSong?id=ext-deezer-123&f=json"));
         Assert.Equal("flac", detail!["subsonic-response"]!["song"]!["suffix"]!.ToString());
-        using var seek = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&id=ext-deezer-123&f=json");
+        using var seek = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json");
         seek.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(10, 19);
         using var range = await client.SendAsync(seek);
         Assert.Equal(HttpStatusCode.PartialContent, range.StatusCode);
         Assert.Equal("audio/flac", range.Content.Headers.ContentType!.MediaType);
         Assert.Equal(audio.Payload[10..20], await range.Content.ReadAsByteArrayAsync());
-        using var invalid = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&id=ext-deezer-123&f=json");
+        using var invalid = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json");
         invalid.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(audio.Payload.Length + 1, null);
         using var unsatisfied = await client.SendAsync(invalid);
         Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, unsatisfied.StatusCode);
         Assert.Empty(fixture.Store.Snapshot().Acquisitions);
         var state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
         Assert.Null(state!["tracks"]!["123"]!["lastPlayedUtc"]);
-        await client.GetStringAsync("/rest/scrobble?u=bad&id=ext-deezer-123&f=json&submission=false");
+        await client.GetStringAsync("/rest/scrobble?u=bad&t=tok&s=salt&id=ext-deezer-123&f=json&submission=false");
         state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
         Assert.Null(state!["tracks"]!["123"]!["lastPlayedUtc"]);
-        await client.GetStringAsync("/rest/scrobble?u=alice&id=ext-deezer-123&f=json&submission=false");
+        await client.GetStringAsync("/rest/scrobble?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json&submission=false");
         state = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(audio.Root, "cache-index.json")));
         Assert.NotNull(state!["tracks"]!["123"]!["lastPlayedUtc"]);
     }
@@ -195,11 +195,11 @@ public sealed class ExternalSaveEndpointTests
         using var fixture = new SavesFixture();
         await using var app = fixture.App(audio.Cache);
         using var client = app.CreateClient();
-        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&id=ext-deezer-123&f=json"));
+        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&t=tok&s=salt&id=ext-deezer-123&f=json"));
         Assert.Equal(0, audio.CdnRequests);
         Assert.Null(audio.Cache.GetReadyPath(new Song { DeezerId = "123" }));
-        await client.GetByteArrayAsync("/rest/stream?u=alice&id=ext-deezer-123&f=json");
-        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&id=ext-deezer-123&f=json"));
+        await client.GetByteArrayAsync("/rest/stream?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json");
+        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&t=tok&s=salt&id=ext-deezer-123&f=json"));
         Assert.Equal(1, audio.CdnRequests);
     }
 
@@ -214,7 +214,7 @@ public sealed class ExternalSaveEndpointTests
         if (warm) await audio.Cache.EnsureAsync(new Song { DeezerId = "123" });
         await using var app = fixture.App(audio.Cache);
         using var client = app.CreateClient();
-        var auth = apiKey ? "apiKey=key&v=1.16.1&c=test" : "u=alice";
+        var auth = apiKey ? "apiKey=key&v=1.16.1&c=test" : "u=alice&t=tok&s=salt";
         var url = $"/rest/{endpoint}?{auth}&id=ext-deezer-123&f=json";
 
         using var download = await client.GetAsync(url);
@@ -248,7 +248,7 @@ public sealed class ExternalSaveEndpointTests
         fixture.Upstream.DownloadsDisabled = disabled;
         await using var app = fixture.App(audio.Cache);
         using var client = app.CreateClient();
-        var url = $"/rest/download.view?u={user}&id=ext-deezer-123&f=json";
+        var url = $"/rest/download.view?u={user}&t=tok&s=salt&id=ext-deezer-123&f=json";
 
         var rejected = JsonNode.Parse(await client.GetStringAsync(url));
         Assert.Equal(code, rejected!["subsonic-response"]!["error"]!["code"]!.GetValue<int>());
@@ -273,7 +273,7 @@ public sealed class ExternalSaveEndpointTests
 
         foreach (var id in new[] { "real", "ext-deezer-123" })
         {
-            using var response = await client.GetAsync("/rest/download.view?u=alice&f=json&id=" + id);
+            using var response = await client.GetAsync("/rest/download.view?u=alice&t=tok&s=salt&f=json&id=" + id);
             response.EnsureSuccessStatusCode();
             Assert.Equal("audio/flac", response.Content.Headers.ContentType!.MediaType);
             Assert.Equal("Owned.flac", response.Content.Headers.ContentDisposition!.FileNameStar);
@@ -343,7 +343,7 @@ public sealed class ExternalSaveEndpointTests
             lookupStarted.TrySetResult();
             return lookup.Task;
         });
-        var save = client.GetStringAsync("/rest/updatePlaylist?u=alice&f=json&playlistId=p1&songIdToAdd=ext-deezer-123");
+        var save = client.GetStringAsync("/rest/updatePlaylist?u=alice&t=tok&s=salt&f=json&playlistId=p1&songIdToAdd=ext-deezer-123");
         await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var song = new Song { Id = "ext-deezer-123", ExternalProvider = "deezer", ExternalId = "123",
             Artist = "Artist", Title = "Outside" };
@@ -393,7 +393,7 @@ public sealed class ExternalSaveEndpointTests
         app.Services.GetRequiredService<Octo.Services.Soulseek.RadioQueueStore>()
             .Register(["ext-deezer-current", "ext-deezer-123"]);
 
-        Assert.Contains("failed", await client.GetStringAsync("/rest/scrobble?u=bad&id=ext-deezer-current&f=json"));
+        Assert.Contains("failed", await client.GetStringAsync("/rest/scrobble?u=bad&t=tok&s=salt&id=ext-deezer-current&f=json"));
 
         fixture.Metadata.Verify(m => m.PrewarmDeezerIdsForSongIdsAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.Equal(0, audio.CdnRequests);
@@ -411,7 +411,7 @@ public sealed class ExternalSaveEndpointTests
         await using var app = fixture.App(audio.Cache);
         using var client = app.CreateClient();
 
-        await client.GetStringAsync("/rest/getAlbum?u=bad&id=pl-deezer-1&f=json");
+        await client.GetStringAsync("/rest/getAlbum?u=bad&t=tok&s=salt&id=pl-deezer-1&f=json");
 
         fixture.Metadata.Verify(m => m.PrewarmDeezerIdsAsync(It.IsAny<IEnumerable<Song>>(), It.IsAny<int>(),
             It.IsAny<CancellationToken>()), Times.Never);
@@ -435,14 +435,14 @@ public sealed class ExternalSaveEndpointTests
         using var client = app.CreateClient();
         client.DefaultRequestHeaders.Add("X-Nd-Authorization", "Bearer " + Token("alice"));
         using var failed = native ? await client.DeleteAsync("/api/playlist/p1")
-            : await client.GetAsync("/rest/deletePlaylist?u=alice&f=json&id=p1");
+            : await client.GetAsync("/rest/deletePlaylist?u=alice&t=tok&s=salt&f=json&id=p1");
         Assert.True(native ? failed.StatusCode == HttpStatusCode.InternalServerError
             : (await failed.Content.ReadAsStringAsync()).Contains("failed"));
         Assert.NotNull(fixture.Store.GetPlaylist("alice", "p1"));
         Directory.Delete(fixture.StatePath);
         File.Move(backup, fixture.StatePath);
         using var removed = native ? await client.DeleteAsync("/api/playlist/p1")
-            : await client.GetAsync("/rest/deletePlaylist?u=alice&f=json&id=p1");
+            : await client.GetAsync("/rest/deletePlaylist?u=alice&t=tok&s=salt&f=json&id=p1");
         removed.EnsureSuccessStatusCode();
         if (!native) Assert.Contains("ok", await removed.Content.ReadAsStringAsync());
         Assert.Null(fixture.Store.GetPlaylist("alice", "p1"));

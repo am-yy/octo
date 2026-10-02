@@ -26,7 +26,7 @@ public sealed class SubsonicTranscodingTests
         using var factory = CreateFactory(handler);
         using var client = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post,
-            $"/rest/getTranscodeDecision?u=alice&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json")
+            $"/rest/getTranscodeDecision?u=alice&t=tok&s=salt&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json")
         {
             Content = Json("""{"name":"test","platform":"test","maxAudioBitrate":192000,"maxTranscodingAudioBitrate":100000,"directPlayProfiles":[{"containers":["flac"],"audioCodecs":["flac"],"protocols":["http"]}],"transcodingProfiles":[{"container":"mp3","audioCodec":"mp3","protocol":"http","maxAudioChannels":2}]}"""),
         };
@@ -42,20 +42,20 @@ public sealed class SubsonicTranscodingTests
         var descriptor = decision.GetProperty("transcodeParams").GetString();
         Assert.False(string.IsNullOrWhiteSpace(descriptor));
 
-        using var denied = await client.GetAsync($"/rest/getTranscodeStream?u=alice&mediaId={MediaId}&transcodeParams=bad");
+        using var denied = await client.GetAsync($"/rest/getTranscodeStream?u=alice&t=tok&s=salt&mediaId={MediaId}&transcodeParams=bad");
         Assert.Equal(HttpStatusCode.BadRequest, denied.StatusCode);
 
-        using var tampered = await client.GetAsync($"/rest/getTranscodeStream?u=alice&mediaId={MediaId}&transcodeParams={Tamper(descriptor!)}");
+        using var tampered = await client.GetAsync($"/rest/getTranscodeStream?u=alice&t=tok&s=salt&mediaId={MediaId}&transcodeParams={Tamper(descriptor!)}");
         Assert.Equal(HttpStatusCode.BadRequest, tampered.StatusCode);
 
-        using var rebound = await client.GetAsync($"/rest/getTranscodeStream?u=alice&mediaId=ext-deezer-456&transcodeParams={Uri.EscapeDataString(descriptor!)}");
+        using var rebound = await client.GetAsync($"/rest/getTranscodeStream?u=alice&t=tok&s=salt&mediaId=ext-deezer-456&transcodeParams={Uri.EscapeDataString(descriptor!)}");
         Assert.Equal(HttpStatusCode.BadRequest, rebound.StatusCode);
 
-        using var unauthenticated = await client.GetAsync($"/rest/getTranscodeStream?u=mallory&mediaId={MediaId}&transcodeParams={Uri.EscapeDataString(descriptor!)}");
+        using var unauthenticated = await client.GetAsync($"/rest/getTranscodeStream?u=mallory&t=tok&s=salt&mediaId={MediaId}&transcodeParams={Uri.EscapeDataString(descriptor!)}");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
 
         using var head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head,
-            $"/rest/getTranscodeStream.view?u=alice&mediaId={MediaId}&transcodeParams={Uri.EscapeDataString(descriptor!)}"));
+            $"/rest/getTranscodeStream.view?u=alice&t=tok&s=salt&mediaId={MediaId}&transcodeParams={Uri.EscapeDataString(descriptor!)}"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, head.StatusCode); // valid route, no delivery injected
     }
 
@@ -66,7 +66,7 @@ public sealed class SubsonicTranscodingTests
         using var factory = CreateFactory(handler);
         using var client = factory.CreateClient();
 
-        using var decision = await client.PostAsync("/rest/getTranscodeDecision?u=alice&id=library-1&mediaId=library-1&mediaType=song&f=json",
+        using var decision = await client.PostAsync("/rest/getTranscodeDecision?u=alice&t=tok&s=salt&id=library-1&mediaId=library-1&mediaType=song&f=json",
             Json("""{"name":"client","platform":"test","directPlayProfiles":[]}"""));
         Assert.Equal(HttpStatusCode.BadGateway, decision.StatusCode);
         Assert.Contains("upstream decision failure", await decision.Content.ReadAsStringAsync());
@@ -74,7 +74,7 @@ public sealed class SubsonicTranscodingTests
         Assert.Contains("directPlayProfiles", handler.DecisionBody);
 
         using var head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head,
-            "/rest/getTranscodeStream.view?u=alice&id=library-1&mediaId=library-1"));
+            "/rest/getTranscodeStream.view?u=alice&t=tok&s=salt&id=library-1&mediaId=library-1"));
         Assert.Equal(HttpStatusCode.OK, head.StatusCode);
         Assert.Equal(HttpMethod.Head, handler.TranscodeStreamMethod);
         Assert.Equal(321, head.Content.Headers.ContentLength);
@@ -89,7 +89,7 @@ public sealed class SubsonicTranscodingTests
         using var factory = CreateFactory(handler);
         using var client = factory.CreateClient();
         using var response = await client.PostAsync(
-            $"/rest/getTranscodeDecision?u=alice&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json",
+            $"/rest/getTranscodeDecision?u=alice&t=tok&s=salt&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json",
             Json("""{"name":"test","platform":"test","directPlayProfiles":[{"containers":[],"audioCodecs":[],"protocols":[]}]}"""));
 
         response.EnsureSuccessStatusCode();
@@ -106,7 +106,7 @@ public sealed class SubsonicTranscodingTests
         using var factory = CreateFactory(handler);
         using var client = factory.CreateClient();
         using var response = await client.PostAsync(
-            $"/rest/getTranscodeDecision?u=alice&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json",
+            $"/rest/getTranscodeDecision?u=alice&t=tok&s=salt&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json",
             Json("""{"name":"test","platform":"test","maxAudioBitrate":"bad","directPlayProfiles":[]}"""));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -118,7 +118,7 @@ public sealed class SubsonicTranscodingTests
         using var handler = new NavidromeHandler();
         using var factory = CreateFactory(handler);
         using var client = factory.CreateClient();
-        var endpoint = $"/rest/getTranscodeDecision?u=alice&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json";
+        var endpoint = $"/rest/getTranscodeDecision?u=alice&t=tok&s=salt&id={MediaId}&mediaId={MediaId}&mediaType=song&f=json";
 
         using var supported = await client.PostAsync(endpoint, Json("""{"name":"test","platform":"test","transcodingProfiles":[{"container":"mp3","audioCodec":"mp3","protocol":"http","maxAudioChannels":2}],"codecProfiles":[{"type":"AudioCodec","name":"mp3","limitations":[{"name":"audioSamplerate","comparison":"Equals","values":[44100],"required":true}]}]}"""));
         supported.EnsureSuccessStatusCode();

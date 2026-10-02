@@ -508,7 +508,7 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 ### Playback and acquisition
 
-Tracks already in your library play through Navidrome. Missing external results play from a growing shared Deezer source or stream directly when caching is disabled; heart the song or album to run the configured permanent acquisition priority.
+Tracks already in your library play through Navidrome. Missing external results play from a growing shared Deezer source; disabled caching uses temporary staging with the same validation; heart the song or album to run the configured permanent acquisition priority.
 
 Enable `Deezer:CacheEnabled` for durable source copies independent of permanent acquisition.
 `Deezer:CacheQuality` selects strict `FLAC` (default) or `MP3_320`; unavailable quality fails
@@ -530,8 +530,16 @@ and require the caller's download permission. Library tracks keep Navidrome tran
 or download completion for never-played files. Prefetch and range probes do not refresh retention.
 Search prefetches the first 12 visible results; playlists, queues and radio starters prefetch eight.
 Four source transfers run at once, at most two background fills, and four encoders.
-Playback, seeking and downloads take priority. Excess distinct encoders return HTTP 429 with
-`Retry-After`. Cache quality and concurrency changes require restart. Compose exposes
+Playback, seeking and downloads take priority. Unfinished sources are capped at four times
+`MaxConcurrentDownloads`: 16 with the defaults, with at most 12 background admissions. Existing
+source joins and completed copies remain available at capacity. Excess distinct sources or
+encoders return HTTP 429 with `Retry-After: 5`; deferred pins remain durable and retry fairly.
+Source establishment allows three attempts, refreshing media before switching accounts, and
+freezes source identity after opening. Shutdown rejects new delivery with HTTP 503 and
+`Retry-After: 5`, cancels owned work, and reaps encoders without publishing incomplete audio.
+Temporary staging is removed after readers release it; startup removes abrupt-stop orphans.
+Only one process may own a `CachePath`; no cross-process locking is provided.
+Cache quality and concurrency changes require restart. Compose exposes
 `DEEZER_CACHE_QUALITY`, `DEEZER_MAX_CONCURRENT_DOWNLOADS`,
 `DEEZER_MAX_CONCURRENT_BACKGROUND_DOWNLOADS` and `DEEZER_MAX_CONCURRENT_TRANSCODES`.
 Encoded copies remain unpinned and share the unpinned budget. Continuous radio keeps MP3.

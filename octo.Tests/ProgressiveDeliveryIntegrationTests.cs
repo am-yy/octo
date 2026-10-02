@@ -1,6 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -12,6 +15,7 @@ using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Octo.Models.Domain;
@@ -22,6 +26,11 @@ using Octo.Services.Soulseek;
 
 namespace Octo.Tests;
 
+// Real HTTP and process deadlines run apart from unrelated CPU-heavy regressions.
+[CollectionDefinition(nameof(ProgressiveDelivery), DisableParallelization = true)]
+public sealed class ProgressiveDelivery;
+
+[Collection(nameof(ProgressiveDelivery))]
 public sealed class ProgressiveDeliveryIntegrationTests
 {
     [Theory]
@@ -127,11 +136,142 @@ public sealed class ProgressiveDeliveryIntegrationTests
         using var response = await fixture.Client.GetAsync("/stream?format=" + format, HttpCompletionOption.ResponseHeadersRead);
         var body = await response.Content.ReadAsStreamAsync();
         await body.ReadExactlyAsync(new byte[8192]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
-        if (format == "raw") Assert.Empty(Directory.EnumerateFiles(fixture.Root, "*.tmp", SearchOption.AllDirectories));
+        Assert.NotEmpty(Directory.EnumerateFiles(Path.Combine(fixture.Root, ".staging"), "*.tmp"));
         fixture.Release.TrySetResult();
         await body.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(15));
         Assert.False(File.Exists(fixture.SourcePath));
         Assert.False(Directory.Exists(Path.Combine(fixture.Root, "encoded")));
+        await WaitForNoTemporaryFilesAsync(fixture.Root);
+    }
+
+    [Theory]
+    [InlineData("raw", false)]
+    [InlineData("raw", true)]
+    [InlineData("opus", false)]
+    public async Task CacheDisabledCorruptTailNeverCompletesOrPublishes(string format, bool download)
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC", cacheEnabled: false, corruptAudio: true);
+        var query = "/stream?format=" + format + (download ? "&download=true" : "");
+        using var response = await fixture.Client.GetAsync(query, HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStreamAsync();
+        await body.ReadExactlyAsync(new byte[8192]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+        fixture.Release.TrySetResult();
+        await Assert.ThrowsAnyAsync<IOException>(() => body.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(45)));
+        Assert.False(File.Exists(fixture.SourcePath));
+        Assert.False(Directory.Exists(Path.Combine(fixture.Root, "encoded")));
+        await WaitForNoTemporaryFilesAsync(fixture.Root);
+    }
+
+    [Fact]
+    public async Task HostShutdownStopsActiveEncoderAndRejectsNewDelivery()
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        using var response = await fixture.Client.GetAsync("/stream?format=opus", HttpCompletionOption.ResponseHeadersRead);
+        var body = await response.Content.ReadAsStreamAsync();
+        await body.ReadExactlyAsync(new byte[8192]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.NotEmpty(Directory.EnumerateFiles(Path.Combine(fixture.Root, ".staging"), "encode-*.tmp"));
+        var copy = body.CopyToAsync(Stream.Null);
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await fixture.App.StopAsync(deadline.Token);
+        await Assert.ThrowsAnyAsync<IOException>(() => copy.WaitAsync(TimeSpan.FromSeconds(5)));
+        await WaitForNoTemporaryFilesAsync(fixture.Root);
+
+        var context = new DefaultHttpContext();
+        var result = await fixture.Delivery.ServeAsync(context, new Song { Id = "stopping" },
+            parameters: new Dictionary<string, string> { ["format"] = "raw" });
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, Assert.IsType<StatusCodeResult>(result).StatusCode);
+        Assert.Equal("5", context.Response.Headers.RetryAfter);
+    }
+
+    [Fact]
+    public async Task HostShutdownCancelsRawAndAheadRangeReaders()
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        using var raw = await fixture.Client.GetAsync("/stream?format=raw", HttpCompletionOption.ResponseHeadersRead);
+        var rawBody = await raw.Content.ReadAsStreamAsync();
+        await rawBody.ReadExactlyAsync(new byte[8192]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+
+        using var ahead = await fixture.Client.GetAsync("/stream?format=opus&timeOffset=20", HttpCompletionOption.ResponseHeadersRead);
+        var aheadBody = await ahead.Content.ReadAsStreamAsync();
+        await aheadBody.ReadExactlyAsync(new byte[4096]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+        var rawCopy = rawBody.CopyToAsync(Stream.Null);
+        var aheadCopy = aheadBody.CopyToAsync(Stream.Null);
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await fixture.App.StopAsync(deadline.Token);
+        await Assert.ThrowsAnyAsync<IOException>(() => rawCopy.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<IOException>(() => aheadCopy.WaitAsync(TimeSpan.FromSeconds(5)));
+        await WaitForNoTemporaryFilesAsync(fixture.Root);
+    }
+
+    [Fact]
+    public async Task LaterRangeValidatorMismatchFailsSharedSourceAndPreventsPublication()
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        fixture.ChangeRangeValidator = true;
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/stream?format=raw");
+        request.Headers.Range = new RangeHeaderValue(150000, 150100);
+        using var response = await fixture.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal(1, fixture.SourceStartRequests);
+        Assert.False(File.Exists(fixture.SourcePath));
+        fixture.Release.TrySetResult();
+        await WaitForNoTemporaryFilesAsync(fixture.Root);
+        Assert.False(File.Exists(fixture.SourcePath));
+    }
+
+    [Fact]
+    public async Task EncoderKeysUseAcquiredValidatorAndShareWorkAcrossProbeChange()
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        fixture.ChangeValidatorAfterFirstHead = true;
+        using var first = await fixture.Client.GetAsync("/stream?format=opus", HttpCompletionOption.ResponseHeadersRead);
+        var firstBody = await first.Content.ReadAsStreamAsync();
+        var firstPrefix = new byte[8192];
+        await firstBody.ReadExactlyAsync(firstPrefix).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+
+        using var second = await fixture.Client.GetAsync("/stream?format=opus", HttpCompletionOption.ResponseHeadersRead);
+        var secondBody = await second.Content.ReadAsStreamAsync();
+        var secondPrefix = new byte[8192];
+        await secondBody.ReadExactlyAsync(secondPrefix).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(fixture.Root, ".staging"), "encode-*.tmp"));
+        Assert.Equal(1, fixture.SourceStartRequests);
+
+        fixture.Release.TrySetResult();
+        var outputs = new[] { (firstBody, firstPrefix), (secondBody, secondPrefix) };
+        foreach (var (body, prefix) in outputs)
+        {
+            using var completed = new MemoryStream();
+            completed.Write(prefix);
+            await body.CopyToAsync(completed).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        var sourceFingerprint = SourceFingerprint("source-v2", fixture.Audio.LongLength);
+        var encodeIdentity = $"{sourceFingerprint}\0opus\0{128}\0{0d.ToString("R", CultureInfo.InvariantCulture)}\0progressive-v2";
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(encodeIdentity))).ToLowerInvariant();
+        Assert.True(File.Exists(Path.Combine(fixture.Root, "encoded", key + ".opus")));
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(fixture.Root, "encoded"), "*.opus"));
+
+        using var head = await fixture.Client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/stream?format=opus"));
+        Assert.Equal(HttpStatusCode.OK, head.StatusCode);
+        Assert.Equal(new FileInfo(Path.Combine(fixture.Root, "encoded", key + ".opus")).Length,
+            head.Content.Headers.ContentLength);
+    }
+
+    [Fact]
+    public async Task RawValidatorsUseAcquiredSourceDescriptor()
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        fixture.ChangeValidatorAfterFirstHead = true;
+        using var response = await fixture.Client.GetAsync("/stream?format=raw", HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal('"' + SourceFingerprint("source-v2", fixture.Audio.LongLength) + '"',
+            response.Headers.ETag!.Tag);
+        Assert.Equal(DateTimeOffset.Parse("2026-10-02T12:00:00Z"), response.Content.Headers.LastModified);
+        fixture.Release.TrySetResult();
+        await response.Content.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(15));
     }
 
     [Fact]
@@ -178,6 +318,23 @@ public sealed class ProgressiveDeliveryIntegrationTests
         await RunFfmpegAsync(["-v", "error", "-xerror", "-i", path, "-f", "null", "-"]);
     }
 
+    private static string SourceFingerprint(string validator, long length)
+    {
+        var identity = $"1234567890\0FLAC\0FLAC\0https://cdn.test/source\0\"{validator}\"\0{length.ToString(CultureInfo.InvariantCulture)}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+    }
+
+    private static async Task WaitForNoTemporaryFilesAsync(string root)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var files = Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).ToArray();
+            if (files.Length == 0) return;
+            await Task.Delay(25, timeout.Token);
+        }
+    }
+
     private static async Task RunFfmpegAsync(string[] arguments)
     {
         using var process = new Process { StartInfo = new ProcessStartInfo("ffmpeg")
@@ -197,17 +354,25 @@ public sealed class ProgressiveDeliveryIntegrationTests
         public string LibraryPath = "";
         private byte[] _encrypted = [];
         public int BodyReads;
+        public int SourceStartRequests;
+        public int HeadProbes;
+        public bool ChangeValidatorAfterFirstHead;
+        public bool ChangeRangeValidator;
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string SourcePath => Path.Combine(Root, TrackId + (_quality == "FLAC" ? ".flac" : ".mp3"));
+        public WebApplication App => _app;
+        public DeezerDeliveryService Delivery => _delivery;
         private string _quality = "";
         public HttpClient Client = null!;
         private WebApplication _app = null!;
         private DeezerAudioCache _cache = null!;
+        private DeezerDeliveryService _delivery = null!;
         private DeezerResolver _resolver = null!;
         private DeezerMetadataService _catalog = null!;
         private ExternalIdRegistry _ids = null!;
 
-        public static async Task<Fixture> CreateAsync(string quality, int encoders = 4, bool cacheEnabled = true)
+        public static async Task<Fixture> CreateAsync(string quality, int encoders = 4, bool cacheEnabled = true,
+            bool corruptAudio = false)
         {
             var fixture = new Fixture { _quality = quality };
             Directory.CreateDirectory(fixture.Root);
@@ -219,6 +384,11 @@ public sealed class ProgressiveDeliveryIntegrationTests
             await RunFfmpegAsync(arguments.ToArray());
             fixture.Audio = await File.ReadAllBytesAsync(audioPath);
             Assert.True(fixture.Audio.Length > 160000);
+            if (corruptAudio)
+            {
+                Assert.Equal("FLAC", quality);
+                fixture.Audio[fixture.Audio.Length * 3 / 4] ^= 0x40;
+            }
             fixture._encrypted = DeezerDecryptedStreamTests.EncryptStripes(fixture.Audio, TrackId);
             var options = TestOptions.Monitor(new DeezerSettings
                 { Arl = "primary", CacheEnabled = cacheEnabled, CachePath = fixture.Root, CacheQuality = quality, MaxConcurrentTranscodes = encoders });
@@ -226,13 +396,18 @@ public sealed class ProgressiveDeliveryIntegrationTests
             fixture._catalog = new DeezerMetadataService(fixture, TestOptions.Monitor(new MetadataSettings()), NullLogger<DeezerMetadataService>.Instance);
             fixture._resolver = new DeezerResolver(fixture, config, NullLogger<DeezerResolver>.Instance, fixture._catalog);
             fixture._ids = new ExternalIdRegistry(Path.Combine(fixture.Root, "ids.json"), NullLogger<ExternalIdRegistry>.Instance);
-            fixture._cache = new DeezerAudioCache(fixture._resolver, fixture._catalog, fixture._ids, options, NullLogger<DeezerAudioCache>.Instance);
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.UseKestrel().UseUrls("http://127.0.0.1:0");
             builder.Services.AddControllers();
-            builder.Services.AddSingleton(fixture._cache);
-            builder.Services.AddSingleton<DeezerDeliveryService>(sp => new(fixture._cache, options, NullLogger<DeezerDeliveryService>.Instance, sp.GetRequiredService<IServer>()));
+            builder.Services.AddSingleton<DeezerAudioCache>(sp => fixture._cache = new(fixture._resolver,
+                fixture._catalog, fixture._ids, options, NullLogger<DeezerAudioCache>.Instance,
+                sp.GetRequiredService<IHostApplicationLifetime>()));
+            builder.Services.AddSingleton<DeezerDeliveryService>(sp => new(sp.GetRequiredService<DeezerAudioCache>(),
+                options, NullLogger<DeezerDeliveryService>.Instance, sp.GetRequiredService<IServer>(),
+                sp.GetRequiredService<IHostApplicationLifetime>()));
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerAudioCache>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerDeliveryService>());
             fixture._app = builder.Build();
             fixture._app.MapMethods("/internal/deezer-source/{token}", ["GET", "HEAD"],
                 (HttpContext context, string token, DeezerDeliveryService delivery) => delivery.ServeSourceAsync(context, token));
@@ -241,10 +416,13 @@ public sealed class ProgressiveDeliveryIntegrationTests
                 var song = new Song { Id = "virtual", ExternalId = "virtual", ExternalProvider = "deezer", DeezerId = TrackId, Artist = "Artist", Title = "Title" };
                 var library = context.Request.Query.ContainsKey("library");
                 if (library) song.DeezerId = null;
-                var result = await delivery.ServeAsync(context, song, localPath: library ? fixture.LibraryPath : null);
+                var download = context.Request.Query.ContainsKey("download");
+                var result = await delivery.ServeAsync(context, song, download,
+                    localPath: library ? fixture.LibraryPath : null);
                 await result.ExecuteResultAsync(new ActionContext(context, new RouteData(), new ActionDescriptor()));
             });
             await fixture._app.StartAsync();
+            fixture._delivery = fixture._app.Services.GetRequiredService<DeezerDeliveryService>();
             fixture.Client = new HttpClient { BaseAddress = new Uri(fixture._app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()), Timeout = TimeSpan.FromSeconds(20) };
             return fixture;
         }
@@ -260,6 +438,20 @@ public sealed class ProgressiveDeliveryIntegrationTests
             if (uri.Host == "media.deezer.com")
                 return Task.FromResult(Json(new { data = new[] { new { media = new[] { new { format = _quality, sources = new[] { new { url = "https://cdn.test/source" } } } } } } }));
             Assert.Equal("cdn.test", uri.Host);
+            if (request.Method == HttpMethod.Head)
+            {
+                var number = Interlocked.Increment(ref HeadProbes);
+                var validator = ChangeValidatorAfterFirstHead && number == 1 ? "probe-v1" : "source-v2";
+                var head = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+                head.Content.Headers.ContentLength = _encrypted.Length;
+                head.Content.Headers.ContentType = new MediaTypeHeaderValue(_quality == "FLAC" ? "audio/flac" : "audio/mpeg");
+                head.Content.Headers.LastModified = number == 1 && ChangeValidatorAfterFirstHead
+                    ? DateTimeOffset.Parse("2026-10-01T10:00:00Z")
+                    : DateTimeOffset.Parse("2026-10-02T12:00:00Z");
+                head.Headers.ETag = new EntityTagHeaderValue($"\"{validator}\"");
+                return Task.FromResult(head);
+            }
+            if (request.Headers.Range is null) Interlocked.Increment(ref SourceStartRequests);
             var from = (int)(request.Headers.Range?.Ranges.Single().From ?? 0);
             var content = new StreamContent(new HeldStream(_encrypted, from, from == 0 ? Release.Task : Task.CompletedTask, () => Interlocked.Increment(ref BodyReads)));
             content.Headers.ContentLength = _encrypted.Length - from;
@@ -267,7 +459,9 @@ public sealed class ProgressiveDeliveryIntegrationTests
             if (request.Headers.Range is not null)
                 content.Headers.ContentRange = new ContentRangeHeaderValue(from, _encrypted.Length - 1, _encrypted.Length);
             var response = new HttpResponseMessage(request.Headers.Range is null ? HttpStatusCode.OK : HttpStatusCode.PartialContent) { Content = content };
-            response.Headers.ETag = new EntityTagHeaderValue("\"fixture-source\"");
+            response.Headers.ETag = new EntityTagHeaderValue(request.Headers.Range is not null && ChangeRangeValidator
+                ? "\"source-v3\"" : "\"source-v2\"");
+            response.Content.Headers.LastModified = DateTimeOffset.Parse("2026-10-02T12:00:00Z");
             return Task.FromResult(response);
         }
         private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(body)) };

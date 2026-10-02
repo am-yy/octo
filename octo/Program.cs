@@ -141,6 +141,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalSaveWorker
 builder.Services.AddSingleton<DeezerAudioCache>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerAudioCache>());
 builder.Services.AddSingleton<DeezerDeliveryService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerDeliveryService>());
 builder.Services.AddSingleton<Octo.Services.Subsonic.NavidromeIdentityService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SubsonicDiscoveryService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SyncCatalogService>();

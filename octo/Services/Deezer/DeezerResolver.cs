@@ -187,15 +187,6 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         string? contentRange, HttpResponseMessage owner)?> OpenFlacStreamAsync(string trackId,
         CancellationToken ct = default) => OpenStreamCoreAsync(trackId, null, ct, "FLAC", strictFormat: "FLAC");
 
-    /// <summary>Opens exactly requested cache quality. No lower-quality fallback is permitted.</summary>
-    public Task<(Stream stream, string contentType, long? contentLength, int statusCode,
-        string? contentRange, HttpResponseMessage owner)?> OpenQualityStreamAsync(string trackId,
-        string? rangeHeader = null, CancellationToken ct = default, string? quality = null)
-    {
-        var selected = NormalizeStrictQuality(quality ?? CacheQuality);
-        return OpenStreamCoreAsync(trackId, rangeHeader, ct, selected, strictFormat: selected);
-    }
-
     private async Task<(Stream stream, string contentType, long? contentLength, int statusCode,
         string? contentRange, HttpResponseMessage owner)?> OpenStreamCoreAsync(string trackId,
         string? rangeHeader, CancellationToken ct, string quality, string? strictFormat)
@@ -280,53 +271,107 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         CancellationToken ct = default)
     {
         var selected = NormalizeStrictQuality(quality ?? CacheQuality);
-        try
+        var rejectedAccounts = new HashSet<string>();
+        var failedAccounts = new HashSet<string>();
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            var media = await ResolveMediaAsync(trackId, selected, ct, new HashSet<string>(), selected);
-            using var request = new HttpRequestMessage(HttpMethod.Head, media.Url);
-            using var response = await httpFactory.CreateClient(StreamClientName)
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-            var expectedLength = response.Content.Headers.ContentLength;
-            var modified = response.Content.Headers.LastModified;
-            var etag = response.Headers.ETag is { IsWeak: false } strong ? strong.Tag : null;
-            var fingerprint = SourceFingerprint(media, selected, expectedLength, etag, modified);
-            var descriptor = new DeezerMediaSource(media.TrackId, selected, media.Format, media.Url,
-                media.Account, fingerprint, expectedLength, etag, modified);
-            return new DeezerSourceInfo(ContentType(media.Format), expectedLength,
-                fingerprint, modified, media: descriptor, etag: etag);
+            Media? media = null;
+            try
+            {
+                media = await ResolveMediaAsync(trackId, selected, ct, rejectedAccounts, selected);
+                using var request = new HttpRequestMessage(HttpMethod.Head, media.Url);
+                using var response = await httpFactory.CreateClient(StreamClientName)
+                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                response.EnsureSuccessStatusCode();
+                if (response.StatusCode != HttpStatusCode.OK)
+                    throw new IOException("Deezer CDN returned an unexpected status for source probe.");
+                return SourceInfo(media, selected, response.Content.Headers.ContentLength,
+                    response.Headers.ETag, response.Content.Headers.LastModified);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                if (media is not null)
+                {
+                    InvalidateMedia(media, trackId, selected, selected);
+                    if (!failedAccounts.Add(media.Account)) rejectedAccounts.Add(media.Account);
+                }
+                logger.LogDebug("Deezer source probe attempt {Attempt} failed for track {TrackId}: {Type}",
+                    attempt + 1, trackId, ex.GetType().Name);
+            }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex)
-        {
-            logger.LogDebug("Deezer source probe unavailable for track {TrackId}: {Type}", trackId, ex.GetType().Name);
-            return null;
-        }
+        return null;
     }
 
-    public async Task<(Stream stream, string contentType, long? contentLength, int statusCode,
-        string? contentRange, HttpResponseMessage owner)?> OpenSourceStreamAsync(DeezerSourceInfo source,
-        CancellationToken ct = default)
+    /// <summary>
+    /// Resolve, probe and open one strict-quality source under one three-attempt establishment budget.
+    /// The returned descriptor is immutable and identifies the exact bytes opened by this method.
+    /// </summary>
+    public async Task<(DeezerSourceInfo info,
+        (Stream stream, string contentType, long? contentLength, int statusCode,
+            string? contentRange, HttpResponseMessage owner) opened)?> EstablishSourceAsync(
+        string trackId, string? quality = null, CancellationToken ct = default)
     {
-        if (source.Media is not { } media) return null;
-        using var request = new HttpRequestMessage(HttpMethod.Get, media.Url);
-        ApplyRepresentationCondition(request, media);
-        var response = await httpFactory.CreateClient(StreamClientName)
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        try
+        var selected = NormalizeStrictQuality(quality ?? CacheQuality);
+        var rejectedAccounts = new HashSet<string>();
+        var failedAccounts = new HashSet<string>();
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            response.EnsureSuccessStatusCode();
-            ValidateRepresentation(response, media, partial: false);
-            var stream = await response.Content.ReadAsStreamAsync(ct);
-            var length = response.Content.Headers.ContentLength ?? source.ExpectedLength;
-            return (new DeezerDecryptedStream(stream, media.TrackId), ContentType(media.Format),
-                length, (int)response.StatusCode, null, response);
+            Media? media = null;
+            HttpResponseMessage? response = null;
+            try
+            {
+                media = await ResolveMediaAsync(trackId, selected, ct, rejectedAccounts, selected);
+                using (var request = new HttpRequestMessage(HttpMethod.Head, media.Url))
+                using (var head = await httpFactory.CreateClient(StreamClientName)
+                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct))
+                {
+                    head.EnsureSuccessStatusCode();
+                    if (head.StatusCode != HttpStatusCode.OK)
+                        throw new IOException("Deezer CDN returned an unexpected status for source probe.");
+                    var probe = SourceInfo(media, selected, head.Content.Headers.ContentLength,
+                        head.Headers.ETag, head.Content.Headers.LastModified);
+                    var descriptor = probe.Media!;
+
+                    using var get = new HttpRequestMessage(HttpMethod.Get, media.Url);
+                    ApplyRepresentationCondition(get, descriptor);
+                    response = await httpFactory.CreateClient(StreamClientName)
+                        .SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct);
+                    response.EnsureSuccessStatusCode();
+                    if (response.StatusCode != HttpStatusCode.OK)
+                        throw new IOException("Deezer CDN returned an unexpected partial source.");
+                    ValidateRepresentation(response, descriptor, partial: false);
+
+                    var length = response.Content.Headers.ContentLength ?? probe.ExpectedLength;
+                    var etag = response.Headers.ETag is { IsWeak: false }
+                        ? response.Headers.ETag : head.Headers.ETag;
+                    var modified = response.Content.Headers.LastModified ?? head.Content.Headers.LastModified;
+                    var actual = SourceInfo(media, selected, length, etag, modified);
+                    var stream = await response.Content.ReadAsStreamAsync(ct);
+                    var owner = response;
+                    response = null;
+                    return (actual, (new DeezerDecryptedStream(stream, media.TrackId),
+                        ContentType(media.Format), length, (int)owner.StatusCode, null, owner));
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                response?.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                response?.Dispose();
+                if (media is not null)
+                {
+                    InvalidateMedia(media, trackId, selected, selected);
+                    if (!failedAccounts.Add(media.Account)) rejectedAccounts.Add(media.Account);
+                }
+                logger.LogWarning("Deezer source establishment attempt {Attempt} failed for track {TrackId}: {Type}",
+                    attempt + 1, trackId, ex.GetType().Name);
+            }
         }
-        catch
-        {
-            response.Dispose();
-            throw;
-        }
+        return null;
     }
 
     /// <summary>Open plaintext from offset using exact source descriptor resolved by ProbeSourceAsync.</summary>
@@ -396,6 +441,25 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
+    private static DeezerSourceInfo SourceInfo(Media media, string quality, long? length,
+        EntityTagHeaderValue? entityTag, DateTimeOffset? modifiedUtc)
+    {
+        var etag = entityTag is { IsWeak: false } strong ? strong.Tag : null;
+        var fingerprint = SourceFingerprint(media, quality, length, etag, modifiedUtc);
+        var descriptor = new DeezerMediaSource(media.TrackId, quality, media.Format, media.Url,
+            media.Account, fingerprint, length, etag, modifiedUtc);
+        return new DeezerSourceInfo(ContentType(media.Format), length, fingerprint,
+            modifiedUtc, media: descriptor, etag: etag);
+    }
+
+    private void InvalidateMedia(Media media, string trackId, string quality, string? strictFormat)
+    {
+        var key = strictFormat is not null
+            ? $"{media.Account}\0{trackId}\0{quality}\0strict-{strictFormat}"
+            : $"{media.Account}\0{trackId}\0{quality}";
+        _mediaCache.Remove(key);
+    }
+
     private static void ApplyRepresentationCondition(HttpRequestMessage request, DeezerMediaSource source)
     {
         if (source.StrongETag is { Length: > 0 } etag)
@@ -411,6 +475,10 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             && response.Headers.ETag is { } returnedTag
             && !string.Equals(returnedTag.Tag, expectedTag, StringComparison.Ordinal))
             throw new IOException("Deezer CDN changed source representation during transfer.");
+        if (source.ModifiedUtc is { } expectedModified
+            && response.Content.Headers.LastModified is { } returnedModified
+            && returnedModified != expectedModified)
+            throw new IOException("Deezer CDN changed source modification time during transfer.");
         var returnedLength = partial ? response.Content.Headers.ContentRange?.Length
             : response.Content.Headers.ContentLength;
         if (source.ExpectedLength is long expectedLength && returnedLength is long actualLength

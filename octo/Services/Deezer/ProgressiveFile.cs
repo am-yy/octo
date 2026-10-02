@@ -48,6 +48,8 @@ public sealed class ProgressiveFile : IDisposable, IAsyncDisposable
         lock (_sync)
         {
             if (_finished) return;
+            _writer?.Dispose();
+            _writer = null;
             _finished = true;
             Pulse();
             _completion.TrySetResult();
@@ -62,6 +64,8 @@ public sealed class ProgressiveFile : IDisposable, IAsyncDisposable
         {
             if (_finished) return;
             _failure = error;
+            _writer?.Dispose();
+            _writer = null;
             _finished = true;
             Pulse();
             _completion.TrySetException(error);

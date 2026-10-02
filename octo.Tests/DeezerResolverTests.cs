@@ -170,6 +170,96 @@ public sealed class DeezerResolverTests
         Assert.Contains("fallback-license", fixture.MediaBodies.Last());
     }
 
+    [Theory]
+    [InlineData("FLAC", "audio/flac")]
+    [InlineData("MP3_320", "audio/mpeg")]
+    public async Task EstablishmentRefreshesPrimaryThenUsesStrictQualityFallback(string quality, string contentType)
+    {
+        using var fixture = new Fixture { RejectPrimaryCdn = true };
+        fixture.Config["Deezer:ArlFallback"] = "fallback";
+
+        var established = await fixture.Resolver.EstablishSourceAsync("42", quality);
+
+        Assert.NotNull(established);
+        var result = established.Value;
+        using (result.opened.owner)
+        await using (result.opened.stream)
+        {
+            Assert.Equal(contentType, result.opened.contentType);
+            Assert.Equal(contentType, result.info.ContentType);
+            Assert.Equal(12, result.info.ExpectedLength);
+        }
+        Assert.Equal(["HEAD", "HEAD", "HEAD", "GET"], fixture.CdnMethods);
+        Assert.Equal(3, fixture.MediaBodies.Count);
+        Assert.Contains("fallback-license", fixture.MediaBodies.Last());
+        Assert.All(fixture.MediaBodies, body =>
+        {
+            using var document = JsonDocument.Parse(body);
+            Assert.Equal(quality, Assert.Single(document.RootElement.GetProperty("media")[0]
+                .GetProperty("formats").EnumerateArray()).GetProperty("format").GetString());
+        });
+    }
+
+    [Theory]
+    [InlineData("FLAC", "audio/flac")]
+    [InlineData("MP3_320", "audio/mpeg")]
+    public async Task EstablishmentRefreshesRejectedInitialGetWithinSharedBudget(string quality, string contentType)
+    {
+        using var fixture = new Fixture { RejectFirstGet = true };
+
+        var established = await fixture.Resolver.EstablishSourceAsync("42", quality);
+
+        Assert.NotNull(established);
+        using (established.Value.opened.owner)
+        await using (established.Value.opened.stream)
+            Assert.Equal(contentType, established.Value.opened.contentType);
+        Assert.Equal(["HEAD", "GET", "HEAD", "GET"], fixture.CdnMethods);
+        Assert.Equal(2, fixture.MediaBodies.Count);
+    }
+
+    [Fact]
+    public async Task EstablishmentRetriesWhenValidatorChangesBetweenHeadAndGet()
+    {
+        using var fixture = new Fixture { ChangeFirstUrlValidator = true };
+
+        var established = await fixture.Resolver.EstablishSourceAsync("42", "FLAC");
+
+        Assert.NotNull(established);
+        using (established.Value.opened.owner)
+        await using (established.Value.opened.stream) { }
+        Assert.Equal("\"v2\"", established.Value.info.ETag);
+        Assert.Equal(["HEAD", "GET", "HEAD", "GET"], fixture.CdnMethods);
+        Assert.Equal(2, fixture.MediaBodies.Count);
+    }
+
+    [Fact]
+    public async Task EstablishmentStopsAfterThreeFailedAttempts()
+    {
+        using var fixture = new Fixture { RejectAllCdn = true };
+        fixture.Config["Deezer:ArlFallback"] = "fallback";
+
+        var established = await fixture.Resolver.EstablishSourceAsync("42", "MP3_320");
+
+        Assert.Null(established);
+        Assert.Equal(3, fixture.MediaBodies.Count);
+        Assert.Equal(["HEAD", "HEAD", "HEAD"], fixture.CdnMethods);
+    }
+
+    [Fact]
+    public async Task EstablishmentCancellationStopsRetries()
+    {
+        using var fixture = new Fixture { BlockCdnHead = true };
+        using var cancellation = new CancellationTokenSource();
+        var task = fixture.Resolver.EstablishSourceAsync("42", "FLAC", cancellation.Token);
+
+        await fixture.CdnHeadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.Equal(["HEAD"], fixture.CdnMethods);
+        Assert.Single(fixture.MediaBodies);
+    }
+
     [Fact]
     public async Task SavedCredentialsApplyToNextRequestWithoutRestart()
     {
@@ -263,6 +353,10 @@ public sealed class DeezerResolverTests
         public bool NoFallbackId { get; init; }
         public bool RejectFirstUrl { get; init; }
         public bool RejectPrimaryCdn { get; init; }
+        public bool RejectFirstGet { get; init; }
+        public bool RejectAllCdn { get; init; }
+        public bool ChangeFirstUrlValidator { get; init; }
+        public bool BlockCdnHead { get; init; }
         public int AdvertisedExtraBytes { get; init; }
         public string[] AvailableFormats { get; set; } = ["MP3_128", "MP3_320", "FLAC"];
         public List<string> AuthCookies { get; } = [];
@@ -271,6 +365,8 @@ public sealed class DeezerResolverTests
         public List<string> MediaBodies { get; } = [];
         public List<string> MediaCookies { get; } = [];
         public List<string?> CdnRanges { get; } = [];
+        public List<string> CdnMethods { get; } = [];
+        public TaskCompletionSource CdnHeadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly DeezerMetadataService _catalog;
         public Fixture()
         {
@@ -323,15 +419,28 @@ public sealed class DeezerResolverTests
                 } });
             Assert.Equal("cdn.deezer.test", request.RequestUri.Host);
             Assert.Empty(cookie); // Account secrets never travel to media sources.
+            CdnMethods.Add(request.Method.Method);
+            if (request.Method == HttpMethod.Head)
+            {
+                CdnHeadStarted.TrySetResult();
+                if (BlockCdnHead) await Task.Delay(Timeout.Infinite, ct);
+            }
             CdnRanges.Add(request.Headers.Range?.ToString());
             var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
-            if (RejectFirstUrl && query["version"] == "1" || RejectPrimaryCdn && query["account"] == "primary")
+            if (RejectAllCdn || RejectFirstUrl && query["version"] == "1"
+                || RejectPrimaryCdn && query["account"] == "primary"
+                || RejectFirstGet && request.Method == HttpMethod.Get && query["version"] == "1")
                 return new HttpResponseMessage(HttpStatusCode.Forbidden);
             var start = IgnoreRange ? 0 : (int)(request.Headers.Range?.Ranges.Single().From ?? 0);
             var result = new HttpResponseMessage(start > 0 ? HttpStatusCode.PartialContent : HttpStatusCode.OK)
                 { Content = new ByteArrayContent(Payload[start..]) };
             result.Content.Headers.ContentLength = Payload.Length - start + AdvertisedExtraBytes;
             if (start > 0) result.Content.Headers.ContentRange = new ContentRangeHeaderValue(start, Payload.Length - 1, Payload.Length);
+            if (ChangeFirstUrlValidator)
+            {
+                var tag = query["version"] == "1" && request.Method == HttpMethod.Head ? "\"v1\"" : "\"v2\"";
+                result.Headers.ETag = new EntityTagHeaderValue(tag);
+            }
             return result;
         }
         private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK)

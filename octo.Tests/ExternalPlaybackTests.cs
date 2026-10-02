@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Moq;
 using Octo.Models.Settings;
+using Octo.Services.Deezer;
 using Octo.Services;
 using Octo.Services.Common;
 using Octo.Services.Local;
@@ -105,11 +106,48 @@ public sealed class ExternalPlaybackTests
         }
     }
 
+    [Fact]
+    public async Task WaitForLosslessHeadDoesNotEnqueueAcquisition()
+    {
+        var downloads = new Mock<IDownloadService>();
+        downloads.Setup(service => service.GetDirectStreamAsync(
+                "soulseek", "track-id", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DirectStreamInfo
+            {
+                AudioStream = new MemoryStream([4, 5, 6]), ContentType = "audio/mpeg",
+                ContentLength = 3, StatusCode = 200,
+            });
+        var library = new Mock<ILocalLibraryService>();
+        library.Setup(service => service.ParseSongId("external-track"))
+            .Returns((true, "soulseek", "track-id"));
+        await using var factory = CreateFactory(downloads, library, waitForLossless: true);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Head,
+            "/rest/stream?u=alice&id=external-track&f=json");
+        using var response = await client.SendAsync(request);
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("audio/mpeg", response.Content.Headers.ContentType?.MediaType);
+        var queue = factory.Services.GetRequiredService<TrackAcquisitionQueue>();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queue.DequeueAsync(timeout.Token));
+        downloads.Verify(service => service.GetDirectStreamAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private static WebApplicationFactory<Program> CreateFactory(
         Mock<IDownloadService> downloads,
         Mock<ILocalLibraryService> library,
         bool waitForLossless)
     {
+        var metadata = new Mock<IMusicMetadataService>();
+        metadata.Setup(service => service.GetSongAsync("soulseek", "track-id"))
+            .ReturnsAsync(new Octo.Models.Domain.Song
+            {
+                Id = "external-track", Title = "Title", Artist = "Artist", ExternalProvider = "soulseek",
+                ExternalId = "track-id", IsLocal = false,
+            });
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
@@ -120,15 +158,21 @@ public sealed class ExternalPlaybackTests
                         ["Subsonic:StorageMode"] = "Cache",
                         ["Subsonic:DownloadSource"] = "Soulseek",
                         ["Subsonic:WaitForLosslessOnPlay"] = waitForLossless.ToString(),
+                        ["Deezer:CacheEnabled"] = "false",
+                        ["Deezer:CachePath"] = Path.GetTempPath(),
                         ["Library:DownloadPath"] = Path.GetTempPath(),
                     }));
                 builder.ConfigureServices(services =>
                 {
                     services.RemoveAll<IHostedService>();
+                    // These tests exercise controller fallback behavior with a fake direct source.
+                    services.RemoveAll<DeezerDeliveryService>();
                     services.RemoveAll<IHttpClientFactory>();
+                    services.RemoveAll<IMusicMetadataService>();
                     var http = new Mock<IHttpClientFactory>();
                     http.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(() => new HttpClient(new AuthHandler()));
                     services.AddSingleton(http.Object);
+                    services.AddSingleton(metadata.Object);
                     services.RemoveAll<IDownloadService>();
                     services.RemoveAll<ILocalLibraryService>();
                     services.AddSingleton(downloads.Object);

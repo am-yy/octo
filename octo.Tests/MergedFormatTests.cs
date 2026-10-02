@@ -220,7 +220,7 @@ public sealed class MergedFormatTests
             Assert.True(song.GetProperty("isExternal").GetBoolean(), title);
             foreach (var key in new[] { "path", "size", "created", "bitDepth", "samplingRate", "channelCount" })
                 Assert.False(song.TryGetProperty(key, out _), $"{title} has {key}");
-            Assert.Equal("mp3", song.GetProperty("suffix").GetString());
+            Assert.Equal("flac", song.GetProperty("suffix").GetString());
         }
 
         // XML says the same.

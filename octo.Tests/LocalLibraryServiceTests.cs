@@ -65,6 +65,34 @@ public class LocalLibraryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PlaybackMp3SourceRequiresActual320AndNeverQualifiesForLosslessImport()
+    {
+        foreach (var bitrate in new[] { 128, 320 })
+        {
+            var path = Path.Combine(_testDownloadPath, bitrate + ".mp3");
+            using var process = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo("ffmpeg")
+                    { UseShellExecute = false, RedirectStandardError = true },
+            };
+            foreach (var argument in new[] { "-v", "error", "-f", "lavfi", "-i", "sine=duration=1", "-c:a", "libmp3lame", "-b:a", bitrate + "k", path })
+                process.StartInfo.ArgumentList.Add(argument);
+            Assert.True(process.Start());
+            var errors = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(process.ExitCode == 0, await errors);
+            Assert.Equal(bitrate == 320, LocalLibraryService.IsImportedSource(path, "mp3"));
+            Assert.False(LocalLibraryService.IsImportedSource(path, "flac"));
+        }
+        var flac = Path.Combine(_testDownloadPath, "source.flac");
+        await File.WriteAllBytesAsync(flac, DeezerAudioCacheTests.MinimalFlacSample());
+        Assert.True(LocalLibraryService.IsImportedSource(flac, "flac"));
+        var spoofed = Path.Combine(_testDownloadPath, "spoofed.mp3");
+        File.Copy(flac, spoofed);
+        Assert.False(LocalLibraryService.IsImportedSource(spoofed, "mp3"));
+    }
+
+    [Fact]
     public async Task DelayedImportRequiresUniqueUsableFlacOfSameRecordingAndSurvivesRestart()
     {
         var path = Path.Combine(_testDownloadPath, "import.flac");

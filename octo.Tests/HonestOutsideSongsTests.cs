@@ -16,8 +16,9 @@ public sealed class HonestOutsideSongsTests
 {
     private static readonly XNamespace Ns = XNamespace.Get("http://subsonic.org/restapi");
 
-    private static SubsonicResponseBuilder Builder(bool waitForLossless = false) =>
-        new(new ExternalIdRegistry(), Options.Create(new SubsonicSettings { WaitForLosslessOnPlay = waitForLossless }));
+    private static SubsonicResponseBuilder Builder(bool waitForLossless = false, string quality = "FLAC") =>
+        new(new ExternalIdRegistry(), Options.Create(new SubsonicSettings { WaitForLosslessOnPlay = waitForLossless }),
+            Options.Create(new DeezerSettings { CacheQuality = quality }));
 
     private static Song Outside() => new()
     {
@@ -35,10 +36,10 @@ public sealed class HonestOutsideSongsTests
 
         Assert.Equal(true, row["isExternal"]);
         Assert.All(FileFacts, key => Assert.False(row.ContainsKey(key), key));
-        // How it streams stays, so a client can still play it.
-        Assert.Equal("mp3", row["suffix"]);
-        Assert.Equal("audio/mpeg", row["contentType"]);
-        Assert.Equal(320, row["bitRate"]);
+        // Default playback source is selected-quality FLAC.
+        Assert.Equal("flac", row["suffix"]);
+        Assert.Equal("audio/flac", row["contentType"]);
+        Assert.False(row.ContainsKey("bitRate"));
         Assert.Equal(245, row["duration"]);
         Assert.Equal(new[] { "USUM70813712" }, row["isrc"]);
     }
@@ -50,7 +51,7 @@ public sealed class HonestOutsideSongsTests
 
         Assert.Equal("true", xml.Attribute("isExternal")?.Value);
         Assert.All(FileFacts, key => Assert.Null(xml.Attribute(key)));
-        Assert.Equal("mp3", xml.Attribute("suffix")?.Value);
+        Assert.Equal("flac", xml.Attribute("suffix")?.Value);
     }
 
     [Fact]
@@ -61,6 +62,16 @@ public sealed class HonestOutsideSongsTests
         Assert.Equal(true, row["isExternal"]);
         Assert.Equal("flac", row["suffix"]);
         Assert.False(row.ContainsKey("bitRate"));
+    }
+
+    [Fact]
+    public void OutsideSong_DeclaresSelectedMp3Source()
+    {
+        var row = Builder(quality: "MP3_320").ConvertSongToJson(Outside());
+
+        Assert.Equal("mp3", row["suffix"]);
+        Assert.Equal("audio/mpeg", row["contentType"]);
+        Assert.Equal(320, row["bitRate"]);
     }
 
     [Fact]

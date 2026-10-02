@@ -5,6 +5,7 @@ using Octo.Models.Domain;
 using Octo.Models.Subsonic;
 using Octo.Models.Radio;
 using Octo.Services.Soulseek;
+using Octo.Services.Deezer;
 
 namespace Octo.Services.Subsonic;
 
@@ -19,7 +20,7 @@ public partial class SubsonicResponseBuilder
     private readonly ExternalIdRegistry _idRegistry;
 
     /// <summary>
-    /// Whether an external id resolves to a lossless file. Read once at construction on
+    /// Whether virtual tracks declare selected FLAC source. Read once at construction on
     /// purpose: it decides what every search result DECLARES, so it must not change under
     /// a client that has already cached those rows. The setting is restart-required.
     /// </summary>
@@ -27,10 +28,12 @@ public partial class SubsonicResponseBuilder
 
     public SubsonicResponseBuilder(ExternalIdRegistry idRegistry,
         Microsoft.Extensions.Options.IOptions<Models.Settings.SubsonicSettings> subsonicSettings,
-        Microsoft.Extensions.Options.IOptions<Models.Settings.DeezerSettings>? deezerSettings = null)
+        Microsoft.Extensions.Options.IOptions<Models.Settings.DeezerSettings>? deezerSettings = null,
+        DeezerAudioCache? deezerCache = null)
     {
         _idRegistry = idRegistry;
-        _externalsAreLossless = deezerSettings?.Value.CacheEnabled == true || subsonicSettings.Value.WaitForLosslessOnPlay;
+        _externalsAreLossless = string.Equals(
+            deezerCache?.SourceQuality ?? deezerSettings?.Value.CacheQuality ?? "FLAC", "FLAC", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -553,6 +556,8 @@ public partial class SubsonicResponseBuilder
         (LyricsExtension, [LyricsExtensionVersion]),
         (LibraryActionsExtension, [LibraryActionsExtensionVersion]),
         ("songLyrics", [1, 2]),
+        ("transcodeOffset", [1]),
+        ("transcoding", [1]),
     ];
 
     /// <summary>
@@ -683,10 +688,9 @@ public partial class SubsonicResponseBuilder
         // Subsonic clients (Arpeggio in particular) drop entries whose cover-art
         // request 404s, so making these ids resolvable is what gets external songs
         // queued and played at all.
-        // Cache playback is strict FLAC; direct Deezer playback uses MP3 fallback. The declared
-        // container must match both; estimated bitrate is never sent for outside songs.
-        // With WaitForLosslessOnPlay on, /rest/stream serves the fetched FLAC under this
-        // same id, so it has to be declared as one. 950 rather than 1411 because that
+        // Virtual tracks declare the selected cache source. Requested transcoding is
+        // negotiated separately, and WaitForLosslessOnPlay does not change this default.
+        // Estimated bitrate is never sent for outside songs. 950 rather than 1411 because that
         // figure is uncompressed PCM and real FLAC compresses well below it: a measured
         // Mezzanine track came out at ~840kbps, where 1411 would have overstated its size
         // by about 70%. suffix and contentType are the contract a client picks its decoder

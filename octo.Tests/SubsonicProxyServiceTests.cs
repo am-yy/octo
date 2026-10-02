@@ -298,10 +298,14 @@ public class SubsonicProxyServiceTests
     }
 
     [Fact]
-    public async Task RelayStreamAsync_HttpError_ReturnsStatusCodeResult()
+    public async Task RelayStreamAsync_HttpError_PreservesStatusAndBody()
     {
         // Arrange
-        var responseMessage = new HttpResponseMessage(HttpStatusCode.NotFound);
+        var responseMessage = new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new ByteArrayContent([4, 5, 6]),
+        };
+        responseMessage.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         _mockHttpMessageHandler.Protected()
             .Setup<Task<HttpResponseMessage>>("SendAsync",
@@ -309,14 +313,24 @@ public class SubsonicProxyServiceTests
                 ItExpr.IsAny<CancellationToken>())
             .ReturnsAsync(responseMessage);
 
+        var context = new DefaultHttpContext();
+        var accessor = new HttpContextAccessor { HttpContext = context };
+        var service = new SubsonicProxyService(_mockHttpClientFactory.Object,
+            TestOptions.Monitor(new SubsonicSettings { Url = "http://localhost:4533" }), accessor);
         var parameters = new Dictionary<string, string> { { "id", "song123" } };
 
         // Act
-        var result = await _service.RelayStreamAsync(parameters, CancellationToken.None);
+        var result = await service.RelayStreamAsync(parameters, CancellationToken.None);
 
-        // Assert
-        var statusResult = Assert.IsType<StatusCodeResult>(result);
-        Assert.Equal(404, statusResult.StatusCode);
+        // Assert status and error payload survive the Navidrome relay.
+        var fileResult = Assert.IsType<FileStreamResult>(result);
+        Assert.Equal(404, context.Response.StatusCode);
+        Assert.Equal("application/json", fileResult.ContentType);
+        Assert.False(fileResult.EnableRangeProcessing);
+        await using var stream = fileResult.FileStream;
+        using var body = new MemoryStream();
+        await stream.CopyToAsync(body);
+        Assert.Equal([4, 5, 6], body.ToArray());
     }
 
     [Fact]

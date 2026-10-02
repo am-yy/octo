@@ -20,9 +20,10 @@ public class SerializerSymmetryTests
 {
     private static readonly XNamespace Ns = XNamespace.Get("http://subsonic.org/restapi");
 
-    private static SubsonicResponseBuilder Builder(bool waitForLossless = false) =>
+    private static SubsonicResponseBuilder Builder(bool waitForLossless = false, string quality = "FLAC") =>
         new(new ExternalIdRegistry(),
-            Options.Create(new SubsonicSettings { WaitForLosslessOnPlay = waitForLossless }));
+            Options.Create(new SubsonicSettings { WaitForLosslessOnPlay = waitForLossless }),
+            Options.Create(new DeezerSettings { CacheQuality = quality }));
 
     private static Song ExternalSong() => new()
     {
@@ -71,11 +72,21 @@ public class SerializerSymmetryTests
     }
 
     [Fact]
-    public void XmlSongDeclaresHowToPlayIt()
+    public void XmlSongDeclaresSelectedDefaultFlacSource()
     {
         // The specific regression. Without these a client cannot choose a decoder, and the
         // entry either fails to play or is dropped from the queue outright.
         var xml = Builder().ConvertSongToXml(ExternalSong(), Ns);
+
+        Assert.Equal("flac", xml.Attribute("suffix")?.Value);
+        Assert.Equal("audio/flac", xml.Attribute("contentType")?.Value);
+        Assert.Null(xml.Attribute("bitRate"));
+    }
+
+    [Fact]
+    public void XmlSongDeclaresSelectedMp3Source()
+    {
+        var xml = Builder(quality: "MP3_320").ConvertSongToXml(ExternalSong(), Ns);
 
         Assert.Equal("mp3", xml.Attribute("suffix")?.Value);
         Assert.Equal("audio/mpeg", xml.Attribute("contentType")?.Value);

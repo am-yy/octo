@@ -464,6 +464,18 @@ public sealed class ExternalSaveEndpointTests
                 response.Content.Headers.ContentDisposition = new("attachment") { FileNameStar = "Owned.flac" };
                 return response;
             }
+            if (path == "/rest/stream")
+            {
+                var audio = Encoding.ASCII.GetBytes("fLaC");
+                var response = new HttpResponseMessage(request.Headers.Range is null
+                    ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
+                { Content = new ByteArrayContent(audio) };
+                response.Content.Headers.ContentType = new("audio/flac");
+                response.Content.Headers.ContentLength = audio.Length;
+                if (request.Headers.Range is { Ranges.Count: 1 } range && range.Ranges.Single().From is long start)
+                    response.Content.Headers.ContentRange = new(start, range.Ranges.Single().To ?? audio.Length - 1, audio.Length);
+                return response;
+            }
             if (PlaylistMissing && path is "/rest/getPlaylist" or "/rest/deletePlaylist")
                 return Reply("""{"subsonic-response":{"status":"failed","error":{"code":70}}}""");
             if (PlaylistMissing && path == "/api/playlist/p1") return Reply("{}", HttpStatusCode.NotFound);

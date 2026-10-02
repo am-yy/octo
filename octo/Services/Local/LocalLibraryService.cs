@@ -119,8 +119,17 @@ public class LocalLibraryService : ILocalLibraryService
         return (await FindImportedSongAsync(song))?.Id;
     }
 
-    public async Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct = default)
+    public Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct = default) =>
+        FindImportedSongAsync(source, ct, "FLAC");
+
+    public async Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct, string sourceQuality)
     {
+        var suffix = sourceQuality switch
+        {
+            "FLAC" => "flac",
+            "MP3_320" => "mp3",
+            _ => throw new ArgumentException("Source quality must be FLAC or MP3_320.", nameof(sourceQuality)),
+        };
         if (string.IsNullOrWhiteSpace(source.Title) || string.IsNullOrWhiteSpace(source.Artist)) return null;
         var jwt = await _navIdentity.EnsureAdminJwtAsync(ct);
         if (string.IsNullOrEmpty(jwt) || string.IsNullOrWhiteSpace(_subsonicSettings.Url)) return null;
@@ -137,17 +146,18 @@ public class LocalLibraryService : ILocalLibraryService
         {
             string Text(string key) => row.TryGetProperty(key, out var v) ? v.ToString() : "";
             if (!Octo.Services.LastFm.LastFmRadioTrackResolver.IsSameRecording(source.Artist, source.Title, Text("artist"), Text("title"))
-                || !string.Equals(Text("suffix"), "flac", StringComparison.OrdinalIgnoreCase)) continue;
+                || !string.Equals(Text("suffix"), suffix, StringComparison.OrdinalIgnoreCase)) continue;
             var duration = row.TryGetProperty("duration", out var d) && d.TryGetDouble(out var n) ? n : 0;
             if (source.Duration is > 0 && duration > 0 && Math.Abs(source.Duration.Value - duration) > 10) continue;
             var candidate = new Octo.Services.Library.NavidromeSongPathResolver.Candidate(
                 Text("id"), Text("path"), Text("libraryPath"), 0, "", "", "", "", null,
                 Octo.Services.Library.PathSource.NativeApi);
             var path = Octo.Services.Library.NavidromeSongPathResolver.CandidatePaths(candidate, root)
-                .FirstOrDefault(IsImportedFlac);
+                .FirstOrDefault(path => IsImportedSource(path, suffix));
             if (path is null) continue;
             var imported = JsonSerializer.Deserialize<Song>(JsonSerializer.Serialize(source))!;
-            imported.Id = Text("id"); imported.LocalPath = path; imported.Suffix = "flac";
+            imported.Id = Text("id"); imported.LocalPath = path; imported.Suffix = suffix;
+            imported.BitRate = suffix == "mp3" ? 320 : imported.BitRate;
             imported.IsLocal = true; imported.Album = Text("album");
             matches.Add(imported);
         }
@@ -160,10 +170,16 @@ public class LocalLibraryService : ILocalLibraryService
         return unique.Count == 1 ? unique[0] : null;
     }
 
-    private static bool IsImportedFlac(string path)
+    internal static bool IsImportedSource(string path, string suffix)
     {
-        if (!File.Exists(path) || !Path.GetExtension(path).Equals(".flac", StringComparison.OrdinalIgnoreCase)) return false;
-        try { using var audio = TagLib.File.Create(path); return audio is TagLib.Flac.File && audio.Properties.Duration > TimeSpan.Zero; }
+        if (!File.Exists(path) || !Path.GetExtension(path).Equals("." + suffix, StringComparison.OrdinalIgnoreCase)) return false;
+        try
+        {
+            using var audio = TagLib.File.Create(path);
+            return audio.Properties.Duration > TimeSpan.Zero && (suffix == "flac"
+                ? audio is TagLib.Flac.File
+                : audio is TagLib.Mpeg.AudioFile && audio.Properties.AudioBitrate >= 320);
+        }
         catch { return false; }
     }
 

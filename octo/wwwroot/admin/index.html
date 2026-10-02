@@ -402,7 +402,7 @@
             </div>
             <div class="set-row stack">
               <div class="set-info">
-                <div class="set-info-t">Deezer download quality</div>
+                <div class="set-info-t">Permanent Deezer download quality</div>
                 <div class="set-info-d">Used for permanent downloads from Deezer. FLAC is tried first and falls back to MP3 if unavailable.</div>
               </div>
               <select class="set-input" name="Deezer.Quality">
@@ -411,9 +411,19 @@
                 <option value="MP3_128">MP3 128 kbps</option>
               </select>
             </div>
+            <div class="set-row stack">
+              <div class="set-info">
+                <div class="set-info-t">Playback source quality</div>
+                <div class="set-info-d">Strict source used for virtual-track playback, saves, prefetch and pinned fills. Keeps separate from permanent-download quality. Takes effect after restart.</div>
+              </div>
+              <select class="set-input" name="Deezer.CacheQuality" data-restart="true">
+                <option value="FLAC">FLAC</option>
+                <option value="MP3_320">MP3 320 kbps</option>
+              </select>
+            </div>
             <div class="set-row">
-              <div class="set-info"><div class="set-info-t">FLAC playback cache</div><div class="set-info-d">Download and share strict FLAC copies outside your music library. Playback waits for completion; saves keep their copies pinned until library import.</div></div>
-              <label class="switch"><input type="checkbox" name="Deezer.CacheEnabled" data-restart="true" aria-label="Enable FLAC playback cache" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
+              <div class="set-info"><div class="set-info-t">Playback source cache</div><div class="set-info-d">Share completed and growing copies outside your music library. Saves keep source copies pinned until library import.</div></div>
+              <label class="switch"><input type="checkbox" name="Deezer.CacheEnabled" data-restart="true" aria-label="Enable playback source cache" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
             <div class="set-row stack">
               <label class="set-info-t" for="f-deezer-cache-path">Cache directory</label>
@@ -426,6 +436,18 @@
             <div class="set-row">
               <label class="set-info-t" for="f-deezer-cache-days">Unpinned retention (days)</label>
               <input class="set-input" id="f-deezer-cache-days" name="Deezer.CacheRetentionDays" type="number" min="0" />
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Concurrent Deezer downloads</div><div class="set-info-d">Maximum simultaneous source transfers, including playback and background fills. Takes effect after restart.</div></div>
+              <input class="set-input" name="Deezer.MaxConcurrentDownloads" type="number" min="1" max="32" data-restart="true" />
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Background fills</div><div class="set-info-d">Maximum prefetch and pinned fills running at once. Interactive playback and downloads take priority. Takes effect after restart.</div></div>
+              <input class="set-input" name="Deezer.MaxConcurrentBackgroundDownloads" type="number" min="0" max="32" data-restart="true" />
+            </div>
+            <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Concurrent transcodes</div><div class="set-info-d">Maximum simultaneous MP3 and Opus encoders. Takes effect after restart.</div></div>
+              <input class="set-input" name="Deezer.MaxConcurrentTranscodes" type="number" min="1" max="32" data-restart="true" />
             </div>
             <div class="set-row stack" data-stream-source="Lossless" hidden>
               <div class="set-info">

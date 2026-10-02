@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
@@ -82,6 +84,109 @@ public sealed class DeezerAudioCacheTests
     }
 
     [Fact]
+    public async Task ProbeReportsSelectedSourceWithoutStartingCacheFill()
+    {
+        using var fixture = new Fixture();
+
+        var source = await fixture.Cache.ProbeAsync(Song());
+
+        Assert.NotNull(source);
+        Assert.Equal("audio/flac", source.ContentType);
+        Assert.Equal(fixture.Payload.Length, source.ExpectedLength);
+        Assert.Equal(0, fixture.CdnRequests);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "42.flac")));
+    }
+
+    [FfmpegFact]
+    public async Task Mp3CacheRequestsOnlyMp3_320AndPublishesMp3Path()
+    {
+        var mp3 = await CreateAudioAsync("mp3");
+        using var fixture = new Fixture("MP3_320", DeezerDecryptedStreamTests.EncryptStripes(mp3, "1234567890"));
+
+        var path = await fixture.Cache.EnsureAsync(Song("1234567890"));
+
+        Assert.Equal(Path.Combine(fixture.Root, "1234567890.mp3"), path);
+        Assert.Equal(mp3, await File.ReadAllBytesAsync(path!));
+        Assert.Equal(["MP3_320"], fixture.RequestedFormats);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "1234567890.flac")));
+    }
+
+    [FfmpegFact]
+    public async Task SwitchingCacheQualityRetainsBothTrackLevelPinnedSources()
+    {
+        using var fixture = new Fixture();
+        var song = Song("1234567890");
+        var flacPath = await fixture.Cache.EnsureAsync(song);
+        var flac = await File.ReadAllBytesAsync(flacPath!);
+
+        var mp3 = await CreateAudioAsync("mp3");
+        fixture.Payload = DeezerDecryptedStreamTests.EncryptStripes(mp3, "1234567890");
+        fixture.Settings.Set(SettingsWithCache(fixture.Settings.CurrentValue, cacheQuality: "MP3_320"));
+        using var switched = new DeezerAudioCache(fixture.Resolver, fixture.Catalog, fixture.Ids,
+            fixture.Settings, NullLogger<DeezerAudioCache>.Instance);
+        var mp3Path = await switched.EnsureAsync(song);
+
+        Assert.Equal("FLAC", fixture.Cache.SourceQuality);
+        Assert.Equal("MP3_320", switched.SourceQuality);
+        Assert.Equal(flac, await File.ReadAllBytesAsync(flacPath!));
+        Assert.Equal(mp3, await File.ReadAllBytesAsync(mp3Path!));
+        await switched.PinAsync(song, "heart:user:quality");
+        fixture.Settings.Set(SettingsWithCache(fixture.Settings.CurrentValue, maxGiB: 0));
+        await switched.CleanupAsync(CancellationToken.None);
+        Assert.True(File.Exists(flacPath));
+        Assert.True(File.Exists(mp3Path));
+        await switched.UnpinAsync("1234567890", "heart:user:quality");
+        await switched.CleanupAsync(CancellationToken.None);
+        Assert.False(File.Exists(flacPath));
+        Assert.False(File.Exists(mp3Path));
+    }
+
+    [FfmpegFact]
+    public async Task ProgressiveLeaseStreamsFlacBeforeValidatedCachePublication()
+    {
+        var flac = await CreateAudioAsync("flac");
+        using var fixture = new Fixture(payload: DeezerDecryptedStreamTests.EncryptStripes(flac, "1234567890"))
+            { HoldAfterBytes = 2048 };
+        await using var lease = (await fixture.Cache.OpenProgressiveAsync(Song("1234567890")))!;
+        var received = new MemoryStream();
+        var first = new byte[4096];
+
+        var count = await lease.Stream.ReadAsync(first).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        received.Write(first, 0, count);
+        await fixture.CdnHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(count > 0);
+        Assert.False(lease.Completion.IsCompleted);
+        Assert.Null(lease.ReadyPath);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "1234567890.flac")));
+
+        fixture.ReleaseCdn.Release();
+        await lease.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        await lease.Stream.CopyToAsync(received);
+        Assert.Equal(flac, received.ToArray());
+        Assert.True(File.Exists(Path.Combine(fixture.Root, "1234567890.flac")));
+    }
+
+    private static async Task<byte[]> CreateAudioAsync(string format)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"octo-source-{Guid.NewGuid():N}.{format}");
+        using var process = new Process { StartInfo = new ProcessStartInfo
+        {
+            FileName = "ffmpeg", UseShellExecute = false, RedirectStandardError = true,
+            CreateNoWindow = true,
+        } };
+        foreach (var argument in new[] { "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=2", "-map", "0:a:0", "-c:a",
+            format == "mp3" ? "libmp3lame" : "flac", "-b:a", "320k", "-y", path })
+            process.StartInfo.ArgumentList.Add(argument);
+        Assert.True(process.Start());
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, error);
+        try { return await File.ReadAllBytesAsync(path); }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task RestartedCacheEvictsByPersistedLastPlayedTime()
     {
         using var fixture = new Fixture();
@@ -137,7 +242,81 @@ public sealed class DeezerAudioCacheTests
 
         fixture.ReleaseCdn.Release(8);
         await Task.WhenAll(prewarm, playback).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.InRange(fixture.MaximumConcurrentCdnRequests, 1, 2);
+        Assert.InRange(fixture.MaximumConcurrentCdnRequests, 1, 3);
+    }
+
+    [Fact]
+    public async Task QueuedSpeculativeFillPromotesToForegroundCapacity()
+    {
+        using var fixture = new Fixture { HoldCdn = true };
+        var prewarm = fixture.Cache.PrewarmAsync(
+            [Song("42"), Song("43"), Song("44")], topN: 3);
+        await fixture.TwoCdnStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(fixture.Started("44").Task.IsCompleted);
+
+        var playback = fixture.Cache.EnsureAsync(Song("44"), DeezerCachePriority.Playback);
+        await fixture.Started("44").Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.ReleaseCdn.Release(12);
+        await Task.WhenAll(prewarm, playback).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("44", fixture.CdnRequestIds.Take(3));
+    }
+
+    [Fact]
+    public async Task PlaybackPreemptsUnusedSpeculativeAttemptWhenAllDownloadSlotsAreBusy()
+    {
+        using var fixture = new Fixture { HoldCdn = true };
+        var prewarm = fixture.Cache.PrewarmAsync([Song("42"), Song("43")], topN: 2);
+        await fixture.TwoCdnStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var foreground1 = fixture.Cache.EnsureAsync(Song("45"), DeezerCachePriority.Playback);
+        var foreground2 = fixture.Cache.EnsureAsync(Song("46"), DeezerCachePriority.Playback);
+        await Task.WhenAll(fixture.Started("45").Task, fixture.Started("46").Task)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(4, fixture.ActiveCdnRequests);
+
+        var urgent = fixture.Cache.EnsureAsync(Song("44"), DeezerCachePriority.Playback);
+        await fixture.Started("44").Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("44", fixture.CdnRequestIds);
+
+        fixture.ReleaseCdn.Release(20);
+        await Task.WhenAll(prewarm, foreground1, foreground2, urgent).WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.InRange(fixture.MaximumConcurrentCdnRequests, 1, 4);
+    }
+
+    [Fact]
+    public async Task EncodedLibraryVariantUsesContentFingerprintWithoutDeezerTrackId()
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.Root, ".staging", "encoded.mp3");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var content = "encoded library source"u8.ToArray();
+        await File.WriteAllBytesAsync(path, content);
+
+        await fixture.Cache.RegisterEncodedVariantAsync("library-profile", "", path, DateTime.UtcNow);
+
+        using var lease = fixture.Cache.OpenEncodedRead(path)!;
+        Assert.Equal("sha256-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content))
+            .ToLowerInvariant(), lease.Fingerprint);
+        Assert.Equal(content, await ReadAllAsync(lease.Stream));
+    }
+
+    [Fact]
+    public async Task ServiceStartupRemovesOrphanedStagingFiles()
+    {
+        using var fixture = new Fixture();
+        var orphan = Path.Combine(fixture.Root, ".staging", "encode-abandoned.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(orphan)!);
+        await File.WriteAllTextAsync(orphan, "partial");
+
+        await fixture.Cache.StartAsync(CancellationToken.None);
+        try { Assert.False(File.Exists(orphan)); }
+        finally { await fixture.Cache.StopAsync(CancellationToken.None); }
+    }
+
+    private static async Task<byte[]> ReadAllAsync(Stream stream)
+    {
+        using var output = new MemoryStream();
+        await stream.CopyToAsync(output);
+        return output.ToArray();
     }
 
     [Fact]
@@ -195,9 +374,14 @@ public sealed class DeezerAudioCacheTests
         Title = "Title " + deezerId, Album = "Album", Duration = 180,
     };
 
-    private static DeezerSettings SettingsWithCache(DeezerSettings settings, double maxGiB) => new()
+    private static DeezerSettings SettingsWithCache(DeezerSettings settings, double maxGiB = 20,
+        string? cacheQuality = null) => new()
     {
         Arl = settings.Arl, ArlFallback = settings.ArlFallback, Quality = settings.Quality,
+        CacheQuality = cacheQuality ?? settings.CacheQuality,
+        MaxConcurrentDownloads = settings.MaxConcurrentDownloads,
+        MaxConcurrentBackgroundDownloads = settings.MaxConcurrentBackgroundDownloads,
+        MaxConcurrentTranscodes = settings.MaxConcurrentTranscodes,
         CacheEnabled = settings.CacheEnabled, CachePath = settings.CachePath,
         CacheMaxGiB = maxGiB, CacheRetentionDays = settings.CacheRetentionDays,
     };
@@ -210,7 +394,7 @@ public sealed class DeezerAudioCacheTests
         private readonly string _registryPath;
 
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "octo-deezer-cache-test-" + Guid.NewGuid().ToString("N"));
-        public byte[] Payload => Audio;
+        public byte[] Payload { get; set; } = Audio;
         public TestOptionsMonitor<DeezerSettings> Settings { get; }
         public DeezerAudioCache Cache { get; }
         public DeezerResolver Resolver { get; }
@@ -218,8 +402,10 @@ public sealed class DeezerAudioCacheTests
         public DeezerMetadataService Catalog => _catalog;
         public TaskCompletionSource CdnStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource TwoCdnStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CdnHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public SemaphoreSlim ReleaseCdn { get; } = new(0);
         public bool HoldCdn { get; init; }
+        public int HoldAfterBytes { get; init; }
         public bool CorruptCdn { get; init; }
         public int AdvertisedExtraBytes { get; init; }
         public int CdnRequests;
@@ -229,8 +415,9 @@ public sealed class DeezerAudioCacheTests
         public string[] RequestedFormats = [];
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource> _startedById = new();
 
-        public Fixture()
+        public Fixture(string cacheQuality = "FLAC", byte[]? payload = null)
         {
+            Payload = payload ?? Audio;
             Directory.CreateDirectory(Root);
             var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
                 { ["Deezer:Arl"] = "primary" }).Build();
@@ -242,7 +429,7 @@ public sealed class DeezerAudioCacheTests
             Settings = TestOptions.Monitor(new DeezerSettings
             {
                 Arl = "primary", CacheEnabled = true, CachePath = Root,
-                CacheMaxGiB = 20, CacheRetentionDays = 7,
+                CacheQuality = cacheQuality, CacheMaxGiB = 20, CacheRetentionDays = 7,
             });
             Cache = new DeezerAudioCache(Resolver, _catalog, _ids, Settings,
                 NullLogger<DeezerAudioCache>.Instance);
@@ -273,10 +460,21 @@ public sealed class DeezerAudioCacheTests
                     .EnumerateArray().Select(item => item.GetProperty("format").GetString()!).ToArray();
                 var token = body.RootElement.GetProperty("track_tokens")[0].GetString()!;
                 var id = token["track-token-".Length..];
-                return Json(new { data = new[] { new { media = new[] { new { format = "FLAC",
-                    sources = new[] { new { url = $"https://cdn.deezer.test/{id}.flac" } } } } } } });
+                var format = RequestedFormats.Single();
+                var extension = format == "FLAC" ? "flac" : "mp3";
+                return Json(new { data = new[] { new { media = new[] { new { format,
+                    sources = new[] { new { url = $"https://cdn.deezer.test/{id}.{extension}" } } } } } } });
             }
             Assert.Equal("cdn.deezer.test", request.RequestUri.Host);
+            if (request.Method == HttpMethod.Head)
+            {
+                var head = new HttpResponseMessage(HttpStatusCode.OK)
+                    { Content = new ByteArrayContent([]) };
+                head.Content.Headers.ContentLength = Payload.Length + AdvertisedExtraBytes;
+                head.Headers.ETag = new EntityTagHeaderValue("\"source-v1\"");
+                head.Content.Headers.LastModified = DateTimeOffset.UnixEpoch;
+                return head;
+            }
             Interlocked.Increment(ref CdnRequests);
             var pathId = Path.GetFileNameWithoutExtension(request.RequestUri.AbsolutePath);
             CdnRequestIds.Enqueue(pathId);
@@ -289,11 +487,15 @@ public sealed class DeezerAudioCacheTests
             try
             {
                 if (HoldCdn) await ReleaseCdn.WaitAsync(ct);
-                var audio = Audio.ToArray();
+                var audio = Payload.ToArray();
                 if (CorruptCdn) audio[^1] ^= 0xff;
-                var content = new ByteArrayContent(audio);
+                HttpContent content = HoldAfterBytes > 0
+                    ? new StreamContent(new ProgressiveCdnStream(audio, HoldAfterBytes, ReleaseCdn, CdnHeld))
+                    : new ByteArrayContent(audio);
                 content.Headers.ContentLength = audio.Length + AdvertisedExtraBytes;
-                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+                var media = new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+                media.Headers.ETag = new EntityTagHeaderValue("\"source-v1\"");
+                return media;
             }
             finally { Interlocked.Decrement(ref ActiveCdnRequests); }
         }
@@ -313,6 +515,40 @@ public sealed class DeezerAudioCacheTests
 
         private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK)
             { Content = new StringContent(JsonSerializer.Serialize(value)) };
+
+        private sealed class ProgressiveCdnStream(byte[] bytes, int holdAfterBytes,
+            SemaphoreSlim release, TaskCompletionSource held) : Stream
+        {
+            private int _position;
+            private bool _released;
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => bytes.Length;
+            public override long Position { get => _position; set => throw new NotSupportedException(); }
+            public override async ValueTask<int> ReadAsync(Memory<byte> destination,
+                CancellationToken cancellationToken = default)
+            {
+                if (_position >= bytes.Length || destination.IsEmpty) return 0;
+                if (!_released && _position >= holdAfterBytes)
+                {
+                    held.TrySetResult();
+                    await release.WaitAsync(cancellationToken);
+                    _released = true;
+                }
+                var boundary = !_released ? Math.Min(holdAfterBytes, bytes.Length) : bytes.Length;
+                var count = Math.Min(destination.Length, boundary - _position);
+                bytes.AsMemory(_position, count).CopyTo(destination);
+                _position += count;
+                return count;
+            }
+            public override int Read(byte[] buffer, int offset, int count) =>
+                ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
 
         protected override void Dispose(bool disposing)
         {

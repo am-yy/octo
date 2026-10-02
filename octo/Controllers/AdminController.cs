@@ -678,10 +678,14 @@ public class AdminController : ControllerBase
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
                 ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                ["CacheQuality"] = _config["Deezer:CacheQuality"] ?? "FLAC",
                 ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
                 ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
                 ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
                 ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
+                ["MaxConcurrentDownloads"] = _config.GetValue("Deezer:MaxConcurrentDownloads", 4),
+                ["MaxConcurrentBackgroundDownloads"] = _config.GetValue("Deezer:MaxConcurrentBackgroundDownloads", 2),
+                ["MaxConcurrentTranscodes"] = _config.GetValue("Deezer:MaxConcurrentTranscodes", 4),
             },
             ["LastFm"] = new Dictionary<string, object>
             {
@@ -863,6 +867,10 @@ public class AdminController : ControllerBase
             if (actionsError is not null) return BadRequest(new { error = actionsError });
         }
 
+        if (Child(patch, "Deezer") is JsonObject deezerPatch
+            && ValidateDeezerDeliverySettings(deezerPatch) is { } deezerError)
+            return BadRequest(new { error = deezerError });
+
         if (patch["Genre"] is JsonObject genrePatch
             && genrePatch["Mappings"] is JsonArray genreMappings)
         {
@@ -994,6 +1002,44 @@ public class AdminController : ControllerBase
                     return $"Two actions both use {rating} star(s); a rating can only mean one thing";
             }
         }
+        return null;
+    }
+
+    internal static string? ValidateDeezerDeliverySettings(JsonObject deezer)
+    {
+        if (KeyOf(deezer, "CacheQuality") is { } qualityKey)
+        {
+            var quality = deezer[qualityKey] is JsonValue value && value.TryGetValue<string>(out var text)
+                ? text : null;
+            if (!string.Equals(quality, "FLAC", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(quality, "MP3_320", StringComparison.OrdinalIgnoreCase))
+                return "Deezer cache quality must be FLAC or MP3_320.";
+        }
+
+        static int Read(JsonObject obj, string name, int fallback, out bool valid)
+        {
+            valid = true;
+            if (KeyOf(obj, name) is not { } key) return fallback;
+            if (obj[key] is JsonValue value)
+            {
+                if (value.TryGetValue<int>(out var number)) return number;
+                if (value.TryGetValue<string>(out var text)
+                    && int.TryParse(text, System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out number)) return number;
+            }
+            valid = false;
+            return fallback;
+        }
+
+        var downloads = Read(deezer, "MaxConcurrentDownloads", 4, out var downloadsValid);
+        var background = Read(deezer, "MaxConcurrentBackgroundDownloads", 2, out var backgroundValid);
+        var transcodes = Read(deezer, "MaxConcurrentTranscodes", 4, out var transcodesValid);
+        if (!downloadsValid || downloads is < 1 or > 32)
+            return "Deezer MaxConcurrentDownloads must be an integer from 1 to 32.";
+        if (!backgroundValid || background < 0 || background > downloads)
+            return "Deezer MaxConcurrentBackgroundDownloads must be from 0 to MaxConcurrentDownloads.";
+        if (!transcodesValid || transcodes is < 1 or > 32)
+            return "Deezer MaxConcurrentTranscodes must be an integer from 1 to 32.";
         return null;
     }
 
@@ -1427,10 +1473,14 @@ public class AdminController : ControllerBase
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
                 ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
+                ["CacheQuality"] = _config["Deezer:CacheQuality"] ?? "FLAC",
                 ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
                 ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
                 ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
                 ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
+                ["MaxConcurrentDownloads"] = _config.GetValue("Deezer:MaxConcurrentDownloads", 4),
+                ["MaxConcurrentBackgroundDownloads"] = _config.GetValue("Deezer:MaxConcurrentBackgroundDownloads", 2),
+                ["MaxConcurrentTranscodes"] = _config.GetValue("Deezer:MaxConcurrentTranscodes", 4),
             },
             ["LastFm"] = new JsonObject
             {
@@ -1607,13 +1657,20 @@ public class AdminController : ControllerBase
                         ["Arl"] = _config["Deezer:Arl"],
                         ["ArlFallback"] = _config["Deezer:ArlFallback"],
                         ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
-                ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
-                ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
-                ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
-                ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
+                        ["CacheQuality"] = _config["Deezer:CacheQuality"] ?? "FLAC",
+                        ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
+                        ["CachePath"] = _config["Deezer:CachePath"] ?? new DeezerSettings().CachePath,
+                        ["CacheMaxGiB"] = _config.GetValue("Deezer:CacheMaxGiB", 20d),
+                        ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
+                        ["MaxConcurrentDownloads"] = _config.GetValue("Deezer:MaxConcurrentDownloads", 4),
+                        ["MaxConcurrentBackgroundDownloads"] = _config.GetValue("Deezer:MaxConcurrentBackgroundDownloads", 2),
+                        ["MaxConcurrentTranscodes"] = _config.GetValue("Deezer:MaxConcurrentTranscodes", 4),
                     },
                 };
             RestoreSecretPlaceholders(parsed, existing);
+            if (Child(parsed, "Deezer") is JsonObject rawDeezer
+                && ValidateDeezerDeliverySettings(rawDeezer) is { } rawDeezerError)
+                return BadRequest(new { error = rawDeezerError });
             if (Child(parsed, "Subsonic") is JsonObject savedSubsonic
                 && KeyOf(savedSubsonic, "AdminPassword") is { } savedKey
                 && savedSubsonic[savedKey] is JsonValue savedValue
@@ -1703,8 +1760,9 @@ public class AdminController : ControllerBase
             "Lidarr:RefreshArtistOnAdd",
             "Lidarr:MonitorRequestedAlbums",
             "Lidarr:CompletionMode", "Lidarr:ImportTimeoutSeconds",
-            "Deezer:Arl", "Deezer:ArlFallback", "Deezer:Quality",
+            "Deezer:Arl", "Deezer:ArlFallback", "Deezer:Quality", "Deezer:CacheQuality",
             "Deezer:CacheEnabled", "Deezer:CachePath", "Deezer:CacheMaxGiB", "Deezer:CacheRetentionDays",
+            "Deezer:MaxConcurrentDownloads", "Deezer:MaxConcurrentBackgroundDownloads", "Deezer:MaxConcurrentTranscodes",
             "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
             "LastFm:EnableRadio", "LastFm:RadioTrackCount",
             "LastFm:RadioCacheDurationHours", "LastFm:StarterPublishTimeoutSeconds",

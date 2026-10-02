@@ -17,6 +17,7 @@ using Octo.Services.Subsonic;
 using Octo.Services.LastFm;
 using Octo.Services.CoverArt;
 using Octo.Services.Soulseek;
+using Octo.Services.Deezer;
 
 namespace Octo.Controllers;
 
@@ -77,6 +78,8 @@ public partial class SubsonicController : ControllerBase
     private readonly RequestIdentity _requestIdentity;
     private readonly RecentScrobbles _recentScrobbles;
     private readonly Octo.Services.Deezer.DeezerAudioCache? _deezerCache;
+    private readonly DeezerDeliveryService? _deezerDelivery;
+    private readonly IOptionsMonitor<DeezerSettings>? _deezerSettingsOptions;
     private readonly ExternalSaveStore? _externalSaves;
     private readonly ExternalSaveWorker? _saveWorker;
 
@@ -125,9 +128,13 @@ public partial class SubsonicController : ControllerBase
         RecentScrobbles? recentScrobbles = null,
         Octo.Services.Deezer.DeezerAudioCache? deezerCache = null,
         ExternalSaveStore? externalSaves = null,
-        ExternalSaveWorker? saveWorker = null)
+        ExternalSaveWorker? saveWorker = null,
+        DeezerDeliveryService? deezerDelivery = null,
+        IOptionsMonitor<DeezerSettings>? deezerSettings = null)
     {
         _deezerCache = deezerCache;
+        _deezerDelivery = deezerDelivery;
+        _deezerSettingsOptions = deezerSettings;
         _externalSaves = externalSaves;
         _saveWorker = saveWorker;
         _recentScrobbles = recentScrobbles ?? new RecentScrobbles();
@@ -1445,7 +1452,7 @@ public partial class SubsonicController : ControllerBase
     }
 
     /// <summary>Downloads external FLACs without starting permanent acquisition or recording playback.</summary>
-    [HttpGet, HttpPost]
+    [HttpGet, HttpPost, HttpHead]
     [Route("rest/download")]
     [Route("rest/download.view")]
     public async Task<IActionResult> Download()
@@ -1486,13 +1493,11 @@ public partial class SubsonicController : ControllerBase
         {
             return _responseBuilder.CreateError(format, 0, "Could not check download permission with Navidrome");
         }
-        if (_deezerCache?.Enabled != true)
-            return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
-        return await ServeCachedFlacAsync(id, provider!, externalId!, format, savedSong, download: true);
+        return await ServeExternalTrackAsync(id, provider!, externalId!, format, parameters, savedSong, download: true);
     }
 
     /// <summary>Plays a library file, completed cache FLAC, or shared cold download.</summary>
-    [HttpGet, HttpPost]
+    [HttpGet, HttpPost, HttpHead]
     [Route("rest/stream")]
     [Route("rest/stream.view")]
     public async Task<IActionResult> Stream()
@@ -1512,12 +1517,6 @@ public partial class SubsonicController : ControllerBase
         var (isExternal, provider, externalId) = _localLibraryService.ParseSongId(id);
         if (savedSong is { IsLocal: false })
             (isExternal, provider, externalId) = (true, savedSong.ExternalProvider ?? "soulseek", savedSong.ExternalId ?? id);
-        if (savedSong is { IsLocal: true, LocalPath: { } aliasPath } && IsPlayableFlac(aliasPath))
-        {
-            if (await SavedSongAsync(savedSong.Id, parameters, false) is null)
-                return _responseBuilder.CreateError(format, 70, "Song unavailable to this caller");
-            return File(System.IO.File.OpenRead(aliasPath), "audio/flac", enableRangeProcessing: true);
-        }
         if (savedSong is { IsLocal: true })
         {
             parameters["id"] = savedSong.Id;
@@ -1525,71 +1524,31 @@ public partial class SubsonicController : ControllerBase
         }
         if (isExternal && !await HasAcceptedSubsonicCredentialsAsync(parameters))
             return _responseBuilder.CreateError(format, 40, "Wrong username or password");
-        if (isExternal && _deezerCache?.Enabled == true)
-            return await ServeCachedFlacAsync(id, provider!, externalId!, format, savedSong);
-
-        // Verbose entry log: every stream call gets a single line tagged with
-        // the client + id + isExternal + Range + UA + key headers. Diagnostics
-        // for "client X never plays external songs" — if a tap doesn't even
-        // reach this log line, the client is filtering on its side.
-        var clientName = parameters.GetValueOrDefault("c", "?");
-        var rangeIn = Request.Headers.TryGetValue("Range", out var rngVal) ? rngVal.ToString() : "(none)";
-        var uaIn = Request.Headers.TryGetValue("User-Agent", out var uaVal) ? uaVal.ToString() : "(none)";
-        _logger.LogInformation(
-            "STREAM-IN client={Client} id={Id} isExternal={IsExt} range={Range} ua={Ua}",
-            clientName, id, isExternal, rangeIn, uaIn);
-
-        if (!isExternal)
+        if (isExternal)
         {
-            return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
-        }
-
-        // A local file may only be served under an external id when this session DECLARES
-        // that id as lossless. search3 already told the client a suffix, bitrate and size,
-        // and a player picks its decoder from those, so handing back different bytes is
-        // what makes tracks silently refuse to start. With the default settings the
-        // lossless copy is reached as its own library track after the rescan instead.
-        if (_subsonicSettings.WaitForLosslessOnPlay)
-        {
-            var localPath = await _localLibraryService.GetLocalPathForExternalSongAsync(provider!, externalId!);
-            if (localPath != null && System.IO.File.Exists(localPath))
-            {
-                var stream = System.IO.File.OpenRead(localPath);
-                return File(stream, GetContentType(localPath), enableRangeProcessing: true);
-            }
-        }
-
-        try
-        {
-            // Lossless-on-play remains an explicit opt-in. Normal playback never starts
-            // acquisition: owned ids already went to Navidrome above, and missing ids
-            // stream from Deezer below. Hearts are the normal permanent-copy gesture.
+            string? losslessPath = null;
             if (_subsonicSettings.WaitForLosslessOnPlay)
             {
-                var acquisition = _acquisitions.Enqueue(provider!, externalId!, isStar: false,
-                    triggerAlbumDownload: false, forcePermanent: true,
-                    requestedBy: RequesterFor(parameters));
-                return await ServeAcquiredAsync(acquisition, provider!, externalId!, id, format,
-                    allowPreviewFallback: true);
+                var song = savedSong ?? await _metadataService.GetSongAsync(provider!, externalId!);
+                if (song is not null)
+                    losslessPath = await FindAuthorizedImportedSourcePathAsync(song, parameters, "FLAC");
+                if (losslessPath is null && !HttpMethods.IsHead(Request.Method))
+                {
+                    var acquisition = _acquisitions.Enqueue(provider!, externalId!, isStar: false,
+                        triggerAlbumDownload: false, forcePermanent: true,
+                        requestedBy: RequesterFor(parameters));
+                    return await ServeAcquiredAsync(acquisition, provider!, externalId!, id, format,
+                        allowPreviewFallback: true, parameters);
+                }
+                if (song is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+                return await ServeExternalTrackAsync(id, provider!, externalId!, format, parameters, song,
+                    localPath: IsSelectedSourceFlac() ? losslessPath : null);
             }
+            return await ServeExternalTrackAsync(id, provider!, externalId!, format, parameters, savedSong,
+                localPath: losslessPath);
+        }
 
-            var direct = await TryDirectStreamAsync(provider!, externalId!, id);
-            if (direct is not null) return direct;
-
-            _logger.LogWarning("Direct stream not available for {Id}", id);
-            return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
-        }
-        catch (OperationCanceledException)
-        {
-            // The client hung up. Normal, and answering a dead socket would only produce a
-            // spurious error log.
-            return new EmptyResult();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to stream track {Id}", id);
-            return StatusCode(500, new { error = $"Failed to stream: {ex.Message}" });
-        }
+        return await _proxyService.RelayStreamAsync(parameters, HttpContext.RequestAborted);
     }
 
     private async Task<IActionResult> ServeCachedFlacAsync(string id, string provider, string externalId,
@@ -1611,14 +1570,6 @@ public partial class SubsonicController : ControllerBase
             var lease = completed is null ? null : _deezerCache.OpenRead(song);
             if (lease is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
             Response.RegisterForDispose(lease);
-            if (!download) Response.OnCompleted(async () =>
-            {
-                if (!HttpMethods.IsHead(Request.Method) && !Request.Headers.ContainsKey("Range") && Response.StatusCode == 200)
-                {
-                    try { await _deezerCache.MarkPlayedAsync(song); }
-                    catch (Exception ex) { _logger.LogWarning("Could not persist playback timestamp: {Reason}", ex.GetType().Name); }
-                }
-            });
             return File(lease.Stream, "audio/flac", filename, enableRangeProcessing: true);
         }
         catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { return new EmptyResult(); }
@@ -1626,6 +1577,71 @@ public partial class SubsonicController : ControllerBase
         {
             _logger.LogWarning("Deezer FLAC serving failed for {Id}: {Reason}", id, ex.GetType().Name);
             return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+        }
+    }
+
+    private async Task<IActionResult> ServeExternalTrackAsync(string id, string provider, string externalId,
+        string format, Dictionary<string, string> parameters, Song? savedSong, bool download = false,
+        string? localPath = null)
+    {
+        var song = savedSong ?? await _metadataService.GetSongAsync(provider, externalId);
+        if (song is null) return _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+        song.DeezerId ??= _idRegistry.Lookup(id)?.DeezerId;
+
+        if (_deezerDelivery is not null)
+        {
+            if (localPath is null)
+                localPath = await FindAuthorizedImportedSourcePathAsync(song, parameters);
+            return await _deezerDelivery.ServeAsync(HttpContext, song, download, localPath, parameters);
+        }
+
+        // Keep old hosts and isolated controller tests functional while production uses the
+        // shared delivery path for selected quality, progressive bytes and requested encoding.
+        if (localPath is not null && System.IO.File.Exists(localPath))
+            return File(System.IO.File.OpenRead(localPath), GetContentType(localPath), enableRangeProcessing: true);
+        if (_deezerCache?.Enabled == true)
+            return await ServeCachedFlacAsync(id, provider, externalId, format, song, download);
+        var direct = await TryDirectStreamAsync(provider, externalId, id);
+        return direct ?? _responseBuilder.CreateError(format, 70, "No playable source found for this track");
+    }
+
+    private async Task<string?> FindAuthorizedImportedSourcePathAsync(
+        Song source, Dictionary<string, string> parameters, string? requiredQuality = null)
+    {
+        try
+        {
+            var selectedQuality = requiredQuality ?? (_deezerCache?.SourceQuality
+                ?? _deezerSettingsOptions?.CurrentValue.CacheQuality ?? "FLAC");
+            var quality = string.Equals(selectedQuality, "MP3_320", StringComparison.OrdinalIgnoreCase)
+                ? "MP3_320" : "FLAC";
+            var imported = quality == "MP3_320"
+                ? await _localLibraryService.FindImportedSongAsync(source, HttpContext.RequestAborted, quality)
+                : await _localLibraryService.FindImportedSongAsync(source, HttpContext.RequestAborted);
+            var expectedSuffix = quality == "MP3_320" ? "mp3" : "flac";
+            if (imported is not { IsLocal: true, LocalPath: { } path }
+                || !string.Equals(imported.Suffix, expectedSuffix, StringComparison.OrdinalIgnoreCase)
+                || expectedSuffix == "mp3" && imported.BitRate is not >= 320
+                || !System.IO.File.Exists(path)) return null;
+
+            // The candidate lookup uses Navidrome's admin identity. Recheck with caller's
+            // credentials before reading its file, preserving folder and user restrictions.
+            var callerParameters = new Dictionary<string, string>(parameters, StringComparer.OrdinalIgnoreCase)
+            {
+                ["id"] = imported.Id,
+                ["f"] = "json",
+            };
+            var visible = await _proxyService.RelaySafeAsync("rest/getSong", callerParameters);
+            return visible.Success && visible.Body is { Length: > 0 }
+                && IsSuccessfulSubsonicResponse(visible.Body, "json") ? path : null;
+        }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Ignoring unavailable imported FLAC source for {Id}", source.Id);
+            return null;
         }
     }
 
@@ -1637,7 +1653,7 @@ public partial class SubsonicController : ControllerBase
     /// </summary>
     private async Task<IActionResult> ServeAcquiredAsync(
         Task<string> acquisition, string provider, string externalId, string id, string format,
-        bool allowPreviewFallback)
+        bool allowPreviewFallback, Dictionary<string, string> parameters)
     {
         // Above 0, the wait is bounded and the preview stands in while the fetch keeps
         // running in the background; the next play of this id serves the landed file.
@@ -1665,7 +1681,10 @@ public partial class SubsonicController : ControllerBase
                 _logger.LogInformation(
                     "Lossless wait ended early for {Id} ({Reason}); serving the preview while the fetch continues",
                     id, ex is TimeoutException ? $"timeout {timeout}s" : ex.Message);
-                var preview = await TryDirectStreamAsync(provider, externalId, id);
+                var preview = _deezerDelivery is null
+                    ? await TryDirectStreamAsync(provider, externalId, id)
+                    : await ServeExternalTrackAsync(id, provider, externalId, format, parameters,
+                        await _metadataService.GetSongAsync(provider, externalId));
                 if (preview is not null) return preview;
             }
             else
@@ -1681,7 +1700,10 @@ public partial class SubsonicController : ControllerBase
         {
             return _responseBuilder.CreateError(format, 70, "Lossless copy is no longer on disk");
         }
-        return File(System.IO.File.OpenRead(path), GetContentType(path), enableRangeProcessing: true);
+        var song = await _metadataService.GetSongAsync(provider, externalId)
+            ?? new Song { Id = id, ExternalProvider = provider, ExternalId = externalId, IsLocal = false };
+        return await ServeExternalTrackAsync(id, provider, externalId, format, parameters, song,
+            localPath: IsSelectedSourceFlac() ? path : null);
     }
 
     /// <summary>
@@ -3207,60 +3229,6 @@ public partial class SubsonicController : ControllerBase
         catch { return false; }
     }
 
-    // OpenSubsonic transcoding extension. Feishin posts here before /rest/stream
-    // to ask the server "should I transcode this or play it directly?" Navidrome
-    // implements this for local songs. For external (Octo placeholder) songs the
-    // upstream relay returns nothing useful and Feishin gets stuck — won't even
-    // issue the /rest/stream call. So we hijack: external IDs always direct-play,
-    // local IDs pass through to Navidrome's real implementation.
-    [HttpGet, HttpPost]
-    [Route("rest/getTranscodeDecision")]
-    [Route("rest/getTranscodeDecision.view")]
-    public async Task<IActionResult> GetTranscodeDecision()
-    {
-        var parameters = await ExtractAllParameters();
-        var mediaId = parameters.GetValueOrDefault("mediaId", "");
-        var (isExternal, _, _) = _localLibraryService.ParseSongId(mediaId);
-
-        if (isExternal)
-        {
-            _logger.LogDebug("getTranscodeDecision: direct-play for external id {Id}", mediaId);
-            return DirectPlayResponse();
-        }
-
-        try
-        {
-            var result = await _proxyService.RelayAsync("rest/getTranscodeDecision.view", parameters);
-            return File(result.Body, result.ContentType ?? "application/json");
-        }
-        catch (HttpRequestException ex)
-        {
-            // Navidrome may be stock-Subsonic without the OpenSubsonic transcoding
-            // extension. Returning a non-200 also makes Feishin fall back to the
-            // direct stream URL, but a positive direct-play decision is cleaner.
-            _logger.LogDebug("getTranscodeDecision local relay failed ({Msg}); returning direct-play", ex.Message);
-            return DirectPlayResponse();
-        }
-    }
-
-    // canDirectPlay:true is the only field Feishin's controller checks on the
-    // happy path — see Feishin's subsonic-controller.ts: requiresTranscoding =
-    // !td?.canDirectPlay. Returning the minimal envelope lets it advance to
-    // /rest/stream which is where our own controller takes over for externals.
-    private IActionResult DirectPlayResponse() => new JsonResult(new Dictionary<string, object>
-    {
-        ["subsonic-response"] = new Dictionary<string, object>
-        {
-            ["status"] = "ok",
-            ["version"] = "1.16.1",
-            ["transcodeDecision"] = new Dictionary<string, object>
-            {
-                ["canDirectPlay"] = true,
-                ["canTranscode"] = false
-            }
-        }
-    });
-
     // Generic endpoint that proxies any unmatched Subsonic API call to
     // Navidrome unchanged. We exclude paths that are owned by Octo's own
     // admin UI / static assets so that even if the static-files middleware
@@ -4038,12 +4006,9 @@ public partial class SubsonicController : ControllerBase
         var albumId = string.IsNullOrEmpty(s.AlbumId) ? s.Id + "-al" : s.AlbumId!;
         var metadata = _idRegistry.GetDisplayMetadata(s);
         var duration = metadata.Duration ?? 0;
-        // Navidrome-mode clients take their contract from HERE and never from
-        // SubsonicResponseBuilder, so this has to follow the same setting or the native
-        // path keeps promising mp3 while /rest/stream hands back a FLAC. Note the two
-        // serializers are not symmetric: this one emits no contentType at all, and
-        // defaults an unknown duration to 0 where the Subsonic one uses 180.
-        var lossless = s.IsLocal ? s.Suffix == "flac" : _deezerCache?.Enabled == true || _subsonicSettings.WaitForLosslessOnPlay;
+        // Native clients take their decoder contract from this row, so its suffix,
+        // MIME type and bitrate must match the selected source and the REST serializer.
+        var lossless = s.IsLocal ? s.Suffix == "flac" : IsSelectedSourceFlac();
         var suffix = s.IsLocal ? s.Suffix ?? "flac" : lossless ? "flac" : "mp3";
         var bitRate = s.IsLocal ? s.BitRate ?? 950 : lossless ? 950 : 320; // Deezer MP3_320; FLAC estimate
         long size = duration > 0 ? (long)duration * bitRate * 1000L / 8 : 0;
@@ -4064,6 +4029,8 @@ public partial class SubsonicController : ControllerBase
             ["discNumber"] = s.DiscNumber ?? 1,
             ["size"] = size,
             ["suffix"] = suffix,
+            ["contentType"] = s.IsLocal ? SubsonicResponseBuilder.ContentTypeFor(suffix)
+                : lossless ? "audio/flac" : "audio/mpeg",
             ["duration"] = duration,
             ["bitRate"] = bitRate,
             ["playCount"] = 0,
@@ -4076,6 +4043,10 @@ public partial class SubsonicController : ControllerBase
         if (!string.IsNullOrEmpty(s.Genre)) o["genre"] = s.Genre;
         return o;
     }
+
+    private bool IsSelectedSourceFlac() => string.Equals(
+        _deezerCache?.SourceQuality ?? _deezerSettingsOptions?.CurrentValue.CacheQuality ?? "FLAC",
+        "FLAC", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Native-API twin of the search3 album injection. Navidrome filters albums with a

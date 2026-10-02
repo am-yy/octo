@@ -526,7 +526,7 @@ public sealed class SongLengthEndpointTests
     }
 
     [Fact]
-    public async Task NativeSearch_AdvertisesMp3ForExternalSongs()
+    public async Task NativeSearch_AdvertisesDefaultFlacSourceForExternalSongs()
     {
         await using var web = new LengthWebFactory();
         web.SearchTracks.Add(("Daft Punk", "Emotion"));
@@ -537,8 +537,8 @@ public sealed class SongLengthEndpointTests
         using var document = JsonDocument.Parse(body);
         var song = Assert.Single(document.RootElement.EnumerateArray());
 
-        Assert.EndsWith(".mp3", song.GetProperty("path").GetString());
-        Assert.Equal("mp3", song.GetProperty("suffix").GetString());
+        Assert.EndsWith(".flac", song.GetProperty("path").GetString());
+        Assert.Equal("flac", song.GetProperty("suffix").GetString());
     }
 }
 

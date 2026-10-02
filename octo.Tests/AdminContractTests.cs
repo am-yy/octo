@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Octo.Controllers;
 using Octo.Middleware;
 using Octo.Models.Settings;
@@ -142,6 +143,19 @@ public class AdminContractTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(response.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
+    public void DeezerDeliverySettingsValidateQualityAndCapacityBounds()
+    {
+        Assert.Null(AdminController.ValidateDeezerDeliverySettings(JsonNode.Parse(
+            """{"CacheQuality":"FLAC","MaxConcurrentDownloads":4,"MaxConcurrentBackgroundDownloads":2,"MaxConcurrentTranscodes":4}""")!.AsObject()));
+        Assert.Null(AdminController.ValidateDeezerDeliverySettings(JsonNode.Parse(
+            """{"CacheQuality":"MP3_320","MaxConcurrentDownloads":2,"MaxConcurrentBackgroundDownloads":2,"MaxConcurrentTranscodes":1}""")!.AsObject()));
+        Assert.NotNull(AdminController.ValidateDeezerDeliverySettings(JsonNode.Parse(
+            """{"CacheQuality":"MP3_128"}""")!.AsObject()));
+        Assert.NotNull(AdminController.ValidateDeezerDeliverySettings(JsonNode.Parse(
+            """{"MaxConcurrentDownloads":2,"MaxConcurrentBackgroundDownloads":3}""")!.AsObject()));
     }
 
     [Fact]

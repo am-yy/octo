@@ -290,9 +290,12 @@ public class SubsonicProxyService
             var outgoingResponse = httpContext.Response;
 
             var query = await BuildQueryAsync(parameters, bodyForwarded: false);
-            var url = $"{_subsonicSettings.Url}/{endpoint}?{query}";
-            
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            var subsonicUrl = _subsonicSettings.Url;
+            if (string.IsNullOrWhiteSpace(subsonicUrl)) return new StatusCodeResult(503);
+            var url = $"{subsonicUrl.TrimEnd('/')}/{endpoint}?{query}";
+
+            var head = HttpMethods.IsHead(incomingRequest.Method);
+            using var request = new HttpRequestMessage(head ? HttpMethod.Head : HttpMethod.Get, url);
 
             // Forward Range headers for progressive streaming support (iOS clients)
             if (incomingRequest.Headers.TryGetValue("Range", out var range))
@@ -309,13 +312,9 @@ public class SubsonicProxyService
                 request, 
                 HttpCompletionOption.ResponseHeadersRead, 
                 cancellationToken);
-            
-            if (!response.IsSuccessStatusCode)
-            {
-                return new StatusCodeResult((int)response.StatusCode);
-            }
 
-            // Forward HTTP status code (e.g., 206 Partial Content for range requests)
+            // Preserve 206 and 416 metadata too. Probe clients need Content-Range on an
+            // unsatisfiable range, while HEAD must never read a source body.
             outgoingResponse.StatusCode = (int)response.StatusCode;
 
             // Forward streaming-required headers from upstream response
@@ -328,12 +327,18 @@ public class SubsonicProxyService
                 }
             }
 
+            if (head)
+            {
+                outgoingResponse.ContentType = response.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
+                response.Dispose();
+                return new EmptyResult();
+            }
+
             var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             var contentType = response.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
-            
-            return new FileStreamResult(stream, contentType)
+            return new FileStreamResult(new ResponseOwnedStream(stream, response), contentType)
             {
-                EnableRangeProcessing = true
+                EnableRangeProcessing = response.IsSuccessStatusCode
             };
         }
         catch (Exception ex)

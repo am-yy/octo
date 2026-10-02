@@ -43,7 +43,7 @@ The desktop app runs on Windows and Linux, and the Android app on Android 10 and
 
 Octo sits in front of Navidrome and adds what a streaming service gives you: search past your own library, radio, and stations that learn from what you play. Missing songs stream from Deezer. The songs you keep arrive from Soulseek, Deezer, or your own Lidarr as tagged files in your library.
 
-- **Search finds music you don't own**, and Deezer plays it directly or from the optional FLAC cache.
+- **Search finds music you don't own**, and Deezer plays it directly or from the optional source cache.
 - **Radio and stations grow from your listening:** Your Mix, discovery, artist and genre stations, plus optional genre and decade mixes from your own library.
 - **Keep what you like.** Octo downloads it, tags it, files it under the right album and tells Navidrome to rescan. Whole albums work too.
 - **Downloads are checked.** A "lossless" file made from an MP3 is caught, and optional Review and Duplicates playlists show what Octo couldn't confirm and what you have twice.
@@ -268,7 +268,7 @@ The earlier project leaned on SquidWTF (a public TIDAL proxy) for streaming. In 
 
 Octo's earliest commits descended from [V1ck3s/octo-fiesta](https://github.com/V1ck3s/octo-fiesta) (via [bransoned/octo-fiestarr](https://github.com/bransoned/octo-fiestarr)). Octo's Deezer resolver adapts the account-session and audio-decryption flow from octo-fiesta, while preserving Octo's own Subsonic proxy, radio, acquisition, and file-management paths:
 
-- **Playback:** an unowned song uses the optional strict FLAC cache, or streams MP3 directly when caching is disabled. Continuous radio keeps MP3 transport. Both reuse the native Deezer resolver.
+- **Playback:** an unowned song uses a strict FLAC or MP3 320 source, growing cache delivery, and optional client MP3/Opus transcoding. With caching disabled, originals stream directly. Continuous radio keeps MP3 transport. Both reuse the native Deezer resolver.
 - **Acquisition:** heart a song or album to download from Soulseek, Deezer, or Lidarr in the order you choose. Deezer download quality defaults to FLAC and falls back to MP3 when unavailable.
 
 Octo-fiesta supports multiple catalogs and Subsonic-proxy behaviors that Octo does not. Octo adds its Last.fm stations, admin UI, ordered acquisition sources, and multi-peer Soulseek retry around Deezer playback.
@@ -288,7 +288,7 @@ Subsonic clients ──▶ Octo ──▶ Navidrome
 ```
 
 - **`octo`** (port 5274): the proxy + admin UI. Personalized Radio, its state store, recommendation queue, and refresh worker all run in this process. Octo hijacks the Subsonic endpoints that need enrichment and passes everything else through to Navidrome.
-- **Deezer**: direct HTTPS playback and downloads use the configured ARL. Ordinary playback supports a strict FLAC cache; continuous radio uses MP3. Permanent download quality is configurable.
+- **Deezer**: direct HTTPS playback and downloads use the configured ARL. Ordinary playback supports a strict FLAC or MP3 320 cache and client MP3/Opus transcoding; continuous radio uses MP3. Permanent download quality is configurable.
 - **`slskd`** (port 5030): Soulseek client with REST API. Octo authenticates and queues downloads.
 
 Navidrome is **not** part of the stack. Octo just talks to whatever Navidrome you already have.
@@ -508,18 +508,33 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 ### Playback and acquisition
 
-Tracks already in your library play locally through Navidrome. Missing external results play from the optional FLAC cache or stream MP3 directly when caching is disabled; heart the song or album to run the configured permanent acquisition priority.
+Tracks already in your library play through Navidrome. Missing external results play from a growing shared Deezer source or stream directly when caching is disabled; heart the song or album to run the configured permanent acquisition priority.
 
-Enable `Deezer:CacheEnabled` for strict FLAC track playback independent of permanent acquisition.
+Enable `Deezer:CacheEnabled` for durable source copies independent of permanent acquisition.
+`Deezer:CacheQuality` selects strict `FLAC` (default) or `MP3_320`; unavailable quality fails
+without a lossy fallback. Existing copies and track-level pins survive quality changes.
 Set `Deezer:CachePath` to a persistent directory outside the music library (mount it into Docker).
 With the included Compose file, set `DEEZER_CACHE_ENABLED=true`; `DEEZER_CACHE_HOST_PATH`
 defaults to `./octo-cache/deezer`, mounted at `/app/cache/deezer`. Size and retention use
 `DEEZER_CACHE_MAX_GIB` and `DEEZER_CACHE_RETENTION_DAYS`. Restart after enabling the cache.
-Cold playback waits for a shared, validated download; completed files support byte ranges.
+Cold playback receives flushed frames while download continues. Full format, length and ffmpeg
+validation gate atomic publication and successful response completion. Raw delivery supports
+byte ranges and `If-Range`; HEAD probes start neither a fill nor an encoder.
+Clients can request `format=mp3` or `format=opus` with `maxBitRate` and `timeOffset`;
+explicit transcoding defaults to 128 kbps. Missing format with a positive bitrate cap selects
+MP3; `format=raw` delivers the original. Shared encoders consume the growing source through
+a loopback-only, source-bound capability. Cold encoded output has no length or byte-range
+promise; completed output supports ranges. Downloads always use the original selected source
+and require the caller's download permission. Library tracks keep Navidrome transcoding.
 `CacheMaxGiB` defaults to 20 and `CacheRetentionDays` to seven, measured from explicit playback,
 or download completion for never-played files. Prefetch and range probes do not refresh retention.
 Search prefetches the first 12 visible results; playlists, queues and radio starters prefetch eight.
-Two transfers run at once, with playback taking priority. Continuous radio keeps MP3 transport.
+Four source transfers run at once, at most two background fills, and four encoders.
+Playback, seeking and downloads take priority. Excess distinct encoders return HTTP 429 with
+`Retry-After`. Cache quality and concurrency changes require restart. Compose exposes
+`DEEZER_CACHE_QUALITY`, `DEEZER_MAX_CONCURRENT_DOWNLOADS`,
+`DEEZER_MAX_CONCURRENT_BACKGROUND_DOWNLOADS` and `DEEZER_MAX_CONCURRENT_TRANSCODES`.
+Encoded copies remain unpinned and share the unpinned budget. Continuous radio keeps MP3.
 Lidarr preparation retries after restart, while accepted album searches are not repeated.
 If Octo loses the response during command submission, it keeps the claim and checks imports;
 Lidarr offers no idempotency key, so that ambiguous window requires checking Lidarr before a manual retry.
@@ -532,9 +547,9 @@ every minute after restart; ambiguous or lossy matches remain virtual. Old exter
 playback aliases. Navidrome writes use the caller's authorized session and retry on later sessions.
 Direct Navidrome displays only imported entries. Store no caller credentials on disk.
 
-Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. An optional `DEEZER_ARL_FALLBACK` gives Octo another session to try if the primary expires or is rate-limited. Both ARLs are masked when read back. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. Settings changed in the dashboard apply without restarting Octo.
+Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. An optional `DEEZER_ARL_FALLBACK` gives Octo another session to try if the primary expires or is rate-limited. Both ARLs are masked when read back. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. ARL and permanent download quality changes apply without restarting Octo; cache quality and concurrency changes require restart.
 
-Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. The setting also changes what searches advertise for external tracks, so it needs a restart, and clients that cached earlier results should re-search after you change it.
+Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. Restart after changing it. External catalog format follows `CacheQuality` independently of permanent acquisition.
 
 Navidrome scrobbles your library plays itself. Songs Octo plays from outside your library are unknown to Navidrome, so Octo sends them to ListenBrainz (when a token is set) and, once connected, to Last.fm. For Last.fm, paste your API key and its shared secret on the dashboard's Last.fm page (or set `LASTFM_API_KEY` and `LASTFM_API_SECRET`); Save checks both with Last.fm. Then press **Connect** next to a listener and allow access on last.fm while signed in as that person. The dashboard notices by itself when that is done, and for someone else you can copy the link and send it to them. Each listener has their own connection, and library plays are never sent twice. If an app already scrobbles to Last.fm itself, turn that off or outside plays count twice.
 
@@ -571,13 +586,13 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `getInternetRadioStations` | append startup-warmed authenticated Octo stations immediately, with a one-starter same-request fallback, while preserving ordinary internet radio |
 | `createInternetRadioStation`, `updateInternetRadioStation`, `deleteInternetRadioStation` | protect Octo stations while relaying ordinary internet-radio mutations |
 | `/radio/stream/{token}` | consume the ready MP3 pool, optionally frame its existing artist/title as client-requested ICY metadata, and replenish it until disconnect |
-| `stream` | local FLAC first, completed strict FLAC cache with range support when enabled, otherwise a direct Deezer MP3 stream |
+| `stream` / `download` | selected FLAC/MP3 source, progressive playback and original downloads with HEAD/range support; client MP3/Opus transcoding |
 | `getCoverArt` | Deezer → iTunes → Last.fm aggregator with Octo watermark |
 | `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` |
 | `getAlbum` | external album tracklists, and fills in tracks you're missing from an album you own |
 | `star` | try enabled heart sources in priority order and stop after the first successful track/album acquisition |
 | `scrobble` | relay library plays to Navidrome, send outside plays to ListenBrainz and Last.fm instead (Navidrome does not know them), prewarm the next 8, and learn deduplicated completed plays for the authenticated user |
-| `getTranscodeDecision` | OpenSubsonic: return direct-play for Octo IDs |
+| `getTranscodeDecision` / `getTranscodeStream` | OpenSubsonic: negotiate client capabilities and stream authenticated output; library tracks relay to Navidrome |
 | `getLyricsBySongId`, `getLyrics` | lyrics for outside songs and for library songs Navidrome has none for; chosen or hidden lyrics for every client; word cues with `enhanced=true` |
 | `getLyricsCandidates`, `setLyricsChoice` | the `octoLyrics` extension: every lyrics entry for a song, and pinning one, hiding lyrics, or going back to automatic |
 | `getLibraryActions`, `libraryAction` | the `octoLibraryActions` extension: what the caller may do to library files, and removing one song the way the Delete playlist does |

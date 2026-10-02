@@ -83,7 +83,7 @@ public class DeezerDecryptedStreamTests
             .Select(index => (byte)((index * 73 + index / 17 + 19) & 0xff))
             .ToArray();
 
-    private static byte[] EncryptStripes(byte[] plaintext, string trackId)
+    internal static byte[] EncryptStripes(byte[] plaintext, string trackId)
     {
         var key = GetTrackKey(trackId);
         // Fixed vector guards the fixture key derivation independently of stream output.

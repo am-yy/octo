@@ -140,6 +140,7 @@ builder.Services.AddSingleton<ExternalSaveWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalSaveWorker>());
 builder.Services.AddSingleton<DeezerAudioCache>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DeezerAudioCache>());
+builder.Services.AddSingleton<DeezerDeliveryService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.NavidromeIdentityService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SubsonicDiscoveryService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SyncCatalogService>();
@@ -501,6 +502,9 @@ if (Directory.Exists(assetsDir))
 }
 app.UseAuthorization();
 app.UseCors();
+app.MapMethods("/internal/deezer-source/{token}", new[] { "GET", "HEAD" },
+    (HttpContext context, string token, [Microsoft.AspNetCore.Mvc.FromServices] DeezerDeliveryService delivery) =>
+        delivery.ServeSourceAsync(context, token));
 app.MapControllers();
 
 app.Run();

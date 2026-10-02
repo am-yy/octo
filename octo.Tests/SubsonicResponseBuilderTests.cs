@@ -368,9 +368,23 @@ public class SubsonicResponseBuilderTests
     };
 
     [Fact]
-    public void ExternalSong_DeclaresLossy_WhenNotWaitingForLossless()
+    public void ExternalSong_DeclaresDefaultFlacSource_WhenNotWaitingForLossless()
     {
         var row = BuilderWith(false).ConvertSongToJson(ExternalSong());
+
+        Assert.Equal("flac", row["suffix"]);
+        Assert.Equal("audio/flac", row["contentType"]);
+        Assert.False(row.ContainsKey("bitRate"));
+    }
+
+    [Fact]
+    public void ExternalSong_DeclaresSelectedMp3Source()
+    {
+        var builder = new SubsonicResponseBuilder(new Octo.Services.Soulseek.ExternalIdRegistry(),
+            Microsoft.Extensions.Options.Options.Create(new Octo.Models.Settings.SubsonicSettings()),
+            Microsoft.Extensions.Options.Options.Create(new Octo.Models.Settings.DeezerSettings { CacheQuality = "MP3_320" }));
+
+        var row = builder.ConvertSongToJson(ExternalSong());
 
         Assert.Equal("mp3", row["suffix"]);
         Assert.Equal("audio/mpeg", row["contentType"]);

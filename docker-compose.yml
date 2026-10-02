@@ -51,6 +51,10 @@ services:
       Deezer__ArlFallback: ${DEEZER_ARL_FALLBACK:-}
       Deezer__Quality: ${DEEZER_QUALITY:-FLAC}
       Deezer__CacheEnabled: ${DEEZER_CACHE_ENABLED:-false}
+      Deezer__CacheQuality: ${DEEZER_CACHE_QUALITY:-FLAC}
+      Deezer__MaxConcurrentDownloads: ${DEEZER_MAX_CONCURRENT_DOWNLOADS:-4}
+      Deezer__MaxConcurrentBackgroundDownloads: ${DEEZER_MAX_CONCURRENT_BACKGROUND_DOWNLOADS:-2}
+      Deezer__MaxConcurrentTranscodes: ${DEEZER_MAX_CONCURRENT_TRANSCODES:-4}
       Deezer__CachePath: /app/cache/deezer
       Deezer__CacheMaxGiB: ${DEEZER_CACHE_MAX_GIB:-20}
       Deezer__CacheRetentionDays: ${DEEZER_CACHE_RETENTION_DAYS:-7}

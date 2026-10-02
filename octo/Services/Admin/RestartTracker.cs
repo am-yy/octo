@@ -23,6 +23,10 @@ public sealed class RestartTracker
         "Subsonic:WaitForLosslessOnPlay",   // SubsonicResponseBuilder, deliberately
         "Deezer:CacheEnabled",              // SubsonicResponseBuilder
         "Deezer:CachePath",                 // DeezerAudioCache
+        "Deezer:CacheQuality",              // selected source format in cache and delivery
+        "Deezer:MaxConcurrentDownloads",    // DeezerAudioCache transfer gate
+        "Deezer:MaxConcurrentBackgroundDownloads", // DeezerAudioCache transfer gate
+        "Deezer:MaxConcurrentTranscodes",   // DeezerDeliveryService encoder gate
         "Soulseek:BaseUrl",                 // SoulseekClient and SoulseekDownloadService take IOptions
         "Soulseek:Username",
         "Soulseek:Password",

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Options;
@@ -17,9 +18,10 @@ public enum DeezerCachePriority
     Speculative = 0,
     Pinned = 1,
     Playback = 2,
+    Download = 3,
 }
 
-/// <summary>A durable reference keeping one decoded Deezer FLAC in cache.</summary>
+/// <summary>A durable reference keeping the selected Deezer source in cache.</summary>
 public sealed record DeezerCachePin(string TrackId, string ReferenceId,
     string Artist = "", string Title = "", string? Album = null, int? Duration = null);
 
@@ -52,7 +54,7 @@ public sealed class DeezerAudioLease : IDisposable, IAsyncDisposable
 }
 
 /// <summary>
-/// Persistent, strict-FLAC playback cache. Caller cancellation only ends that caller's wait;
+/// Persistent, strict-source playback cache. Caller cancellation only ends that caller's wait;
 /// shared downloads have their own deadline and continue for other callers and future plays.
 /// </summary>
 public sealed class DeezerAudioCache : BackgroundService
@@ -71,10 +73,14 @@ public sealed class DeezerAudioCache : BackgroundService
     private readonly string _root;
     private readonly string _staging;
     private readonly string _statePath;
-    private readonly SingleFlight<string, string?> _downloads = new();
-    private readonly PriorityTransferGate _transfers = new(2);
+    private readonly string _sourceQuality;
+    private readonly PriorityTransferGate _transfers;
+    private readonly PriorityTransferGate _backgroundTransfers;
+    private readonly ConcurrentDictionary<string, SourceJob> _sourceJobs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _activeReaders = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _activeTransfers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _activeEncodedReaders = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _activeEncodedWork = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _queuedPins = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTime> _pinAttempts = new(StringComparer.Ordinal);
     private readonly Channel<string> _pinQueue = Channel.CreateUnbounded<string>(
@@ -100,20 +106,31 @@ public sealed class DeezerAudioCache : BackgroundService
         _staging = Path.Combine(_root, ".staging");
         _statePath = Path.Combine(_root, StateFileName);
         _state = LoadState(_statePath);
+        _sourceQuality = DeezerResolver.NormalizeStrictQuality(options.CurrentValue.CacheQuality);
+        var maxDownloads = Math.Clamp(options.CurrentValue.MaxConcurrentDownloads, 1, 32);
+        _transfers = new PriorityTransferGate(maxDownloads);
+        _backgroundTransfers = new PriorityTransferGate(Math.Clamp(
+            options.CurrentValue.MaxConcurrentBackgroundDownloads, 1, maxDownloads));
     }
 
     public bool IsEnabled => _options.CurrentValue.CacheEnabled;
     public bool Enabled => IsEnabled;
+    public string RootPath => _root;
+    public string SourceQuality => _sourceQuality;
 
     /// <summary>Finds a completed FLAC without changing its retention timestamp.</summary>
     public string? GetReadyPath(Song song)
     {
         if (!IsEnabled || !TryTrackId(song, out var trackId)) return null;
-        var path = TrackPath(trackId);
-        return IsValidFlac(path) ? path : null;
+        var quality = SourceQuality;
+        var path = TrackPath(trackId, quality);
+        return IsValidSource(path, quality) ? path : null;
     }
 
-    /// <summary>Gets a completed copy or waits for one shared strict-FLAC download.</summary>
+    public string? SelectedContentType(Song song) =>
+        TryTrackId(song, out _) ? ContentType(SourceQuality) : null;
+
+    /// <summary>Gets a completed copy or waits for one shared selected-quality download.</summary>
     public async Task<string?> EnsureAsync(Song song,
         DeezerCachePriority priority = DeezerCachePriority.Playback,
         CancellationToken cancellationToken = default)
@@ -121,6 +138,187 @@ public sealed class DeezerAudioCache : BackgroundService
         if (!IsEnabled) return null;
         var trackId = await ResolveTrackIdAsync(song, cancellationToken);
         return trackId is null ? null : await EnsureByTrackIdAsync(trackId, Snapshot(song), priority, cancellationToken);
+    }
+
+    /// <summary>Returns source metadata without starting or waiting for a cache fill.</summary>
+    public async Task<DeezerSourceInfo?> ProbeAsync(Song song, CancellationToken cancellationToken = default)
+    {
+        var trackId = await ResolveTrackIdAsync(song, cancellationToken);
+        if (trackId is null) return null;
+        var quality = SourceQuality;
+        var path = IsEnabled ? TrackPath(trackId, quality) : null;
+        if (path is not null && IsValidSource(path, quality))
+        {
+            var file = new FileInfo(path);
+            var fingerprint = GetSourceFingerprint(trackId, quality);
+            return new DeezerSourceInfo(ContentType(quality), file.Length, fingerprint,
+                file.LastWriteTimeUtc, path);
+        }
+        if (_sourceJobs.TryGetValue(SourceKey(trackId, quality), out var active)
+            && active.Info is { } activeInfo) return activeInfo;
+        return await _resolver.ProbeSourceAsync(trackId, quality, cancellationToken);
+    }
+
+    /// <summary>Open direct raw playback while holding one transfer slot through response disposal.</summary>
+    public async Task<DeezerDirectLease?> OpenDirectAsync(Song song, string? rangeHeader = null,
+        DeezerCachePriority priority = DeezerCachePriority.Playback,
+        CancellationToken cancellationToken = default)
+    {
+        var trackId = await ResolveTrackIdAsync(song, cancellationToken);
+        if (trackId is null) return null;
+        var key = SourceKey(trackId, SourceQuality);
+        var transfer = await AcquireTransferAsync(key, priority, cancellationToken);
+        try
+        {
+            var opened = await _resolver.OpenQualityStreamAsync(trackId, rangeHeader,
+                cancellationToken, SourceQuality);
+            if (opened is null) { transfer.Dispose(); return null; }
+            var (stream, contentType, length, status, range, owner) = opened.Value;
+            return new DeezerDirectLease(new OwnedStream(stream, owner), contentType, length,
+                status, range, transfer.Dispose);
+        }
+        catch
+        {
+            transfer.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Open shared growing source, including temporary staging when durable cache is disabled.</summary>
+    public async Task<DeezerProgressiveLease?> OpenProgressiveAsync(Song song,
+        DeezerCachePriority priority = DeezerCachePriority.Playback,
+        CancellationToken cancellationToken = default)
+    {
+        var trackId = await ResolveTrackIdAsync(song, cancellationToken);
+        if (trackId is null) return null;
+        return await OpenProgressiveByTrackIdAsync(trackId, Snapshot(song), SourceQuality, priority,
+            cancellationToken);
+    }
+
+    private async Task<DeezerProgressiveLease> OpenProgressiveByTrackIdAsync(string trackId,
+        SongSnapshot? metadata, string quality, DeezerCachePriority priority, CancellationToken ct,
+        bool consumer = true)
+    {
+        var key = SourceKey(trackId, quality);
+        if (IsEnabled)
+        {
+            var ready = TrackPath(trackId, quality);
+            if (IsValidSource(ready, quality)) return OpenReadyLease(trackId, quality, ready);
+        }
+
+        while (true)
+        {
+            if (_sourceJobs.TryGetValue(key, out var existing))
+            {
+                existing.Promote(priority);
+                _transfers.Promote(key, priority);
+                _backgroundTransfers.Promote(key, priority);
+                var lease = OpenJobLease(existing, consumer);
+                try
+                {
+                    await existing.WaitForOpenAsync(ct);
+                    return lease;
+                }
+                catch { await lease.DisposeAsync(); throw; }
+            }
+            var temporary = Path.Combine(_staging, $"{trackId}.{quality}.{Guid.NewGuid():N}.tmp");
+            var job = new SourceJob(key, trackId, quality, metadata, priority,
+                new ProgressiveFile(temporary), persist: IsEnabled);
+            if (!_sourceJobs.TryAdd(key, job))
+            {
+                job.Buffer.Dispose();
+                TryDelete(temporary);
+                continue;
+            }
+            var openedLease = OpenJobLease(job, consumer);
+            _ = ProduceSourceAsync(job);
+            try
+            {
+                await job.WaitForOpenAsync(ct);
+                return openedLease;
+            }
+            catch { await openedLease.DisposeAsync(); throw; }
+        }
+    }
+
+    private DeezerProgressiveLease OpenReadyLease(string trackId, string quality, string path)
+    {
+        lock (_readLock)
+        {
+            var file = new FileInfo(path);
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                81920, FileOptions.Asynchronous | FileOptions.RandomAccess);
+            _activeReaders.AddOrUpdate(trackId, 1, static (_, count) => count + 1);
+            var fingerprint = GetSourceFingerprint(trackId, quality, path);
+            return new DeezerProgressiveLease(stream, Task.CompletedTask, ContentType(quality),
+                () => file.Exists ? file.Length : null, () => fingerprint, () => path,
+                (offset, length, ct) => OpenFileRangeAsync(path, offset, length, ct),
+                () => ReleaseReader(trackId));
+        }
+    }
+
+    private DeezerProgressiveLease OpenJobLease(SourceJob job, bool consumer = true)
+    {
+        job.AddLease(consumer);
+        if (consumer)
+        {
+            lock (_readLock) _activeReaders.AddOrUpdate(job.TrackId, 1, static (_, count) => count + 1);
+        }
+        var stream = new SourceJobReadStream(job);
+        return new DeezerProgressiveLease(stream, job.Completion.Task, ContentType(job.Quality),
+            () => job.ExpectedLength,
+            () => job.Info?.Fingerprint ?? StableSourceFingerprint(job.TrackId, job.Quality),
+            () => job.ReadyPath,
+            (offset, length, ct) => OpenJobRangeAsync(job, offset, length, ct),
+            () =>
+            {
+                if (consumer) ReleaseReader(job.TrackId);
+                job.RemoveLease(consumer);
+                if (Volatile.Read(ref job.Readers) == 0 && job.Completion.Task.IsCompleted)
+                    CleanupSourceJob(job);
+            });
+    }
+
+    private async Task<Stream> OpenJobRangeAsync(SourceJob job, long offset, long? length,
+        CancellationToken ct)
+    {
+        if (offset < 0 || length < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (job.ReadyPath is { } ready && job.Buffer.Completion.IsCompletedSuccessfully)
+            return await OpenFileRangeAsync(ready, offset, length, ct);
+        if (offset <= job.Buffer.Length) return job.Buffer.OpenRead(offset, length);
+        await job.SourceReady.Task.WaitAsync(ct);
+        var info = job.Info ?? throw new IOException("Deezer source descriptor unavailable.");
+        if (job.ExpectedLength is long total && offset >= total) return Stream.Null;
+        var transfer = await AcquireTransferAsync(job.Key, DeezerCachePriority.Playback, ct);
+        try
+        {
+            var opened = await _resolver.OpenSourceRangeAsync(info, offset, ct)
+                ?? throw new IOException("Deezer range source unavailable.");
+            var (stream, _, _, status, _, owner) = opened;
+            if (status == 416)
+            {
+                owner.Dispose(); await stream.DisposeAsync(); transfer.Dispose(); return Stream.Null;
+            }
+            var owned = new OwnedStream(stream, new CompositeLease(owner, transfer));
+            return length is long requested ? new LengthLimitedStream(owned, requested) : owned;
+        }
+        catch { transfer.Dispose(); throw; }
+    }
+
+    private static async Task<Stream> OpenFileRangeAsync(string path, long offset, long? length,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var file = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete, 81920,
+            FileOptions.Asynchronous | FileOptions.RandomAccess);
+        if (offset >= file.Length)
+        {
+            await file.DisposeAsync();
+            return Stream.Null;
+        }
+        file.Position = offset;
+        return length is long requested ? new LengthLimitedStream(file, Math.Min(requested, file.Length - offset)) : file;
     }
 
     /// <summary>Warms only the requested prefix. Known Deezer IDs are used directly.</summary>
@@ -151,10 +349,11 @@ public sealed class DeezerAudioCache : BackgroundService
     public DeezerAudioLease? OpenRead(Song song)
     {
         if (!IsEnabled || !TryTrackId(song, out var trackId)) return null;
-        var path = TrackPath(trackId);
+        var quality = SourceQuality;
+        var path = TrackPath(trackId, quality);
         lock (_readLock)
         {
-            if (!IsValidFlac(path)) return null;
+            if (!IsValidSource(path, quality)) return null;
             _activeReaders.AddOrUpdate(trackId, 1, static (_, count) => count + 1);
             try
             {
@@ -168,6 +367,64 @@ public sealed class DeezerAudioCache : BackgroundService
                 throw;
             }
         }
+    }
+
+    public IDisposable ProtectEncoded(string path)
+    {
+        var key = Path.GetFullPath(path);
+        _activeEncodedWork.AddOrUpdate(key, 1, static (_, count) => checked(count + 1));
+        return new ActionLease(() => ReleaseEncodedWork(key));
+    }
+
+    public DeezerEncodedLease? OpenEncodedRead(string path)
+    {
+        var key = Path.GetFullPath(path);
+        lock (_readLock)
+        {
+            if (!File.Exists(key)) return null;
+            _activeEncodedReaders.AddOrUpdate(key, 1, static (_, count) => count + 1);
+            try
+            {
+                var stream = new FileStream(key, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete, 81920,
+                    FileOptions.Asynchronous | FileOptions.RandomAccess);
+                var contentHash = GetEncodedContentHash(key);
+                if (string.IsNullOrWhiteSpace(contentHash))
+                {
+                    contentHash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+                    stream.Position = 0;
+                }
+                return new DeezerEncodedLease(key, stream, "sha256-" + contentHash,
+                    () => ReleaseEncodedReader(key));
+            }
+            catch
+            {
+                ReleaseEncodedReader(key);
+                throw;
+            }
+        }
+    }
+
+    public async Task RegisterEncodedVariantAsync(string key, string trackId, string path,
+        DateTime completedUtc, CancellationToken cancellationToken = default)
+    {
+        // Library-backed encodes have no Deezer ID; they remain evictable unpinned variants.
+        if (string.IsNullOrWhiteSpace(key) || trackId is null
+            || trackId.Length > 0 && !ValidTrackId(trackId))
+            throw new ArgumentException("Encoded cache identity is invalid.");
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("Encoded cache file is missing.", fullPath);
+        await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var contentHash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken))
+            .ToLowerInvariant();
+        await MutateStateAsync(document => document.EncodedVariants[key] = new EncodedVariantEntry
+        {
+            TrackId = trackId,
+            Path = fullPath,
+            CompletedUtc = completedUtc,
+            ContentHash = contentHash,
+        }, cancellationToken);
     }
 
     /// <summary>Stores real playback time. Cache reads, prefetch and range probes do not call this.</summary>
@@ -252,6 +509,7 @@ public sealed class DeezerAudioCache : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        CleanOrphanStagingOnStartup();
         await RetryMissingPinsAsync(stoppingToken);
         await CleanupAsync(stoppingToken);
         using var timer = new PeriodicTimer(MaintenanceInterval);
@@ -283,7 +541,7 @@ public sealed class DeezerAudioCache : BackgroundService
     {
         try
         {
-            if (!HasPin(trackId) || IsValidFlac(TrackPath(trackId))) return;
+            if (!HasPin(trackId) || IsValidSource(TrackPath(trackId, SourceQuality), SourceQuality)) return;
             _pinAttempts[trackId] = DateTime.UtcNow;
             await EnsureByTrackIdAsync(trackId, GetMetadata(trackId), DeezerCachePriority.Pinned, ct);
         }
@@ -306,82 +564,265 @@ public sealed class DeezerAudioCache : BackgroundService
         DeezerCachePriority priority, CancellationToken waiterToken)
     {
         if (!IsEnabled || !ValidTrackId(trackId)) return null;
-        var path = TrackPath(trackId);
-        if (IsValidFlac(path)) return path;
-
-        if (priority > DeezerCachePriority.Speculative) _transfers.Promote(trackId, priority);
-        var shared = _downloads.RunAsync(trackId,
-            token => DownloadAsync(trackId, path, metadata, priority, token), DownloadTimeout);
-        try { return await shared.WaitAsync(waiterToken); }
-        catch (OperationCanceledException) when (waiterToken.IsCancellationRequested) { throw; }
-        catch (Exception ex)
+        var quality = SourceQuality;
+        var path = TrackPath(trackId, quality);
+        if (IsValidSource(path, quality)) return path;
+        var lease = await OpenProgressiveByTrackIdAsync(trackId, metadata, quality, priority, waiterToken,
+            consumer: false);
+        await using (lease)
         {
-            _logger.LogWarning("Deezer FLAC cache unavailable for {TrackId}: {Type}",
-                trackId, ex.GetType().Name);
-            return null;
+            try
+            {
+                await lease.Completion.WaitAsync(waiterToken);
+                return lease.ReadyPath;
+            }
+            catch (OperationCanceledException) when (waiterToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Deezer {Quality} cache unavailable for {TrackId}: {Type}",
+                    quality, trackId, ex.GetType().Name);
+                return null;
+            }
         }
     }
 
-    private async Task<string?> DownloadAsync(string trackId, string path, SongSnapshot? metadata,
-        DeezerCachePriority priority, CancellationToken workToken)
+    private async Task ProduceSourceAsync(SourceJob job)
     {
-        if (IsValidFlac(path)) return path;
-        Directory.CreateDirectory(_staging);
-        try
+        using var timeout = new CancellationTokenSource(DownloadTimeout);
+        while (!timeout.IsCancellationRequested)
         {
-            using var transfer = await _transfers.AcquireAsync(trackId, priority, workToken);
-            if (IsValidFlac(path)) return path;
-            _activeTransfers.TryAdd(trackId, 0);
-            var temporary = Path.Combine(_staging, $"{trackId}.{Guid.NewGuid():N}.tmp");
+            IDisposable? transfer = null;
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            job.SetAttempt(attempt);
+            var ct = attempt.Token;
+            var retry = false;
             try
             {
-                var opened = await _resolver.OpenFlacStreamAsync(trackId, workToken);
-                if (opened is null) return null;
-                var (stream, contentType, expectedLength, _, _, owner) = opened.Value;
-                using (owner)
-                await using (stream)
-                await using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
-                    FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
-                {
-                    if (!string.Equals(contentType, "audio/flac", StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidDataException("Deezer returned non-FLAC media for strict cache fill.");
-                    await stream.CopyToAsync(file, workToken);
-                    await file.FlushAsync(workToken);
-                    if (file.Length == 0 || expectedLength is long expected && file.Length != expected)
-                        throw new InvalidDataException("Deezer FLAC download was incomplete or invalid.");
-                }
-                if (!IsValidFlac(temporary) || !await ValidateWithFfmpegAsync(temporary, workToken))
-                    throw new InvalidDataException("Deezer FLAC download was incomplete or invalid.");
+                Directory.CreateDirectory(_staging);
+                transfer = await AcquireTransferForJobAsync(job, ct);
+                job.TransferActive = true;
+                _activeTransfers.TryAdd(job.Key, 0);
+                var info = await _resolver.ProbeSourceAsync(job.TrackId, job.Quality, ct)
+                    ?? throw new InvalidOperationException("No matching Deezer source quality is available.");
+                job.Info = info;
+                job.ExpectedLength = info.ExpectedLength;
+                job.SourceReady.TrySetResult();
 
-                File.Move(temporary, path, overwrite: true);
-                try
+                var opened = await _resolver.OpenSourceStreamAsync(info, ct)
+                    ?? throw new InvalidOperationException("Deezer source stream unavailable.");
+                var (source, contentType, contentLength, _, _, owner) = opened;
+                if (!string.Equals(contentType, ContentType(job.Quality), StringComparison.OrdinalIgnoreCase))
                 {
-                    await MutateStateAsync(document =>
+                    owner.Dispose();
+                    await source.DisposeAsync();
+                    throw new InvalidDataException("Deezer returned a different source quality.");
+                }
+                job.ExpectedLength = contentLength ?? job.ExpectedLength;
+                job.OpenReady.TrySetResult();
+                using (owner)
+                await using (source)
+                {
+                    var bytes = new byte[64 * 1024];
+                    while (true)
                     {
-                        var entry = GetEntry(document, trackId);
-                        entry.Metadata ??= metadata;
-                        entry.CompletedUtc = DateTime.UtcNow;
-                    }, workToken);
+                        var read = await source.ReadAsync(bytes, ct);
+                        if (read == 0) break;
+                        await job.Buffer.AppendAsync(bytes.AsMemory(0, read), ct);
+                    }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+
+                if (job.Buffer.Length == 0 || job.ExpectedLength is long expected && job.Buffer.Length != expected)
+                    throw new InvalidDataException("Deezer source was incomplete or invalid.");
+                if (!IsValidSource(job.Buffer.Path, job.Quality)
+                    || !await ValidateWithFfmpegAsync(job.Buffer.Path, ct))
+                    throw new InvalidDataException("Deezer source was incomplete or invalid.");
+
+                var completedUtc = DateTime.UtcNow;
+                if (job.Persist)
                 {
-                    _logger.LogWarning("Could not persist Deezer cache completion for {TrackId}: {Type}",
-                        trackId, ex.GetType().Name);
+                    var ready = TrackPath(job.TrackId, job.Quality);
+                    job.Buffer.Publish(ready);
+                    job.ReadyPath = ready;
+                    try
+                    {
+                        await MutateStateAsync(document =>
+                        {
+                            var entry = GetEntry(document, job.TrackId);
+                            entry.Metadata ??= job.Metadata;
+                            entry.Sources[job.Quality] = new SourceEntry
+                            {
+                                CompletedUtc = completedUtc,
+                                Fingerprint = info.Fingerprint,
+                            };
+                            if (job.Quality == "FLAC") entry.CompletedUtc = completedUtc;
+                        }, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning("Could not persist Deezer cache completion for {TrackId}: {Type}",
+                            job.TrackId, ex.GetType().Name);
+                    }
                 }
-                await CleanupAsync(workToken);
-                return path;
+                else job.ReadyPath = job.Buffer.Path;
+
+                job.Buffer.Complete();
+                job.Completion.TrySetResult();
+                await CleanupAsync(ct);
+            }
+            catch (OperationCanceledException) when (job.IsPreempting)
+            {
+                job.ResetForRetry(Path.Combine(_staging,
+                    $"{job.TrackId}.{job.Quality}.{Guid.NewGuid():N}.tmp"));
+                retry = true;
+            }
+            catch (Exception ex)
+            {
+                job.Buffer.Fail(ex);
+                job.Completion.TrySetException(ex);
+                job.OpenReady.TrySetResult();
+                job.SourceReady.TrySetResult();
+                _logger.LogWarning("Deezer {Quality} source fill failed for {TrackId}: {Type}",
+                    job.Quality, job.TrackId, ex.GetType().Name);
             }
             finally
             {
-                _activeTransfers.TryRemove(trackId, out _);
-                try { if (File.Exists(temporary)) File.Delete(temporary); }
-                catch { /* staging cleanup is best effort; startup cleanup removes old partials */ }
+                transfer?.Dispose();
+                job.TransferActive = false;
+                job.ClearAttempt(attempt);
+                _activeTransfers.TryRemove(job.Key, out _);
+                _transfers.Forget(job.Key);
+                _backgroundTransfers.Forget(job.Key);
+            }
+
+            if (retry) continue;
+            if (!job.Completion.Task.IsCompleted)
+            {
+                Exception failure = timeout.IsCancellationRequested
+                    ? new TimeoutException("Deezer source download timed out.")
+                    : new IOException("Deezer source download ended without validation.");
+                job.Buffer.Fail(failure);
+                job.Completion.TrySetException(failure);
+            }
+            job.OpenReady.TrySetResult();
+            job.SourceReady.TrySetResult();
+            if (job.Completion.Task.IsCompleted && Volatile.Read(ref job.Readers) == 0)
+                CleanupSourceJob(job);
+            return;
+        }
+        var timeoutFailure = new TimeoutException("Deezer source download timed out.");
+        job.Completion.TrySetException(timeoutFailure);
+        job.Buffer.Fail(timeoutFailure);
+        job.OpenReady.TrySetResult();
+        job.SourceReady.TrySetResult();
+        if (Volatile.Read(ref job.Readers) == 0) CleanupSourceJob(job);
+    }
+
+    private async ValueTask<IDisposable> AcquireTransferAsync(string key, DeezerCachePriority priority,
+        CancellationToken ct)
+    {
+        if (priority >= DeezerCachePriority.Playback && _transfers.IsSaturated)
+            TryPreemptBackground();
+        IDisposable? background = null;
+        try
+        {
+            if (priority < DeezerCachePriority.Playback)
+            {
+                background = await _backgroundTransfers.AcquireAsync(key, priority, ct);
+                var all = await _transfers.AcquireAsync(key, priority, ct);
+                return new CompositeLease(background, all);
+            }
+            return await _transfers.AcquireAsync(key, priority, ct);
+        }
+        catch
+        {
+            background?.Dispose();
+            throw;
+        }
+    }
+
+    private async ValueTask<IDisposable> AcquireTransferForJobAsync(SourceJob job, CancellationToken ct)
+    {
+        while (true)
+        {
+            if (job.Priority >= DeezerCachePriority.Playback)
+            {
+                if (_transfers.IsSaturated) TryPreemptBackground();
+                return await _transfers.AcquireAsync(job.Key, job.Priority, ct);
+            }
+
+            using var backgroundWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var backgroundTask = _backgroundTransfers.AcquireAsync(job.Key, job.Priority, backgroundWait.Token);
+            if (!await WaitForBackgroundPriorityAsync(backgroundTask, job))
+            {
+                await CancelAndReleaseAsync(backgroundTask, backgroundWait);
+                _backgroundTransfers.Forget(job.Key);
+                continue;
+            }
+
+            var background = await backgroundTask;
+            if (job.Priority >= DeezerCachePriority.Playback)
+            {
+                background.Dispose();
+                _backgroundTransfers.Forget(job.Key);
+                continue;
+            }
+
+            try
+            {
+                using var totalWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var totalTask = _transfers.AcquireAsync(job.Key, job.Priority, totalWait.Token);
+                if (!await WaitForBackgroundPriorityAsync(totalTask, job))
+                {
+                    await CancelAndReleaseAsync(totalTask, totalWait);
+                    background.Dispose();
+                    _backgroundTransfers.Forget(job.Key);
+                    continue;
+                }
+
+                var all = await totalTask;
+                if (job.Priority >= DeezerCachePriority.Playback)
+                {
+                    all.Dispose();
+                    background.Dispose();
+                    _backgroundTransfers.Forget(job.Key);
+                    continue;
+                }
+                return new JobTransferLease(job, background, all);
+            }
+            catch
+            {
+                background.Dispose();
+                throw;
             }
         }
-        finally
+    }
+
+    private static async Task<bool> WaitForBackgroundPriorityAsync(Task<IDisposable> pending, SourceJob job)
+    {
+        while (!pending.IsCompleted)
         {
-            _transfers.Forget(trackId);
+            var changed = job.PriorityChanged;
+            if (job.Priority >= DeezerCachePriority.Playback) return false;
+            await Task.WhenAny(pending, changed);
         }
+        return job.Priority < DeezerCachePriority.Playback;
+    }
+
+    private static async Task CancelAndReleaseAsync(Task<IDisposable> pending,
+        CancellationTokenSource cancellation)
+    {
+        cancellation.Cancel();
+        try { (await pending).Dispose(); }
+        catch (OperationCanceledException) { }
+    }
+
+    private void TryPreemptBackground()
+    {
+        var candidate = _sourceJobs.Values
+            .Where(job => job.TransferActive && job.Consumers == 0
+                && job.Priority < DeezerCachePriority.Playback)
+            .OrderBy(job => job.Priority).FirstOrDefault();
+        candidate?.TryPreempt();
     }
 
     private async Task<string?> ResolveTrackIdAsync(Song song, CancellationToken ct)
@@ -429,10 +870,25 @@ public sealed class DeezerAudioCache : BackgroundService
     private void QueuePinnedFill(string trackId)
     {
         if (!_options.CurrentValue.CacheEnabled || !HasPin(trackId)
-            || IsValidFlac(TrackPath(trackId))
+            || IsValidSource(TrackPath(trackId, SourceQuality), SourceQuality)
             || _pinAttempts.TryGetValue(trackId, out var attempted) && DateTime.UtcNow - attempted < MaintenanceInterval
             || !_queuedPins.TryAdd(trackId, 0)) return;
         if (!_pinQueue.Writer.TryWrite(trackId)) _queuedPins.TryRemove(trackId, out _);
+    }
+
+    private void CleanOrphanStagingOnStartup()
+    {
+        if (!Directory.Exists(_staging)) return;
+        // ponytail: assumes one cache owner per CachePath; multi-process use needs a filesystem lock.
+        foreach (var path in Directory.EnumerateFiles(_staging, "*.tmp", SearchOption.TopDirectoryOnly))
+        {
+            var fullPath = Path.GetFullPath(path);
+            if (_sourceJobs.Values.Any(job => string.Equals(job.Buffer.Path, fullPath, StringComparison.Ordinal))
+                || _activeEncodedWork.ContainsKey(fullPath)) continue;
+            try { File.Delete(path); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 
     internal async Task CleanupAsync(CancellationToken ct)
@@ -444,33 +900,63 @@ public sealed class DeezerAudioCache : BackgroundService
             : settings.CacheMaxGiB >= long.MaxValue / (1024d * 1024 * 1024)
                 ? long.MaxValue : (long)(settings.CacheMaxGiB * 1024d * 1024 * 1024);
         var now = DateTime.UtcNow;
-        var files = Directory.EnumerateFiles(_root, "*.flac", SearchOption.TopDirectoryOnly)
+        var items = Directory.EnumerateFiles(_root, "*.*", SearchOption.TopDirectoryOnly)
+            .Where(path => Path.GetExtension(path) is ".flac" or ".mp3")
             .Select(path => new FileInfo(path)).Where(file => file.Exists)
-            .ToList();
+            .Select(file =>
+            {
+                var id = Path.GetFileNameWithoutExtension(file.Name);
+                var quality = Path.GetExtension(file.Name).Equals(".flac", StringComparison.OrdinalIgnoreCase)
+                    ? "FLAC" : "MP3_320";
+                var entry = GetEntrySnapshot(id);
+                var completed = entry?.Sources.TryGetValue(quality, out var source) == true
+                    ? source.CompletedUtc : quality == "FLAC" ? entry?.CompletedUtc : null;
+                var lastPlayed = entry?.LastPlayedUtc ?? completed ?? file.LastWriteTimeUtc;
+                return new CacheFile(id, file.FullName, file.Length, lastPlayed,
+                    entry is { Pins.Count: > 0 }, quality, null);
+            }).ToList();
 
-        var items = files.Select(file =>
+        lock (_stateLock)
         {
-            var id = Path.GetFileNameWithoutExtension(file.Name);
-            var entry = GetEntrySnapshot(id);
-            var completed = entry?.CompletedUtc ?? file.LastWriteTimeUtc;
-            var lastPlayed = entry?.LastPlayedUtc ?? completed;
-            var pinned = entry is { Pins.Count: > 0 };
-            return new CacheFile(id, file.FullName, file.Length, lastPlayed, pinned);
-        }).ToList();
+            items.AddRange(_state.EncodedVariants.Select(pair => (pair.Key, pair.Value))
+                .Where(pair => File.Exists(pair.Value.Path))
+                .Select(pair =>
+                {
+                    var file = new FileInfo(pair.Value.Path);
+                    var lastPlayed = _state.Tracks.TryGetValue(pair.Value.TrackId, out var track)
+                        ? track.LastPlayedUtc ?? pair.Value.CompletedUtc : pair.Value.CompletedUtc;
+                    return new CacheFile(pair.Value.TrackId, file.FullName, file.Length,
+                        lastPlayed, false, "ENCODED", pair.Key);
+                }));
+        }
 
         var expired = items.Where(item => !item.Pinned && item.LastPlayedUtc < now - retention)
             .OrderBy(item => item.LastPlayedUtc).ToList();
-        foreach (var item in expired) DeleteIfUnleased(item.TrackId, item.Path);
+        var removedEncoded = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in expired)
+            if (DeleteCacheFile(item))
+            {
+                items.Remove(item);
+                if (item.EncodedKey is not null) removedEncoded.Add(item.EncodedKey);
+            }
 
-        items = items.Where(item => File.Exists(item.Path)).ToList();
         var unpinned = items.Where(item => !item.Pinned).OrderBy(item => item.LastPlayedUtc).ToList();
-        var total = items.Where(item => !item.Pinned).Sum(item => item.Length);
+        var total = unpinned.Sum(item => item.Length);
         foreach (var item in unpinned)
         {
             ct.ThrowIfCancellationRequested();
             if (total <= maximumBytes) break;
-            if (DeleteIfUnleased(item.TrackId, item.Path)) total -= item.Length;
+            if (DeleteCacheFile(item))
+            {
+                total -= item.Length;
+                if (item.EncodedKey is not null) removedEncoded.Add(item.EncodedKey);
+            }
         }
+        if (removedEncoded.Count > 0)
+            await MutateStateAsync(document =>
+            {
+                foreach (var key in removedEncoded) document.EncodedVariants.Remove(key);
+            }, ct);
 
         var partials = Directory.Exists(_staging)
             ? Directory.EnumerateFiles(_staging, "*.tmp", SearchOption.TopDirectoryOnly)
@@ -478,6 +964,10 @@ public sealed class DeezerAudioCache : BackgroundService
         foreach (var partial in partials)
         {
             ct.ThrowIfCancellationRequested();
+            var fullPath = Path.GetFullPath(partial);
+            var activeSource = _sourceJobs.Values.Any(job => string.Equals(job.Buffer.Path,
+                fullPath, StringComparison.Ordinal));
+            if (activeSource || _activeEncodedWork.ContainsKey(fullPath)) continue;
             try { if (File.GetLastWriteTimeUtc(partial) < now.AddHours(-1)) File.Delete(partial); }
             catch { /* orphan cleanup is best effort */ }
         }
@@ -485,13 +975,30 @@ public sealed class DeezerAudioCache : BackgroundService
         await Task.CompletedTask;
     }
 
-    private bool DeleteIfUnleased(string trackId, string path)
+    private bool DeleteCacheFile(CacheFile item) => item.EncodedKey is null
+        ? DeleteIfUnleased(item.TrackId, item.Path, item.Quality)
+        : DeleteEncodedIfUnleased(item.Path);
+
+    private bool DeleteIfUnleased(string trackId, string path, string quality)
     {
         lock (_readLock)
         {
-            if (_activeReaders.ContainsKey(trackId) || _activeTransfers.ContainsKey(trackId)
+            if (_activeReaders.ContainsKey(trackId)
+                || _activeTransfers.ContainsKey(SourceKey(trackId, quality))
                 || HasPin(trackId)) return false;
             try { File.Delete(path); return true; }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+    }
+
+    private bool DeleteEncodedIfUnleased(string path)
+    {
+        var key = Path.GetFullPath(path);
+        lock (_readLock)
+        {
+            if (_activeEncodedReaders.ContainsKey(key) || _activeEncodedWork.ContainsKey(key)) return false;
+            try { File.Delete(key); return true; }
             catch (IOException) { return false; }
             catch (UnauthorizedAccessException) { return false; }
         }
@@ -507,7 +1014,91 @@ public sealed class DeezerAudioCache : BackgroundService
         }
     }
 
-    private string TrackPath(string trackId) => Path.Combine(_root, trackId + ".flac");
+    private void ReleaseEncodedReader(string path)
+    {
+        lock (_readLock)
+        {
+            if (!_activeEncodedReaders.TryGetValue(path, out var count)) return;
+            if (count <= 1) _activeEncodedReaders.TryRemove(path, out _);
+            else _activeEncodedReaders[path] = count - 1;
+        }
+    }
+
+    private void ReleaseEncodedWork(string path)
+    {
+        if (!_activeEncodedWork.TryGetValue(path, out var count)) return;
+        if (count <= 1) _activeEncodedWork.TryRemove(path, out _);
+        else _activeEncodedWork[path] = count - 1;
+    }
+
+    private string? GetEncodedContentHash(string path)
+    {
+        lock (_stateLock)
+            return _state.EncodedVariants.Values.FirstOrDefault(entry =>
+                string.Equals(entry.Path, path, StringComparison.Ordinal))?.ContentHash;
+    }
+
+    private string TrackPath(string trackId, string quality) =>
+        Path.Combine(_root, trackId + (quality == "FLAC" ? ".flac" : ".mp3"));
+
+    private static string SourceKey(string trackId, string quality) => $"{trackId}\0{quality}";
+    private static string ContentType(string quality) => DeezerResolver.ContentType(quality);
+
+    private static string StableSourceFingerprint(string trackId, string quality)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes($"{trackId}\0{quality}\0{quality}");
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    private string GetSourceFingerprint(string trackId, string quality, string? path = null)
+    {
+        var entry = GetEntrySnapshot(trackId);
+        if (entry?.Sources.TryGetValue(quality, out var source) == true
+            && !string.IsNullOrWhiteSpace(source.Fingerprint)) return source.Fingerprint;
+        path ??= TrackPath(trackId, quality);
+        try
+        {
+            using var input = File.OpenRead(path);
+            return Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
+        }
+        catch { return StableSourceFingerprint(trackId, quality); }
+    }
+
+    private static bool IsValidSource(string path, string quality) => quality == "FLAC"
+        ? IsValidFlac(path) : IsValidMp3(path);
+
+    private static bool IsValidMp3(string path)
+    {
+        try
+        {
+            using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (input.Length < 128) return false;
+            Span<byte> header = stackalloc byte[10];
+            var count = input.Read(header);
+            return count >= 3 && (header[..3].SequenceEqual("ID3"u8)
+                || header[0] == 0xff && (header[1] & 0xe0) == 0xe0);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    private void CleanupSourceJob(SourceJob job)
+    {
+        if (!job.Completion.Task.IsCompleted || Volatile.Read(ref job.Readers) != 0) return;
+        if (_sourceJobs.TryGetValue(job.Key, out var current) && ReferenceEquals(current, job)
+            && _sourceJobs.TryRemove(job.Key, out _))
+        {
+            var temp = job.Buffer.Path;
+            job.Buffer.Dispose();
+            if (!job.Persist || job.ReadyPath is null) TryDelete(temp);
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch { /* staging cleanup is best effort */ }
+    }
 
     internal static bool IsValidFlac(string path)
     {
@@ -579,14 +1170,14 @@ public sealed class DeezerAudioCache : BackgroundService
             await process.WaitForExitAsync(linked.Token);
             var error = await errorTask;
             if (process.ExitCode == 0) return true;
-            _logger.LogDebug("ffmpeg rejected Deezer FLAC cache file (exit {Code}): {Error}",
-                process.ExitCode, error.Trim());
+            _logger.LogDebug("ffmpeg rejected Deezer {Quality} cache file (exit {Code}): {Error}",
+                _sourceQuality, process.ExitCode, error.Trim());
             return false;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !workToken.IsCancellationRequested)
         {
             Kill(process);
-            _logger.LogWarning("Timed out validating completed Deezer FLAC cache file");
+            _logger.LogWarning("Timed out validating completed Deezer {Quality} cache file", _sourceQuality);
             return false;
         }
         catch (OperationCanceledException)
@@ -596,8 +1187,8 @@ public sealed class DeezerAudioCache : BackgroundService
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
-            _logger.LogWarning("Could not validate Deezer FLAC cache file with ffmpeg: {Type}",
-                ex.GetType().Name);
+            _logger.LogWarning("Could not validate Deezer {Quality} cache file with ffmpeg: {Type}",
+                _sourceQuality, ex.GetType().Name);
             return false;
         }
     }
@@ -681,6 +1272,8 @@ public sealed class DeezerAudioCache : BackgroundService
     private static CacheDocument Clone(CacheDocument document) => new()
     {
         Tracks = document.Tracks.ToDictionary(pair => pair.Key, pair => Clone(pair.Value), StringComparer.Ordinal),
+        EncodedVariants = document.EncodedVariants.ToDictionary(pair => pair.Key,
+            pair => Clone(pair.Value), StringComparer.Ordinal),
     };
 
     private static CacheEntry Clone(CacheEntry entry) => new()
@@ -689,11 +1282,27 @@ public sealed class DeezerAudioCache : BackgroundService
         LastPlayedUtc = entry.LastPlayedUtc,
         Metadata = entry.Metadata,
         Pins = new Dictionary<string, string>(entry.Pins, StringComparer.Ordinal),
+        Sources = entry.Sources.ToDictionary(pair => pair.Key, pair => Clone(pair.Value), StringComparer.Ordinal),
+    };
+
+    private static SourceEntry Clone(SourceEntry entry) => new()
+    {
+        CompletedUtc = entry.CompletedUtc,
+        Fingerprint = entry.Fingerprint,
+    };
+
+    private static EncodedVariantEntry Clone(EncodedVariantEntry entry) => new()
+    {
+        TrackId = entry.TrackId,
+        Path = entry.Path,
+        CompletedUtc = entry.CompletedUtc,
+        ContentHash = entry.ContentHash,
     };
 
     private sealed class CacheDocument
     {
         public Dictionary<string, CacheEntry> Tracks { get; set; } = new(StringComparer.Ordinal);
+        public Dictionary<string, EncodedVariantEntry> EncodedVariants { get; set; } = new(StringComparer.Ordinal);
     }
 
     private sealed class CacheEntry
@@ -702,11 +1311,357 @@ public sealed class DeezerAudioCache : BackgroundService
         public DateTime? LastPlayedUtc { get; set; }
         public SongSnapshot? Metadata { get; set; }
         public Dictionary<string, string> Pins { get; set; } = new(StringComparer.Ordinal);
+        public Dictionary<string, SourceEntry> Sources { get; set; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class SourceEntry
+    {
+        public DateTime? CompletedUtc { get; set; }
+        public string Fingerprint { get; set; } = "";
+    }
+
+    private sealed class EncodedVariantEntry
+    {
+        public string TrackId { get; set; } = "";
+        public string Path { get; set; } = "";
+        public DateTime CompletedUtc { get; set; }
+        public string ContentHash { get; set; } = "";
     }
 
     private sealed record SongSnapshot(string Artist, string Title, string? Album, int? Duration);
     private sealed record CacheFile(string TrackId, string Path, long Length,
-        DateTime LastPlayedUtc, bool Pinned);
+        DateTime LastPlayedUtc, bool Pinned, string Quality, string? EncodedKey);
+
+    private sealed class SourceJob(string key, string trackId, string quality, SongSnapshot? metadata,
+        DeezerCachePriority priority, ProgressiveFile buffer, bool persist)
+    {
+        private readonly object _sync = new();
+        private int _priority = (int)priority;
+        private CancellationTokenSource? _attempt;
+        private bool _preempting;
+        private int _transferActive;
+        private TaskCompletionSource _attemptChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource _priorityChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Action? _releaseBackground;
+        public string Key { get; } = key;
+        public string TrackId { get; } = trackId;
+        public string Quality { get; } = quality;
+        public SongSnapshot? Metadata { get; } = metadata;
+        public ProgressiveFile Buffer { get; private set; } = buffer;
+        public bool Persist { get; } = persist;
+        public int Readers;
+        public int Consumers;
+        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public long? ExpectedLength { get; set; }
+        public DeezerSourceInfo? Info { get; set; }
+        public string? ReadyPath { get; set; }
+        public bool TransferActive
+        {
+            get => Volatile.Read(ref _transferActive) != 0;
+            set => Volatile.Write(ref _transferActive, value ? 1 : 0);
+        }
+        public TaskCompletionSource SourceReady { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource OpenReady { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public DeezerCachePriority Priority => (DeezerCachePriority)Volatile.Read(ref _priority);
+        public bool IsPreempting { get { lock (_sync) return _preempting; } }
+        public Task PriorityChanged { get { lock (_sync) return _priorityChanged.Task; } }
+        public void Promote(DeezerCachePriority priority)
+        {
+            TaskCompletionSource? changed = null;
+            Action? releaseBackground = null;
+            lock (_sync)
+            {
+                var current = (DeezerCachePriority)_priority;
+                if (current >= priority) return;
+                Volatile.Write(ref _priority, (int)priority);
+                changed = _priorityChanged;
+                _priorityChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (priority >= DeezerCachePriority.Playback)
+                    releaseBackground = _releaseBackground;
+            }
+            changed.TrySetResult();
+            releaseBackground?.Invoke();
+        }
+
+        public void AddLease(bool consumer)
+        {
+            lock (_sync)
+            {
+                Interlocked.Increment(ref Readers);
+                if (consumer) Interlocked.Increment(ref Consumers);
+            }
+        }
+
+        public void RemoveLease(bool consumer)
+        {
+            if (consumer) Interlocked.Decrement(ref Consumers);
+            Interlocked.Decrement(ref Readers);
+        }
+
+        public void SetAttempt(CancellationTokenSource attempt)
+        {
+            lock (_sync) { _attempt = attempt; _preempting = false; }
+        }
+
+        public void ClearAttempt(CancellationTokenSource attempt)
+        {
+            lock (_sync) if (ReferenceEquals(_attempt, attempt)) _attempt = null;
+        }
+
+        public void SetBackgroundRelease(Action release)
+        {
+            var releaseNow = false;
+            lock (_sync)
+            {
+                if (Priority >= DeezerCachePriority.Playback) releaseNow = true;
+                else _releaseBackground = release;
+            }
+            if (releaseNow) release();
+        }
+
+        public void ClearBackgroundRelease(Action release)
+        {
+            lock (_sync)
+                if (ReferenceEquals(_releaseBackground, release)) _releaseBackground = null;
+        }
+
+        public bool TryPreempt()
+        {
+            CancellationTokenSource? attempt;
+            lock (_sync)
+            {
+                if (_transferActive == 0 || Volatile.Read(ref Consumers) > 0 || Priority >= DeezerCachePriority.Playback
+                    || _attempt is null || _preempting) return false;
+                _preempting = true;
+                attempt = _attempt;
+            }
+            try { attempt?.Cancel(); }
+            catch (ObjectDisposedException) { }
+            return true;
+        }
+
+        public void ResetForRetry(string path)
+        {
+            var previous = Buffer;
+            previous.Fail(new OperationCanceledException("Unused background transfer preempted."));
+            previous.Dispose();
+            TryDelete(previous.Path);
+            Buffer = new ProgressiveFile(path);
+            Info = null;
+            ExpectedLength = null;
+            ReadyPath = null;
+            lock (_sync)
+            {
+                _preempting = false;
+                _releaseBackground = null;
+                OpenReady.TrySetResult();
+                SourceReady.TrySetResult();
+                var changed = _attemptChanged;
+                _attemptChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                OpenReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                SourceReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                changed.TrySetResult();
+            }
+        }
+
+        public async Task WaitForOpenAsync(CancellationToken ct)
+        {
+            while (true)
+            {
+                Task open;
+                Task changed;
+                lock (_sync) { open = OpenReady.Task; changed = _attemptChanged.Task; }
+                await open.WaitAsync(ct);
+                var retry = false;
+                var failed = false;
+                lock (_sync)
+                {
+                    retry = _preempting || !ReferenceEquals(open, OpenReady.Task);
+                    failed = !retry && Completion.Task.IsCompleted;
+                }
+                if (retry) { await changed.WaitAsync(ct); continue; }
+                if (failed) await Completion.Task.WaitAsync(ct);
+                return;
+            }
+        }
+    }
+
+    private sealed class SourceJobReadStream(SourceJob job) : Stream
+    {
+        private Stream? _reader;
+        private ProgressiveFile? _buffer;
+        private long _position;
+        private bool _disposed;
+        public override bool CanRead => !_disposed;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => job.ExpectedLength ?? job.Buffer.Length;
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(SourceJobReadStream));
+            while (true)
+            {
+                var current = job.Buffer;
+                if (!ReferenceEquals(current, _buffer))
+                {
+                    if (_reader is not null) await _reader.DisposeAsync();
+                    _buffer = current;
+                    _reader = current.OpenRead(_position);
+                }
+                try
+                {
+                    var read = await _reader!.ReadAsync(buffer, cancellationToken);
+                    _position += read;
+                    return read;
+                }
+                catch (IOException) when (!ReferenceEquals(job.Buffer, _buffer)) { }
+            }
+        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (!_disposed && disposing) _reader?.Dispose();
+            _disposed = true;
+            base.Dispose(disposing);
+        }
+        public override async ValueTask DisposeAsync()
+        {
+            if (!_disposed && _reader is not null) await _reader.DisposeAsync();
+            _disposed = true;
+            await base.DisposeAsync();
+        }
+    }
+
+    private sealed class CompositeLease(params IDisposable[] leases) : IDisposable
+    {
+        private IDisposable[]? _leases = leases;
+        public void Dispose()
+        {
+            var current = Interlocked.Exchange(ref _leases, null);
+            if (current is null) return;
+            foreach (var lease in current.Reverse()) lease.Dispose();
+        }
+    }
+
+    private sealed class JobTransferLease : IDisposable
+    {
+        private readonly SourceJob _job;
+        private IDisposable? _background;
+        private IDisposable? _all;
+        private readonly Action _releaseBackground;
+
+        public JobTransferLease(SourceJob job, IDisposable background, IDisposable all)
+        {
+            _job = job;
+            _background = background;
+            _all = all;
+            _releaseBackground = () => Interlocked.Exchange(ref _background, null)?.Dispose();
+            job.SetBackgroundRelease(_releaseBackground);
+        }
+
+        public void Dispose()
+        {
+            _job.ClearBackgroundRelease(_releaseBackground);
+            Interlocked.Exchange(ref _all, null)?.Dispose();
+            _releaseBackground();
+        }
+    }
+
+    private sealed class ActionLease(Action release) : IDisposable
+    {
+        private Action? _release = release;
+        public void Dispose() => Interlocked.Exchange(ref _release, null)?.Invoke();
+    }
+
+    private sealed class OwnedStream(Stream stream, IDisposable owner) : Stream
+    {
+        private Stream? _stream = stream;
+        private IDisposable? _owner = owner;
+        private Stream Inner => _stream ?? throw new ObjectDisposedException(nameof(OwnedStream));
+        public override bool CanRead => _stream?.CanRead ?? false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => Inner.Read(buffer, offset, count);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => Inner.ReadAsync(buffer, cancellationToken);
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                Interlocked.Exchange(ref _stream, null)?.Dispose();
+                Interlocked.Exchange(ref _owner, null)?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+        public override async ValueTask DisposeAsync()
+        {
+            var current = Interlocked.Exchange(ref _stream, null);
+            if (current is not null) await current.DisposeAsync();
+            Interlocked.Exchange(ref _owner, null)?.Dispose();
+            await base.DisposeAsync();
+        }
+    }
+
+    private sealed class LengthLimitedStream : Stream
+    {
+        private readonly Stream _source;
+        private readonly long _limit;
+        private long _remaining;
+
+        public LengthLimitedStream(Stream source, long limit)
+        {
+            _source = source;
+            _limit = limit;
+            _remaining = limit;
+        }
+
+        public override bool CanRead => _source.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _limit;
+        public override long Position { get => _limit - _remaining; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining == 0) return 0;
+            var read = _source.Read(buffer, offset, (int)Math.Min(count, _remaining));
+            _remaining -= read;
+            return read;
+        }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_remaining == 0) return 0;
+            var read = await _source.ReadAsync(buffer[..(int)Math.Min(buffer.Length, _remaining)], cancellationToken);
+            _remaining -= read;
+            return read;
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _source.Dispose();
+            base.Dispose(disposing);
+        }
+        public override async ValueTask DisposeAsync()
+        {
+            await _source.DisposeAsync();
+            await base.DisposeAsync();
+        }
+    }
 
     private sealed class PriorityTransferGate(int limit)
     {
@@ -715,6 +1670,8 @@ public sealed class DeezerAudioCache : BackgroundService
         private readonly Dictionary<string, DeezerCachePriority> _promoted = new(StringComparer.Ordinal);
         private int _active;
         private long _sequence;
+
+        public bool IsSaturated { get { lock (_lock) return _active >= limit; } }
 
         public Task<IDisposable> AcquireAsync(string key, DeezerCachePriority priority, CancellationToken ct)
         {

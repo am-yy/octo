@@ -2988,8 +2988,9 @@ public partial class SubsonicController : ControllerBase
             }
             finally { sem.Release(); }
         }).ToList();
-        var resolvedSongs = (await Task.WhenAll(resolveTasks))
-            .Where(s => s != null).Cast<Song>().ToList();
+        var resolvedSongs = LastFmRadioSpacing.Spread(
+            (await Task.WhenAll(resolveTasks)).Where(s => s != null).Cast<Song>().ToList(),
+            s => s.Artist, artistName);
 
         var localCount = resolvedSongs.Count(s => s.IsLocal);
         var externalCount = resolvedSongs.Count - localCount;

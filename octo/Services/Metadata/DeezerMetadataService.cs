@@ -900,12 +900,39 @@ public class DeezerMetadataService : IDisposable
     private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackAsync(string? artist, string? title,
         CancellationToken ct, bool background = false, IReadOnlySet<string>? excluded = null, bool readableOnly = false)
     {
+        string? artistId = null;
         foreach (var variant in SongIdentity.QueryVariants(title, artist).Take(TrackSearches))
         {
             var r = await GetJsonAsync($"{Base}/search?q={Uri.EscapeDataString(variant.Text)}&limit={MatchCandidates}", ct, background);
             if (r.Transient) return (r, null);
             if (BestMatch(r.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (r, hit);
+            if (artistId is null && !string.IsNullOrWhiteSpace(artist)
+                && r.Doc?.RootElement.TryGetProperty("data", out var data) == true
+                && data.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var candidate in data.EnumerateArray())
+                {
+                    // Preserve spaces: "The Sun Days" and "The Sundays" have the same identity key.
+                    if (candidate.TryGetProperty("artist", out var credit)
+                        && string.Equals(artist.Trim(), Str(credit, "name")?.Trim(), StringComparison.OrdinalIgnoreCase)
+                        && credit.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
+                    {
+                        artistId = id.ToString();
+                        break;
+                    }
+                }
+            }
             r.Dispose();
+        }
+
+        // Search can expose only a demo while the original remains in the artist's top tracks.
+        // ponytail: inspect one known artist's first 50 tracks; broader recovery needs a bounded catalog lookup.
+        if (artistId is not null)
+        {
+            var top = await GetJsonAsync($"{Base}/artist/{artistId}/top?limit=50", ct, background);
+            if (top.Transient) return (top, null);
+            if (BestMatch(top.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (top, hit);
+            top.Dispose();
         }
 
         // Some Deezer tracks are absent from track search but present on their album.

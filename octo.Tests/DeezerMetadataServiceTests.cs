@@ -545,6 +545,84 @@ public class DeezerMetadataServiceTests
         Assert.Contains("Radiohead Reckoner", query);
     }
 
+    private const string SundaysSearch = """
+        {"data":[{"id":3996036921,"title":"You're Not The Only One I Know (Demo)",
+          "artist":{"id":1058,"name":"The Sundays"}}]}
+        """;
+    private const string SundaysTop = """
+        {"data":[
+          {"id":3996036921,"title":"You're Not The Only One I Know (Demo)","readable":true,"artist":{"name":"The Sundays"}},
+          {"id":1,"title":"You're Not The Only One I Know","readable":true,"artist":{"name":"Other Artist"}},
+          {"id":2476993601,"title":"You're Not The Only One I Know","readable":true,"duration":230,
+           "album":{"id":494047931,"title":"Reading, Writing And Arithmetic"},"artist":{"name":"The Sundays"}}]}
+        """;
+
+    [Fact]
+    public async Task EnrichTrackAsync_RecoversOriginalFromArtistTopWhenSearchOnlyFindsDemo()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new()
+        {
+            ["/artist/1058/top"] = SundaysTop,
+            ["/search?"] = SundaysSearch,
+        }, capture: sent);
+
+        var meta = await svc.EnrichTrackAsync("The Sundays", "You're Not the Only One I Know", includeYear: false);
+
+        Assert.Equal("2476993601", meta?.DeezerId);
+        Assert.Equal(230, meta?.Duration);
+        Assert.Equal("Reading, Writing And Arithmetic", meta?.AlbumTitle);
+        Assert.Same(meta, await svc.EnrichTrackAsync("The Sundays", "You're Not the Only One I Know", includeYear: false));
+        var top = Assert.Single(sent, r => r.RequestUri!.AbsolutePath.EndsWith("/top"));
+        Assert.Equal("?limit=50", top.RequestUri!.Query);
+        Assert.InRange(sent.Count, 2, 4);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ArtistTopRecovery_RespectsExcludedAndUnreadableTracks(bool unreadable)
+    {
+        var svc = BuildService(new()
+        {
+            ["/artist/1058/top"] = unreadable ? SundaysTop.Replace("\"readable\":true,\"duration\":230", "\"readable\":false,\"duration\":230") : SundaysTop,
+            ["/search/album"] = """{"data":[]}""",
+            ["/search?"] = SundaysSearch,
+        });
+        var excluded = unreadable ? new HashSet<string>() : new HashSet<string> { "2476993601" };
+
+        Assert.Null(await svc.FindAlternativeTrackIdAsync("The Sundays", "You're Not The Only One I Know", excluded, default));
+    }
+
+    [Fact]
+    public async Task ArtistTopRecovery_DoesNotCollapseSpacesInArtistNames()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new()
+        {
+            ["/artist/1058/top"] = SundaysTop,
+            ["/search/album"] = """{"data":[]}""",
+            ["/search?"] = SundaysSearch.Replace("The Sundays", "The Sun Days"),
+        }, capture: sent);
+
+        Assert.Null(await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false));
+        Assert.DoesNotContain(sent, r => r.RequestUri!.AbsolutePath.EndsWith("/top"));
+    }
+
+    [Fact]
+    public async Task ArtistTopRecovery_DoesNotCacheTransientFailure()
+    {
+        var svc = BuildSequencedService(new()
+        {
+            ("/artist/1058/top", new[] { QuotaEnvelope, SundaysTop }),
+            ("/search?", new[] { SundaysSearch }),
+        }, out var calls);
+
+        Assert.Null(await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false));
+        Assert.Equal("2476993601", (await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false))?.DeezerId);
+        Assert.Equal(2, calls("/artist/1058/top"));
+    }
+
     [Fact]
     public async Task EnrichTrackAsync_FindsTrackInMatchingAlbumWhenTrackSearchMisses()
     {

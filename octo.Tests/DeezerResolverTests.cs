@@ -73,13 +73,64 @@ public sealed class DeezerResolverTests
     }
 
     [Fact]
-    public async Task FallbackTrackUsesItsOwnSessionBoundToken()
+    public async Task RegionalFallbackTrackUsesItsOwnSessionBoundToken()
     {
-        using var fixture = new Fixture { FallbackTrack = true };
+        using var fixture = new Fixture { FallbackTrack = true, RegionalFallback = true };
         var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
         opened.stream.Dispose(); opened.owner.Dispose();
         Assert.Equal(["42", "43"], fixture.PageIds);
         Assert.Contains("token-43", fixture.MediaBodies.Last());
+    }
+
+    [Fact]
+    public async Task FallbackWithDifferentRecordingVersionIsRejected()
+    {
+        using var fixture = new Fixture { FallbackTrack = true, WrongFallbackVersion = true };
+
+        var opened = await fixture.Resolver.OpenStreamAsync("42");
+
+        Assert.Null(opened);
+        Assert.Equal(["42", "43"], fixture.PageIds);
+        Assert.Single(fixture.MediaBodies);
+        Assert.Contains("token-42", fixture.MediaBodies[0]);
+    }
+
+    [Fact]
+    public async Task SngIdSubstitutionRequiresMatchingOriginalIdentity()
+    {
+        using var fixture = new Fixture { InitialSngIdSubstitution = true, WrongSngIdSubstitutionVersion = true };
+
+        var opened = await fixture.Resolver.OpenStreamAsync("42");
+
+        Assert.Null(opened);
+        Assert.Equal(["42"], fixture.PageIds);
+        Assert.Equal(["42"], fixture.OriginalIdentityIds);
+        Assert.Empty(fixture.MediaBodies);
+    }
+
+    [Fact]
+    public async Task SngIdSubstitutionIsAllowedWhenOriginalIdentityMatches()
+    {
+        using var fixture = new Fixture { InitialSngIdSubstitution = true };
+
+        var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+
+        opened.stream.Dispose(); opened.owner.Dispose();
+        Assert.Equal(["42"], fixture.PageIds);
+        Assert.Equal(["42"], fixture.OriginalIdentityIds);
+        Assert.Contains("token-43", fixture.MediaBodies.Single());
+    }
+
+    [Fact]
+    public async Task SngIdSubstitutionFailsClosedWhenOriginalIdentityIsUnavailable()
+    {
+        using var fixture = new Fixture { InitialSngIdSubstitution = true, MissingOriginalTrackDetail = true };
+
+        var opened = await fixture.Resolver.OpenStreamAsync("42");
+
+        Assert.Null(opened);
+        Assert.Equal(["42"], fixture.OriginalIdentityIds);
+        Assert.Empty(fixture.MediaBodies);
     }
 
     [Fact]
@@ -351,6 +402,11 @@ public sealed class DeezerResolverTests
         public bool RejectPrimary { get; init; }
         public bool FallbackTrack { get; init; }
         public bool NoFallbackId { get; init; }
+        public bool RegionalFallback { get; init; }
+        public bool WrongFallbackVersion { get; init; }
+        public bool InitialSngIdSubstitution { get; init; }
+        public bool WrongSngIdSubstitutionVersion { get; init; }
+        public bool MissingOriginalTrackDetail { get; init; }
         public bool RejectFirstUrl { get; init; }
         public bool RejectPrimaryCdn { get; init; }
         public bool RejectFirstGet { get; init; }
@@ -362,6 +418,7 @@ public sealed class DeezerResolverTests
         public List<string> AuthCookies { get; } = [];
         public List<string> PageCookies { get; } = [];
         public List<string> PageIds { get; } = [];
+        public List<string> OriginalIdentityIds { get; } = [];
         public List<string> MediaBodies { get; } = [];
         public List<string> MediaCookies { get; } = [];
         public List<string?> CdnRanges { get; } = [];
@@ -395,7 +452,11 @@ public sealed class DeezerResolverTests
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
                 var id = body.RootElement.GetProperty("SNG_ID").GetString()!;
                 PageIds.Add(id);
-                return Json(new { results = new { DATA = new { SNG_ID = id, TRACK_TOKEN = "token-" + id, SNG_TITLE = "Song", ART_NAME = "Artist", FALLBACK = new { SNG_ID = NoFallbackId ? "0" : "43" } } }, error = Array.Empty<object>() });
+                var wrongVersion = WrongFallbackVersion && id == "43"
+                    || WrongSngIdSubstitutionVersion && id == "42";
+                var title = RegionalFallback && id == "43" ? "Sóng" : "Song";
+                var actualId = InitialSngIdSubstitution && id == "42" ? "43" : id;
+                return Json(new { results = new { DATA = new { SNG_ID = actualId, TRACK_TOKEN = "token-" + actualId, SNG_TITLE = title, VERSION = wrongVersion ? "Live" : null, ART_NAME = "Artist", FALLBACK = new { SNG_ID = NoFallbackId ? "0" : "43" } } }, error = Array.Empty<object>() });
             }
             if (request.RequestUri.Host == "media.deezer.com")
             {
@@ -408,6 +469,12 @@ public sealed class DeezerResolverTests
                 // Deliberately reversed preference order: resolver must choose requested quality.
                 return Json(new { data = new[] { new { media = AvailableFormats
                     .Select(format => new { format, sources = new[] { new { url = $"https://cdn.deezer.test/{format}?account={account}&version={MediaBodies.Count}" } } }).ToArray() } } });
+            }
+            if (request.RequestUri.Host == "api.deezer.com" && request.RequestUri.AbsolutePath == "/track/42")
+            {
+                OriginalIdentityIds.Add("42");
+                if (MissingOriginalTrackDetail) return new HttpResponseMessage(HttpStatusCode.NotFound);
+                return Json(new { id = 42, title = "Song", artist = new { name = "Artist" } });
             }
             if (request.RequestUri.Host == "api.deezer.com")
                 return Json(new { data = new[]

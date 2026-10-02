@@ -272,6 +272,7 @@ public class SongLengthTests
         var fixture = new LengthFixture
         {
             Deezer = { ["Someone Live Set"] = 1500 },
+            DeezerTitles = { ["Someone Live Set"] = "Live Set" },
             DeezerIds = { ["Someone Live Set"] = "987654321" }
         };
         var svc = fixture.Service();
@@ -319,6 +320,7 @@ internal sealed class LengthFixture
 {
     public Dictionary<string, int> Deezer { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> DeezerIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> DeezerTitles { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> DeezerAlbums { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> LastFm { get; } = new(StringComparer.OrdinalIgnoreCase);
     public System.Collections.Concurrent.ConcurrentQueue<string> Requests { get; } = new();
@@ -375,12 +377,14 @@ internal sealed class LengthFixture
             var q = query["q"] ?? "";
             var hit = fixture.Deezer.FirstOrDefault(pair => pair.Key.Equals(q, StringComparison.OrdinalIgnoreCase));
             if (hit.Key is null || uri.AbsolutePath != "/search") return "{\"data\":[]}";
-            var split = hit.Key.LastIndexOf(' ');
+            // Multiword titles must not masquerade as another artist's last-word title.
+            var title = fixture.DeezerTitles.GetValueOrDefault(hit.Key) ?? hit.Key[(hit.Key.LastIndexOf(' ') + 1)..];
+            var split = hit.Key.Length - title.Length - 1;
             var id = fixture.DeezerIds.TryGetValue(hit.Key, out var configuredId) ? configuredId
                 : (700001 + fixture.Deezer.Keys.ToList().IndexOf(hit.Key)).ToString();
             return JsonSerializer.Serialize(new
             {
-                data = new[] { new { id, title = hit.Key[(split + 1)..], duration = hit.Value,
+                data = new[] { new { id, title, duration = hit.Value,
                     artist = new { name = hit.Key[..split] },
                     album = new { title = fixture.DeezerAlbums.GetValueOrDefault(hit.Key) } } }
             });

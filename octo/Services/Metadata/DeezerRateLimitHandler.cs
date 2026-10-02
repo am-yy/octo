@@ -13,8 +13,6 @@ public sealed class DeezerRateLimitHandler : DelegatingHandler
     /// a user is actually waiting on.</summary>
     public static readonly HttpRequestOptionsKey<bool> BackgroundLane = new("octo.deezer.background");
 
-    private const string ApiHost = "api.deezer.com";
-
     private readonly DeezerRateLimiter _limiter;
     private readonly ILogger<DeezerRateLimitHandler> _logger;
 
@@ -26,11 +24,10 @@ public sealed class DeezerRateLimitHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        // Only the API is metered. The cover-art lookup pulls actual image bytes from
-        // cdn-images.dzcdn.net through this same client, and that host has no quota:
-        // metering it would spend an API permit per rendered row and throttle a CDN for
-        // nothing.
-        if (!string.Equals(request.RequestUri?.Host, ApiHost, StringComparison.OrdinalIgnoreCase))
+        // Catalog recovery and its authentication spend the same local allowance.
+        // This is an Octo traffic bound, not a claim about the web endpoint's quota.
+        // Cover images and audio CDN transfers remain outside discovery's budget.
+        if (request.RequestUri?.Host.ToLowerInvariant() is not ("api.deezer.com" or "pipe.deezer.com" or "auth.deezer.com"))
             return await base.SendAsync(request, ct);
 
         var background = request.Options.TryGetValue(BackgroundLane, out var bg) && bg;

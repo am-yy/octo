@@ -468,7 +468,7 @@ public class DeezerMetadataServiceTests
         Assert.Equal("Canciones Prohibidas", second!.AlbumTitle);
     }
 
-    // ---- Plain-query regression (Deezer dropped field-qualified search) ------
+    // ---- Plain-query regression ---------------------------------------------
 
     [Fact]
     public async Task EnrichTrackAsync_KnownIdKeepsRecordingAndAlbumInsteadOfSearchingNames()
@@ -523,11 +523,8 @@ public class DeezerMetadataServiceTests
         Assert.Equal("Release", (await svc.EnrichTrackAsync("Artist", "Track", includeYear: false, trackId: "42"))!.AlbumTitle);
         Assert.Equal(2, calls("/track/42"));
     }
-    // Octo used to ask for artist:"X" track:"Y". Deezer now reads that as free text, so
-    // the literal words "artist" and "track" had to appear in the record and nothing ever
-    // matched: every external song lost its album, year and duration and fell back to a
-    // flat 180s, and every download was written with bare tags. These tests assert the
-    // query SHAPE, because the stub routes on path alone and stayed green throughout.
+    // Field-qualified controls returned no hits where plain queries did. Assert query
+    // shape explicitly: fixtures routing on path alone cannot catch broken parameters.
 
     [Fact]
     public async Task EnrichTrackAsync_SendsPlainTerms_WithoutFieldQualifiers()
@@ -543,84 +540,6 @@ public class DeezerMetadataServiceTests
         Assert.DoesNotContain("artist:", query);
         Assert.DoesNotContain("track:", query);
         Assert.Contains("Radiohead Reckoner", query);
-    }
-
-    private const string SundaysSearch = """
-        {"data":[{"id":3996036921,"title":"You're Not The Only One I Know (Demo)",
-          "artist":{"id":1058,"name":"The Sundays"}}]}
-        """;
-    private const string SundaysTop = """
-        {"data":[
-          {"id":3996036921,"title":"You're Not The Only One I Know (Demo)","readable":true,"artist":{"name":"The Sundays"}},
-          {"id":1,"title":"You're Not The Only One I Know","readable":true,"artist":{"name":"Other Artist"}},
-          {"id":2476993601,"title":"You're Not The Only One I Know","readable":true,"duration":230,
-           "album":{"id":494047931,"title":"Reading, Writing And Arithmetic"},"artist":{"name":"The Sundays"}}]}
-        """;
-
-    [Fact]
-    public async Task EnrichTrackAsync_RecoversOriginalFromArtistTopWhenSearchOnlyFindsDemo()
-    {
-        var sent = new List<HttpRequestMessage>();
-        var svc = BuildService(new()
-        {
-            ["/artist/1058/top"] = SundaysTop,
-            ["/search?"] = SundaysSearch,
-        }, capture: sent);
-
-        var meta = await svc.EnrichTrackAsync("The Sundays", "You're Not the Only One I Know", includeYear: false);
-
-        Assert.Equal("2476993601", meta?.DeezerId);
-        Assert.Equal(230, meta?.Duration);
-        Assert.Equal("Reading, Writing And Arithmetic", meta?.AlbumTitle);
-        Assert.Same(meta, await svc.EnrichTrackAsync("The Sundays", "You're Not the Only One I Know", includeYear: false));
-        var top = Assert.Single(sent, r => r.RequestUri!.AbsolutePath.EndsWith("/top"));
-        Assert.Equal("?limit=50", top.RequestUri!.Query);
-        Assert.InRange(sent.Count, 2, 4);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ArtistTopRecovery_RespectsExcludedAndUnreadableTracks(bool unreadable)
-    {
-        var svc = BuildService(new()
-        {
-            ["/artist/1058/top"] = unreadable ? SundaysTop.Replace("\"readable\":true,\"duration\":230", "\"readable\":false,\"duration\":230") : SundaysTop,
-            ["/search/album"] = """{"data":[]}""",
-            ["/search?"] = SundaysSearch,
-        });
-        var excluded = unreadable ? new HashSet<string>() : new HashSet<string> { "2476993601" };
-
-        Assert.Null(await svc.FindAlternativeTrackIdAsync("The Sundays", "You're Not The Only One I Know", excluded, default));
-    }
-
-    [Fact]
-    public async Task ArtistTopRecovery_DoesNotCollapseSpacesInArtistNames()
-    {
-        var sent = new List<HttpRequestMessage>();
-        var svc = BuildService(new()
-        {
-            ["/artist/1058/top"] = SundaysTop,
-            ["/search/album"] = """{"data":[]}""",
-            ["/search?"] = SundaysSearch.Replace("The Sundays", "The Sun Days"),
-        }, capture: sent);
-
-        Assert.Null(await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false));
-        Assert.DoesNotContain(sent, r => r.RequestUri!.AbsolutePath.EndsWith("/top"));
-    }
-
-    [Fact]
-    public async Task ArtistTopRecovery_DoesNotCacheTransientFailure()
-    {
-        var svc = BuildSequencedService(new()
-        {
-            ("/artist/1058/top", new[] { QuotaEnvelope, SundaysTop }),
-            ("/search?", new[] { SundaysSearch }),
-        }, out var calls);
-
-        Assert.Null(await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false));
-        Assert.Equal("2476993601", (await svc.EnrichTrackAsync("The Sundays", "You're Not The Only One I Know", includeYear: false))?.DeezerId);
-        Assert.Equal(2, calls("/artist/1058/top"));
     }
 
     [Fact]
@@ -646,7 +565,9 @@ public class DeezerMetadataServiceTests
             ["/search?"] = """
                 {"data":[{"id":77,"title":"Fixer Upper","duration":99,
                   "album":{"id":1,"title":"Wrong Album"},"artist":{"name":"Another Artist"}}]}
-                """
+                """,
+            ["auth.deezer.com/login/anonymous"] = """{"jwt":"test-token"}""",
+            ["pipe.deezer.com/api"] = """{"data":{"instantSearch":{"results":{"tracks":{"edges":[],"pageInfo":{"hasNextPage":false}}}}}}""",
         }, capture: sent);
 
         var meta = await svc.EnrichTrackAsync("Yard Act", "Fixer Upper", includeYear: false);
@@ -659,6 +580,51 @@ public class DeezerMetadataServiceTests
         Assert.Contains(sent, request => request.RequestUri!.AbsolutePath.EndsWith("/track/1016092512"));
         var albumSearch = sent.Single(request => request.RequestUri!.AbsolutePath.EndsWith("/search/album"));
         Assert.Equal("Yard Act Fixer Upper", Uri.UnescapeDataString(albumSearch.RequestUri!.Query).TrimStart('?').Split('&')[0][2..]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AlternativeLookupKeepsExclusionsAndReadabilityAfterBasicLookup(bool readable)
+    {
+        using var svc = BuildService(new()
+        {
+            ["/search?"] = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                data = new[]
+                {
+                    new { id = 1, title = "Track", readable = true, artist = new { name = "Artist" } },
+                    new { id = 2, title = "Track", readable, artist = new { name = "Artist" } },
+                },
+            }),
+        });
+
+        Assert.Equal("1", (await svc.EnrichTrackAsync("Artist", "Track", includeYear: false))?.DeezerId);
+        var alternative = await svc.FindAlternativeTrackIdAsync("Artist", "Track", new HashSet<string> { "1" }, default);
+        Assert.Equal(readable ? "2" : null, alternative);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MalformedTrackMetadataCannotPersistThroughSharedLookup(bool full)
+    {
+        using var svc = BuildSequencedService(new()
+        {
+            ("/search?", new[]
+            {
+                """{"data":[{"id":42,"title":"Track","artist":{"name":"Artist"},"album":null}]}""",
+                """{"data":[{"id":42,"title":"Track","artist":{"name":"Artist"},"album":{"title":"Album"}}]}""",
+            }),
+            ("/track/42", new[] { """{"id":42,"title":"Track","artist":{"name":"Artist"}}""" }),
+        }, out var calls);
+
+        async Task<object?> Lookup() => full
+            ? await svc.EnrichTrackFullAsync("Artist", "Track")
+            : await svc.EnrichTrackAsync("Artist", "Track", includeYear: false);
+        Assert.Null(await Lookup());
+        Assert.NotNull(await Lookup());
+        Assert.Equal(2, calls("/search?"));
     }
 
     [Fact]

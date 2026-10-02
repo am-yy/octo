@@ -90,6 +90,8 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                     var session = await AuthenticateAsync(arl, ct);
                     var visited = new HashSet<string>();
                     var candidate = trackId;
+                    var candidateReason = "requested";
+                    (string Artist, string Title)? originalIdentity = null;
                     for (var attempt = 0; attempt < 3 && visited.Add(candidate); attempt++)
                     {
                         using var page = await PostAsync(Gateway("deezer.pageTrack", session.ApiToken),
@@ -99,6 +101,24 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                             || !results.TryGetProperty("DATA", out var data)) break;
                         var actualId = Text(data, "SNG_ID") ?? candidate;
                         if (!ValidTrackId(actualId)) break;
+
+                        var candidateIdentity = PageTrackIdentity(data);
+                        if (candidate == trackId && actualId == trackId)
+                            originalIdentity ??= candidateIdentity;
+                        else if (candidate == trackId && originalIdentity is null)
+                            originalIdentity = await catalog.GetTrackIdentityByIdAsync(trackId, ct);
+
+                        var substituted = candidate != trackId || actualId != candidate;
+                        var identityMatches = !substituted
+                            || RecordingMatches(originalIdentity, candidateIdentity);
+                        var substitutionReason = actualId == candidate
+                            ? candidateReason : $"{candidateReason}+sng-id";
+                        if (substituted)
+                            logger.LogDebug(
+                                "Deezer source identity check requested {RequestedId}, candidate {CandidateId}, actual {ActualId}, reason {Reason}, matched {Matched}",
+                                trackId, candidate, actualId, substitutionReason, identityMatches);
+                        if (!identityMatches) break;
+
                         if (Text(data, "TRACK_TOKEN") is { Length: > 0 } trackToken)
                         {
                             using var media = await PostAsync("https://media.deezer.com/v1/get_url", new
@@ -111,6 +131,9 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                             if (SelectMedia(media.RootElement, actualId, quality, strictFormat) is { } found)
                             {
                                 found = found with { Account = arl };
+                                logger.LogDebug(
+                                    "Deezer source selected requested {RequestedId}, candidate {CandidateId}, actual {ActualId}, reason {Reason}, format {Format}",
+                                    trackId, candidate, actualId, substitutionReason, found.Format);
                                 _mediaCache.Set(key, found, new MemoryCacheEntryOptions
                                     { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) });
                                 return found;
@@ -119,8 +142,13 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                         // Alternative bytes must use the alternative track's Blowfish key.
                         var fallback = data.TryGetProperty("FALLBACK", out var alt) ? Text(alt, "SNG_ID") : null;
                         if (fallback is not null && ValidTrackId(fallback) && !visited.Contains(fallback))
-                        { candidate = fallback; continue; }
+                        {
+                            candidate = fallback;
+                            candidateReason = "provider-fallback";
+                            continue;
+                        }
                         string? id = null;
+                        var reason = "isrc";
                         if (Text(data, "ISRC") is { Length: > 0 } isrc)
                         {
                             using var response = await httpFactory.CreateClient(DeezerRateLimiter.ClientName)
@@ -133,12 +161,14 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                         }
                         if (id is null || !ValidTrackId(id) || visited.Contains(id))
                         {
-                            id = Text(data, "ART_NAME") is { Length: > 0 } artist
-                                && Text(data, "SNG_TITLE") is { Length: > 0 } title
-                                ? await catalog.FindAlternativeTrackIdAsync(artist, title, visited, ct) : null;
+                            reason = "catalog-alternative";
+                            id = candidateIdentity is { } identity
+                                ? await catalog.FindAlternativeTrackIdAsync(identity.Artist, identity.Title, visited, ct)
+                                : null;
                         }
                         if (id is null || !ValidTrackId(id) || visited.Contains(id)) break;
                         candidate = id;
+                        candidateReason = reason;
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -148,6 +178,22 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         }
         finally { _mediaGate.Release(); }
     }
+
+    private static (string Artist, string Title)? PageTrackIdentity(JsonElement data)
+    {
+        var artist = Text(data, "ART_NAME");
+        var title = Text(data, "SNG_TITLE");
+        if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
+        var version = data.TryGetProperty("VERSION", out var value)
+            && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return (artist, string.IsNullOrWhiteSpace(version) ? title : $"{title} {version}");
+    }
+
+    private static bool RecordingMatches((string Artist, string Title)? expected,
+        (string Artist, string Title)? candidate) =>
+        expected is { } original && candidate is { } resolved
+        && DeezerMetadataService.RecordingMatches(original.Artist, original.Title,
+            resolved.Artist, resolved.Title);
 
     internal static string[] Formats(string? quality, string? strictFormat = null)
     {

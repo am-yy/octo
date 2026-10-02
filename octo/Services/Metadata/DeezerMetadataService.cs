@@ -9,14 +9,11 @@ namespace Octo.Services.Metadata;
 
 /// <summary>
 /// Enriches external (Deezer-resolved) tracks with real album/artist metadata
-/// from Deezer's public API. Keyless and no ARL — the ARL that expires on the
-/// music bot is only for Deezer AUDIO; metadata endpoints are open.
-///
-/// Everything here is best-effort and cached: a Deezer outage, throttle, or miss
-/// returns null, and callers fall back to a synthetic entity. Nothing on this
-/// path ever blocks or fails playback.
+/// from Deezer's catalog. Track discovery also supplies IDs for external playback.
+/// REST is preferred; bounded anonymous web search recovers recordings REST omits.
+/// Failed requests remain retryable rather than becoming cached catalog absence.
 /// </summary>
-public class DeezerMetadataService : IDisposable
+public partial class DeezerMetadataService : IDisposable, IHostedService
 {
     public record TrackMeta(string? AlbumTitle, string? AlbumCoverUrl, int? Year, int? Duration,
         string? ArtistName, string? ArtistImageUrl, string? DeezerId = null);
@@ -107,6 +104,8 @@ public class DeezerMetadataService : IDisposable
     private readonly IHttpClientFactory _httpFactory;
     private readonly IOptionsMonitor<MetadataSettings> _metadataOptions;
     private readonly ILogger<DeezerMetadataService> _logger;
+    private readonly CancellationTokenSource _stopping = new();
+    private readonly CancellationTokenRegistration _shutdownRegistration;
 
     // Owned rather than injected from DI: metadata records are tens of bytes and
     // cover-art blobs are hundreds of kilobytes, so a single shared SizeLimit cannot
@@ -127,12 +126,15 @@ public class DeezerMetadataService : IDisposable
         return false;
     }
 
-    private void Put<T>(string key, T value, TimeSpan ttl) =>
+    private void Put<T>(string key, T value, TimeSpan ttl)
+    {
+        if (_stopping.IsCancellationRequested) return;
         _cache.Set(key, new Entry<T>(value), new MemoryCacheEntryOptions
         {
             Size = 1,
             AbsoluteExpirationRelativeToNow = ttl,
         });
+    }
 
     /// <summary>Requests on their way to the catalog, by cache key. The cache only answers
     /// once a request is back, so two callers asking the same thing at once each asked.</summary>
@@ -146,6 +148,7 @@ public class DeezerMetadataService : IDisposable
     /// </summary>
     private async Task<T> SharedAsync<T>(string key, Func<Task<T>> fetch, CancellationToken ct)
     {
+        _stopping.Token.ThrowIfCancellationRequested();
         var flight = _inFlight.GetOrAdd(key, k => new Lazy<Task<object?>>(async () =>
         {
             try { return await fetch(); }
@@ -163,15 +166,33 @@ public class DeezerMetadataService : IDisposable
         _logger.LogInformation("deezer metadata caches cleared");
     }
 
-    public void Dispose() => _cache.Dispose();
+    public void Dispose()
+    {
+        _stopping.Cancel();
+        _shutdownRegistration.Dispose();
+        _cache.Dispose();
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _stopping.Cancel();
+        var workers = _inFlight.Values.Where(task => task.IsValueCreated).Select(task => (Task)task.Value)
+            .Concat(_albumYearTasks.Values.Where(task => task.IsValueCreated).Select(task => (Task)task.Value)).ToArray();
+        try { await Task.WhenAll(workers).WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) { }
+    }
 
     public DeezerMetadataService(IHttpClientFactory httpFactory,
         IOptionsMonitor<MetadataSettings> metadataOptions,
-        ILogger<DeezerMetadataService> logger)
+        ILogger<DeezerMetadataService> logger, IHostApplicationLifetime? lifetime = null)
     {
         _httpFactory = httpFactory;
         _metadataOptions = metadataOptions;
         _logger = logger;
+        if (lifetime is not null)
+            _shutdownRegistration = lifetime.ApplicationStopping.Register(() => _stopping.Cancel());
     }
 
     private HttpClient Client()
@@ -259,10 +280,14 @@ public class DeezerMetadataService : IDisposable
         catch (Exception ex)
         {
             _logger.LogDebug("deezer enrich track '{A} - {T}' failed: {M}", artist, title, ex.Message);
+            return null;
         }
 
         // Usable now, refetched next time, so the year gets another chance.
         if (yearUnresolved) return meta;
+        // Metadata can still be displayed, but a missing ID cannot resolve playback.
+        // Retaining it for 12 hours would prevent a corrected response from supplying one.
+        if (meta is not null && (!long.TryParse(meta.DeezerId, out var resolvedId) || resolvedId <= 0)) return meta;
 
         Put(key, meta, meta is null ? NegativeTtl : PositiveTtl);
         if (meta?.DeezerId is { Length: > 0 } id)
@@ -352,6 +377,7 @@ public class DeezerMetadataService : IDisposable
                                 .ToList();
                     }
                 }
+                else detailUnresolved = true;
 
                 meta = new FullTrackMeta(albTitle, cover, year, Int(t, "duration"), artName,
                     trackNumber, discNumber, isrc, totalTracks, genre, label, releaseDate, contributors,
@@ -361,6 +387,7 @@ public class DeezerMetadataService : IDisposable
         catch (Exception ex)
         {
             _logger.LogDebug("deezer full enrich '{A} - {T}' failed: {M}", artist, title, ex.Message);
+            return null;
         }
 
         // Usable now, refetched next time, so the album detail gets another chance.
@@ -419,7 +446,7 @@ public class DeezerMetadataService : IDisposable
         try
         {
             var q = Uri.EscapeDataString(query);
-            using var r = await GetJsonAsync($"{Base}/search/artist?q={q}&limit={limit}", CancellationToken.None);
+            using var r = await GetJsonAsync($"{Base}/search/artist?q={q}&limit={limit}", _stopping.Token);
             // Caching an empty list on a refusal is what would make external artists
             // silently vanish from search3 for the rest of the process.
             if (r.Transient) return new List<ArtistHit>();
@@ -641,7 +668,7 @@ public class DeezerMetadataService : IDisposable
     {
         try
         {
-            using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", CancellationToken.None);
+        using var r = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(deezerId)}", _stopping.Token);
             if (r.Transient) return null;
             var count = r.Doc is null ? null : Int(r.Doc.RootElement, "nb_tracks");
             Put(key, count, count is null ? NegativeTtl : PositiveTtl);
@@ -827,7 +854,7 @@ public class DeezerMetadataService : IDisposable
     private async Task<(int? Year, bool Transient)> FetchAlbumYearAsync(long albumId)
     {
         int? year = null;
-        using var r = await GetJsonAsync($"{Base}/album/{albumId}", CancellationToken.None);
+        using var r = await GetJsonAsync($"{Base}/album/{albumId}", _stopping.Token);
         _albumYearTasks.TryRemove(albumId, out _);
 
         // This used to be a raw indexer write after a bare catch, so it bypassed the
@@ -847,6 +874,7 @@ public class DeezerMetadataService : IDisposable
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Accept.ParseAdd("application/json");
             if (background) req.Options.Set(DeezerRateLimitHandler.BackgroundLane, true);
 
             using var resp = await Client().SendAsync(req, ct);
@@ -856,6 +884,9 @@ public class DeezerMetadataService : IDisposable
 
             var s = await resp.Content.ReadAsStringAsync(ct);
             doc = JsonDocument.Parse(s);
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Expected a Deezer object.");
 
             // Deezer reports throttling as 200 + {"error":{"code":4,...}}, which parses
             // perfectly and then reads as "the album has no tracks". Catching it here is
@@ -872,6 +903,16 @@ public class DeezerMetadataService : IDisposable
                 return new DeezerResponse { Transient = !definitive };
             }
 
+            // Search/list success must carry an array of objects. A parseable error or
+            // truncated schema is not a definitive empty catalog result.
+            var uri = new Uri(url);
+            if ((uri.AbsolutePath.StartsWith("/search", StringComparison.Ordinal)
+                    || uri.AbsolutePath.EndsWith("/tracks", StringComparison.Ordinal))
+                && (!doc.RootElement.TryGetProperty("data", out var data)
+                    || data.ValueKind != JsonValueKind.Array
+                    || data.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.Object)))
+                throw new JsonException("Expected a Deezer data array of objects.");
+
             var ok = new DeezerResponse { Doc = doc };
             doc = null;
             return ok;
@@ -882,91 +923,6 @@ public class DeezerMetadataService : IDisposable
             _logger.LogDebug("deezer request {Url} failed: {M}", url, ex.Message);
             return new DeezerResponse { Transient = true };
         }
-    }
-
-    /// <summary>How many searches one track lookup may make: the song as asked, then written
-    /// another way, then the title alone. Each is one request against Deezer's shared budget,
-    /// and only a miss makes the next.</summary>
-    private const int TrackSearches = 3;
-
-    /// <summary>
-    /// The first track search hit that is this song, trying the song as asked and then the
-    /// other ways <see cref="SongIdentity.QueryVariants"/> writes it ("suicideboys SUICIDE" for
-    /// "$uicideboy$ $UICIDE", the title without its guests, the primary artist, the title
-    /// alone). Every hit is judged against the song as asked, so a looser query never means a
-    /// looser match. The response holding the hit is the caller's to dispose; a transient one
-    /// comes back with no hit and must not be cached.
-    /// </summary>
-    private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackAsync(string? artist, string? title,
-        CancellationToken ct, bool background = false, IReadOnlySet<string>? excluded = null, bool readableOnly = false)
-    {
-        string? artistId = null;
-        foreach (var variant in SongIdentity.QueryVariants(title, artist).Take(TrackSearches))
-        {
-            var r = await GetJsonAsync($"{Base}/search?q={Uri.EscapeDataString(variant.Text)}&limit={MatchCandidates}", ct, background);
-            if (r.Transient) return (r, null);
-            if (BestMatch(r.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (r, hit);
-            if (artistId is null && !string.IsNullOrWhiteSpace(artist)
-                && r.Doc?.RootElement.TryGetProperty("data", out var data) == true
-                && data.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var candidate in data.EnumerateArray())
-                {
-                    // Preserve spaces: "The Sun Days" and "The Sundays" have the same identity key.
-                    if (candidate.TryGetProperty("artist", out var credit)
-                        && string.Equals(artist.Trim(), Str(credit, "name")?.Trim(), StringComparison.OrdinalIgnoreCase)
-                        && credit.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
-                    {
-                        artistId = id.ToString();
-                        break;
-                    }
-                }
-            }
-            r.Dispose();
-        }
-
-        // Search can expose only a demo while the original remains in the artist's top tracks.
-        // ponytail: inspect one known artist's first 50 tracks; broader recovery needs a bounded catalog lookup.
-        if (artistId is not null)
-        {
-            var top = await GetJsonAsync($"{Base}/artist/{artistId}/top?limit=50", ct, background);
-            if (top.Transient) return (top, null);
-            if (BestMatch(top.Doc, artist, title, excluded, readableOnly) is JsonElement hit) return (top, hit);
-            top.Dispose();
-        }
-
-        // Some Deezer tracks are absent from track search but present on their album.
-        // Keep recovery narrow: only inspect a matching album named for this title,
-        // then require the track itself to pass the same identity checks as search hits.
-        var query = PlainQuery(artist, title);
-        if (query.Length == 0) return (null, null);
-        var albums = await GetJsonAsync($"{Base}/search/album?q={Uri.EscapeDataString(query)}&limit={MatchCandidates}", ct, background);
-        if (albums.Transient) return (albums, null);
-
-        string? albumId = null;
-        using (albums)
-        {
-            if (BestMatch(albums.Doc, artist, title) is JsonElement album
-                && album.TryGetProperty("id", out var id)
-                && id.ValueKind == JsonValueKind.Number)
-                albumId = id.ToString();
-        }
-        if (string.IsNullOrEmpty(albumId)) return (null, null);
-
-        // ponytail: inspect first 300 album tracks; paginate if larger releases need recovery.
-        var tracklist = await GetJsonAsync($"{Base}/album/{Uri.EscapeDataString(albumId)}/tracks?limit=300", ct, background);
-        if (tracklist.Transient) return (tracklist, null);
-
-        string? trackId = null;
-        using (tracklist)
-        {
-            if (BestMatch(tracklist.Doc, artist, title, excluded, readableOnly) is JsonElement track
-                && track.TryGetProperty("id", out var id))
-                trackId = id.ToString();
-        }
-        if (string.IsNullOrEmpty(trackId)) return (null, null);
-
-        return await FindTrackByIdAsync(trackId, ct, background, readableOnly);
     }
 
     private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackByIdAsync(
@@ -982,13 +938,29 @@ public class DeezerMetadataService : IDisposable
 
         var root = detail.Doc.RootElement;
         if (root.ValueKind != JsonValueKind.Object
-            || !root.TryGetProperty("id", out var detailId) || detailId.ToString() != trackId
-            || readableOnly && root.TryGetProperty("readable", out var readable) && readable.ValueKind != JsonValueKind.True)
+            || !root.TryGetProperty("id", out var detailId) || detailId.ToString() != trackId)
+        {
+            detail.Dispose();
+            return (new DeezerResponse { Transient = true }, null);
+        }
+        if (readableOnly && (!root.TryGetProperty("readable", out var readable) || readable.ValueKind != JsonValueKind.True))
         {
             detail.Dispose();
             return (null, null);
         }
         return (detail, root);
+    }
+
+    internal async Task<(string Artist, string Title)?> GetTrackIdentityByIdAsync(string id, CancellationToken ct)
+    {
+        var (response, hit) = await FindTrackByIdAsync(id, ct, background: false);
+        using (response)
+        {
+            if (hit is not JsonElement track || !track.TryGetProperty("artist", out var credit)
+                || Str(credit, "name") is not { Length: > 0 } artist
+                || TrackTitle(track) is not { Length: > 0 } title) return null;
+            return (artist, title);
+        }
     }
 
     /// <summary>Find another readable copy using the same identity guards as normal search.</summary>
@@ -1001,10 +973,9 @@ public class DeezerMetadataService : IDisposable
     }
 
     /// <summary>
-    /// Deezer no longer supports field-qualified search on the track endpoints. A query
-    /// like artist:"X" track:"Y" is now read as free text, so the literal words "artist"
-    /// and "track" have to appear in the record and nothing ever matches. Plain terms are
-    /// the only shape that still works.
+    /// Send ordinary artist/title terms. Field-qualified controls returned no results
+    /// even for recordings found by plain queries; that observation does not establish
+    /// Deezer's internal parsing or filtering mechanism.
     /// </summary>
     private static string PlainQuery(params string?[] parts) =>
         string.Join(' ', parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim()));
@@ -1019,8 +990,7 @@ public class DeezerMetadataService : IDisposable
 
     /// <summary>
     /// Compare the titles by <see cref="SongIdentity"/>: the same key, or the same key once
-    /// stylized characters are read as letters, or one key containing the other, because
-    /// Deezer decorates titles in ways no list names. Never another version: a live take or a
+    /// stylized characters are read as letters. Never another version: a live take or a
     /// remix carries its own album and length, and attaching those to the original is wrong.
     ///
     /// A field either side left empty is <see cref="FieldVerdict.Absent"/>, never a
@@ -1034,19 +1004,41 @@ public class DeezerMetadataService : IDisposable
         var b = SongIdentity.ParseTitle(got);
         if (a.Key.Length == 0 || b.Key.Length == 0) return FieldVerdict.Absent;
         if (!SongIdentity.DistinctVersions(a).SetEquals(SongIdentity.DistinctVersions(b))) return FieldVerdict.Mismatch;
-        return a.Key == b.Key || a.LooseKey == b.LooseKey || a.Key.Contains(b.Key) || b.Key.Contains(a.Key)
+        return a.Key == b.Key || a.LooseKey == b.LooseKey
             ? FieldVerdict.Match : FieldVerdict.Mismatch;
     }
 
-    /// <summary>The artists by <see cref="SongIdentity"/>, and one key containing the other, since
-    /// Deezer credits guests in the artist field.</summary>
+    /// <summary>Compare parsed artist credits, retaining word boundaries when their
+    /// flattened keys collide ("The Sun Days" is not "The Sundays").</summary>
     private static FieldVerdict CompareArtists(string? want, string? got)
     {
         var a = SongIdentity.Key(want);
         var b = SongIdentity.Key(got);
         if (a.Length == 0 || b.Length == 0) return FieldVerdict.Absent;
-        return SongIdentity.ArtistsAgree(want, got) || a.Contains(b) || b.Contains(a)
-            ? FieldVerdict.Match : FieldVerdict.Mismatch;
+        if (!SongIdentity.ArtistsAgree(want, got)) return FieldVerdict.Mismatch;
+        static string Words(string value) => string.Join(' ', SongIdentity.FoldStylized(SongIdentity.Fold(value))
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(SongIdentity.Key));
+        var agrees = SongIdentity.ParseArtists(want).Names.Any(left =>
+            SongIdentity.ParseArtists(got).Names.Any(right =>
+                SongIdentity.LooseKey(left) == SongIdentity.LooseKey(right)
+                    ? Words(left) == Words(right) : SongIdentity.ArtistsAgree(left, right)));
+        return agrees ? FieldVerdict.Match : FieldVerdict.Mismatch;
+    }
+
+    internal static bool RecordingMatches(string? expectedArtist, string? expectedTitle,
+        string? candidateArtist, string? candidateTitle) =>
+        (!string.IsNullOrWhiteSpace(expectedArtist)
+            ? CompareArtists(expectedArtist, candidateArtist) == FieldVerdict.Match : true)
+        && (!string.IsNullOrWhiteSpace(expectedTitle)
+            ? CompareTitles(expectedTitle, candidateTitle) == FieldVerdict.Match : true)
+        && (!string.IsNullOrWhiteSpace(expectedArtist) || !string.IsNullOrWhiteSpace(expectedTitle));
+
+    private static string? TrackTitle(JsonElement track)
+    {
+        var title = Str(track, "title");
+        var version = Str(track, "title_version");
+        return string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(version)
+            ? title : $"{title} {version}";
     }
 
     /// <summary>
@@ -1057,16 +1049,24 @@ public class DeezerMetadataService : IDisposable
     /// nothing at all from matching everything.
     /// </summary>
     private static JsonElement? BestMatch(JsonDocument? doc, string? artist, string? title,
-        IReadOnlySet<string>? excluded = null, bool readableOnly = false)
+        IReadOnlySet<string>? excluded = null, bool readableOnly = false, bool recording = false)
     {
         if (doc is null) return null;
-        if (!doc.RootElement.TryGetProperty("data", out var data)
+        if (doc.RootElement.ValueKind != JsonValueKind.Object
+            || !doc.RootElement.TryGetProperty("data", out var data)
             || data.ValueKind != JsonValueKind.Array) return null;
 
         foreach (var hit in data.EnumerateArray())
         {
+            if (hit.ValueKind != JsonValueKind.Object) continue;
             if (excluded is not null && hit.TryGetProperty("id", out var id) && excluded.Contains(id.ToString())) continue;
             if (readableOnly && (!hit.TryGetProperty("readable", out var readable) || readable.ValueKind != JsonValueKind.True)) continue;
+            var candidateArtist = hit.TryGetProperty("artist", out var credit) ? Str(credit, "name") : null;
+            if (recording)
+            {
+                if (RecordingMatches(artist, title, candidateArtist, TrackTitle(hit))) return hit;
+                continue;
+            }
             var titleVerdict = CompareTitles(title, Str(hit, "title"));
             var artistVerdict = CompareArtists(artist,
                 hit.TryGetProperty("artist", out var a) ? Str(a, "name") : null);
@@ -1086,9 +1086,11 @@ public class DeezerMetadataService : IDisposable
     }
 
     private static string? Str(JsonElement e, string name)
-        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v)
+            && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private static int? Int(JsonElement e, string name)
-        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : (int?)null;
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v)
+            && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var value) ? value : (int?)null;
 
 }

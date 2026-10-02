@@ -97,14 +97,15 @@ public class DeezerRateLimitHandlerTests
     /// over-budget caller waits rather than being refused outright.
     /// </summary>
     [Fact]
-    public async Task ApiRequestsConsumeTheInteractiveBudget()
+    public async Task RestWebAndAuthenticationShareTheInteractiveBudget()
     {
         var (client, inner, limiter) = Build();
         using var _l = limiter;
 
         for (var i = 0; i < 30; i++)
         {
-            var resp = await client.GetAsync($"https://api.deezer.com/album/{i}");
+            var host = new[] { "api.deezer.com", "pipe.deezer.com", "auth.deezer.com" }[i % 3];
+            var resp = await client.GetAsync($"https://{host}/request/{i}");
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }
         Assert.Equal(30, inner.Calls);

@@ -510,6 +510,14 @@ The selected Lidarr root and Octo's effective Navidrome library root must expose
 
 Tracks already in your library play through Navidrome. Missing external results play from a growing shared Deezer source; disabled caching uses temporary staging with the same validation; heart the song or album to run the configured permanent acquisition priority.
 
+Recording lookup keeps Deezer REST first, checking up to three pages of 100 candidates across
+query variants and pagination. A miss tries Deezer's anonymous web recording search, then the
+existing matching-single/album recovery. Discovery has a shared seven-request, five-second
+budget including queue time, authentication and selected-track verification. Truncated or failed
+answers remain retryable; only a complete no-match is negative-cached. Concurrent equivalent
+lookups share work, while canceling one waiter leaves other callers running. Artist, title and
+recording-version evidence must agree; provider media substitutions receive the same checks.
+
 Enable `Deezer:CacheEnabled` for durable source copies independent of permanent acquisition.
 `Deezer:CacheQuality` selects strict `FLAC` (default) or `MP3_320`; unavailable quality fails
 without a lossy fallback. Existing copies and track-level pins survive quality changes.

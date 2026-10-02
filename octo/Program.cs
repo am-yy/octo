@@ -151,6 +151,7 @@ builder.Services.AddSingleton<Octo.Services.Admin.DirectoryBrowser>();
 // that grants filesystem visibility.
 builder.Services.AddSingleton<Octo.Services.Admin.BrowseSessionStore>();
 builder.Services.AddSingleton<Octo.Services.Metadata.DeezerMetadataService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Metadata.DeezerMetadataService>());
 
 // Deezer's public API allows roughly 50 requests per 5 seconds and signals refusal with
 // HTTP 200 plus an error body, so going over budget corrupts metadata rather than merely

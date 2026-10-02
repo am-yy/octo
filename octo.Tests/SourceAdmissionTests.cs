@@ -15,7 +15,7 @@ public sealed class SourceAdmissionTests
         var requests = Enumerable.Range(10000, 200).Select(id => fixture.Cache.OpenProgressiveAsync(Track(id))).ToArray();
         try
         {
-            await fixture.TwoCdnStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => Volatile.Read(ref fixture.ActiveCdnRequests) == 4);
             foreach (var request in requests.Skip(16))
                 await Assert.ThrowsAsync<DeezerAdmissionException>(() => request);
             Assert.Equal(16, Directory.GetFiles(Path.Combine(fixture.Root, ".staging")).Length);

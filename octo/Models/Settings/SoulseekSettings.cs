@@ -6,6 +6,9 @@ namespace Octo.Models.Settings;
 /// </summary>
 public class SoulseekSettings
 {
+    /// <summary>Whether Octo may connect to slskd for health checks, searches, and downloads.</summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>
     /// Base URL of the slskd REST API (e.g. http://slskd:5030 when running in the same docker network).
     /// </summary>

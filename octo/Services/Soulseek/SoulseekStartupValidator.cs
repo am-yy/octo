@@ -31,6 +31,12 @@ public class SoulseekStartupValidator : BaseStartupValidator
     {
         Console.WriteLine();
 
+        if (!_settings.Enabled)
+        {
+            WriteStatus("Soulseek (slskd)", "DISABLED", ConsoleColor.DarkGray);
+            return ValidationResult.Success("Soulseek disabled");
+        }
+
         if (string.IsNullOrWhiteSpace(_settings.BaseUrl))
         {
             WriteStatus("Soulseek (slskd)", "NOT CONFIGURED", ConsoleColor.Red);

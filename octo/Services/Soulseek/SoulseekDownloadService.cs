@@ -63,7 +63,7 @@ public class SoulseekDownloadService : BaseDownloadService
     }
 
     public override async Task<bool> IsAvailableAsync() =>
-        await _deezerPlayback.IsAvailableAsync() || await _slskd.IsReachableAsync();
+        await _deezerPlayback.IsAvailableAsync() || _settings.Enabled && await _slskd.IsReachableAsync();
 
     // Octo's album ids ARE the external id, so this is identity plus a kind check that
     // stops a song or artist id being walked as if it were an album.
@@ -162,7 +162,13 @@ public class SoulseekDownloadService : BaseDownloadService
                 $"Cannot download '{song.Artist} - {song.Title}': missing artist/title in external id");
 
         // DownloadOnStar decides WHETHER to download; DownloadSource decides FROM WHERE.
-        switch (sourceOverride ?? SubsonicSettings.DownloadSource)
+        // With Soulseek disabled, a combined source choice means Deezer directly, without
+        // a failed slskd search or a misleading fallback warning.
+        var source = sourceOverride ?? SubsonicSettings.DownloadSource;
+        if (!_settings.Enabled && source == DownloadSource.SoulseekThenDeezer)
+            return await DownloadViaDeezerAsync(routing, song, suppressNotify, announceStart: true, cancellationToken);
+
+        switch (source)
         {
             case DownloadSource.Deezer:
                 return await DownloadViaDeezerAsync(routing, song, suppressNotify, announceStart: true, cancellationToken);
@@ -192,6 +198,8 @@ public class SoulseekDownloadService : BaseDownloadService
                     return await DownloadViaDeezerAsync(routing, song, suppressNotify, announceStart: false, cancellationToken);
                 }
             default:
+                if (!_settings.Enabled)
+                    throw new InvalidOperationException("Soulseek is disabled; this download source is unavailable.");
                 return await DownloadViaSoulseekAsync(routing, song, suppressNotify, cancellationToken);
         }
     }

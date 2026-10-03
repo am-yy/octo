@@ -640,6 +640,7 @@ public class AdminController : ControllerBase
             },
             ["Soulseek"] = new Dictionary<string, object>
             {
+                ["Enabled"] = soulseek.Enabled,
                 ["BaseUrl"] = soulseek.BaseUrl ?? "",
                 ["Username"] = soulseek.Username ?? "",
                 ["Password"] = soulseek.Password ?? "",
@@ -1435,6 +1436,7 @@ public class AdminController : ControllerBase
             },
             ["Soulseek"] = new JsonObject
             {
+                ["Enabled"] = soulseek.Enabled,
                 ["BaseUrl"] = soulseek.BaseUrl ?? "",
                 ["Username"] = soulseek.Username ?? "",
                 ["Password"] = soulseek.Password ?? "",
@@ -1733,7 +1735,7 @@ public class AdminController : ControllerBase
             "Subsonic:PlaylistsDirectory",
             "Library:DownloadPath",
             "Server:PublicUrl",
-            "Soulseek:BaseUrl", "Soulseek:Username", "Soulseek:Password",
+            "Soulseek:Enabled", "Soulseek:BaseUrl", "Soulseek:Username", "Soulseek:Password",
             "Soulseek:SearchWaitSeconds", "Soulseek:MinFileSizeBytes",
             "Soulseek:PreferredExtension", "Soulseek:DownloadTimeoutSeconds",
             "Soulseek:RejectedPeerTtlDays", "Soulseek:FingerprintSeconds",
@@ -1912,6 +1914,9 @@ public class AdminController : ControllerBase
 
     private async Task<ServiceProbe> ProbeSlskdAsync(CancellationToken ct)
     {
+        if (!_slskd.Enabled)
+            return new ServiceProbe(true, "Disabled. Optional.", Configured: false);
+
         try
         {
             var ok = await _slskd.IsReachableAsync(ct);

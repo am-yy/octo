@@ -33,6 +33,8 @@ public class SoulseekClient
 
     private string Base => (_settings.BaseUrl ?? "http://localhost:5030").TrimEnd('/');
 
+    public bool Enabled => _settings.Enabled;
+
     /// <summary>
     /// Fetches and caches a JWT from slskd's session endpoint. Re-authenticates
     /// when the cached token is missing or near expiry.
@@ -109,6 +111,8 @@ public class SoulseekClient
 
     public async Task<bool> IsReachableAsync(CancellationToken ct = default)
     {
+        if (!Enabled) return false;
+
         try
         {
             using var resp = await SendAsync(HttpMethod.Get, $"{Base}/api/v0/application", null, ct);
@@ -128,6 +132,8 @@ public class SoulseekClient
     /// </summary>
     public async Task<string?> GetDownloadsDirectoryAsync(CancellationToken ct = default)
     {
+        if (!Enabled) return null;
+
         try
         {
             using var resp = await SendAsync(HttpMethod.Get, $"{Base}/api/v0/options", null, ct);
@@ -190,6 +196,8 @@ public class SoulseekClient
         CancellationToken ct = default,
         Func<IReadOnlyList<SoulseekFileHit>, bool>? enough = null)
     {
+        if (!Enabled) return [];
+
         var searchId = Guid.NewGuid().ToString();
         var payload = JsonSerializer.Serialize(new
         {
@@ -397,6 +405,8 @@ public class SoulseekClient
     /// </summary>
     public async Task EnqueueDownloadAsync(string username, string filename, long size, CancellationToken ct = default)
     {
+        if (!Enabled) throw new InvalidOperationException("Soulseek is disabled.");
+
         var body = JsonSerializer.Serialize(new[]
         {
             new { filename, size }
@@ -429,6 +439,8 @@ public class SoulseekClient
     public async Task<SoulseekTransferState> WaitForCompletionAsync(string username, string filename, int? perAttemptTimeoutSeconds = null, CancellationToken ct = default,
         Action<SoulseekTransferProgress>? onProgress = null)
     {
+        if (!Enabled) return SoulseekTransferState.Errored;
+
         var timeoutSec = perAttemptTimeoutSeconds ?? _settings.DownloadTimeoutSeconds;
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSec);
         var seenAtLeastOnce = false;

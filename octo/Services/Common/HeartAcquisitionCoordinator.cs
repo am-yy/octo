@@ -12,6 +12,7 @@ public sealed class HeartAcquisitionCoordinator
     private readonly IDownloadService _directDownloads;
     private readonly ILidarrHeartAcquisitionService _lidarr;
     private readonly ILogger<HeartAcquisitionCoordinator> _logger;
+    private readonly bool _soulseekEnabled;
 
     /// <summary>Optional so a coordinator built without one still routes. The chain is the only
     /// place that knows which failure is the last, so it is the one that reports it.</summary>
@@ -20,7 +21,7 @@ public sealed class HeartAcquisitionCoordinator
     public HeartAcquisitionCoordinator(IOptionsMonitor<SubsonicSettings> settings,
         TrackAcquisitionQueue directQueue, IDownloadService directDownloads,
         ILidarrHeartAcquisitionService lidarr, ILogger<HeartAcquisitionCoordinator> logger,
-        AcquisitionTracker? tracker = null)
+        AcquisitionTracker? tracker = null, IOptions<SoulseekSettings>? soulseekSettings = null)
     {
         _settings = settings;
         _directQueue = directQueue;
@@ -28,6 +29,7 @@ public sealed class HeartAcquisitionCoordinator
         _lidarr = lidarr;
         _logger = logger;
         _tracker = tracker;
+        _soulseekEnabled = soulseekSettings?.Value.Enabled ?? true;
     }
 
     public void QueueTrack(string provider, string externalId, string? requestedBy = null)
@@ -132,6 +134,7 @@ public sealed class HeartAcquisitionCoordinator
     private List<HeartDownloadSource> EnabledSteps(bool albumHeart) =>
         _settings.CurrentValue.EffectiveHeartDownloadSources()
             .Where(step => albumHeart ? step.AlbumEnabled == true : step.SongEnabled == true)
+            .Where(step => _soulseekEnabled || step.Source != HeartDownloadSource.Soulseek)
             .Select(step => step.Source)
             .ToList();
 

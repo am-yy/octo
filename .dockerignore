@@ -1,4 +1,10 @@
 .git
+.env
+**/bin
+**/obj
+octo.Tests
 slskd-state
 octo-config
+octo-cache
 downloads
+octo/downloads

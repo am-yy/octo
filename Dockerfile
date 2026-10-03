@@ -2,16 +2,14 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-COPY octo.sln .
 COPY octo/octo.csproj octo/
-COPY octo.Tests/octo.Tests.csproj octo.Tests/
 
-RUN dotnet restore
+# Tests run separately in CI; the image only needs the application dependencies.
+RUN dotnet restore octo/octo.csproj
 
 COPY octo/ octo/
-COPY octo.Tests/ octo.Tests/
 
-RUN dotnet publish octo/octo.csproj -c Release -o /app/publish
+RUN dotnet publish octo/octo.csproj -c Release --no-restore -p:UseAppHost=false -o /app/publish
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:9.0

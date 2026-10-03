@@ -80,7 +80,12 @@ public sealed class DeezerAudioCacheTests
 
         Assert.Null(path);
         Assert.False(File.Exists(Path.Combine(fixture.Root, "42.flac")));
-        Assert.Empty(Directory.GetFiles(Path.Combine(fixture.Root, ".staging"), "*.tmp"));
+        // Failure wakes callers before the producer's finally block removes staging.
+        var staging = Path.Combine(fixture.Root, ".staging");
+        var cleanup = Stopwatch.StartNew();
+        while (Directory.GetFiles(staging, "*.tmp").Length != 0 && cleanup.Elapsed < TimeSpan.FromSeconds(5))
+            await Task.Delay(10);
+        Assert.Empty(Directory.GetFiles(staging, "*.tmp"));
     }
 
     [Fact]

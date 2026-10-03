@@ -302,8 +302,10 @@ public sealed class DeezerTrackSearchTests
         Assert.Contains(rig.Calls, call => call.Host == "pipe.deezer.com");
     }
 
-    [Fact]
-    public async Task ConflictingHydratedTrackIsRejected()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConflictingHydratedTrackIsRejected(bool partial)
     {
         var validDetail = false;
         using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
@@ -313,7 +315,9 @@ public sealed class DeezerTrackSearchTests
                 ? TrackDetail(42, "Track", "Artist")
                 : TrackDetail(42, "Track (Live)", "Artist")),
             "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
-            "pipe.deezer.com" => Json(WebResponse([WebTrack("42", "Track", "Artist")])),
+            "pipe.deezer.com" => Json(partial
+                ? WebResponse([WebTrack("42", "Track", "Artist"), null], [MissingWebTrackError(1)])
+                : WebResponse([WebTrack("42", "Track", "Artist")])),
             _ => Json(EmptyRest),
         }));
 
@@ -344,6 +348,78 @@ public sealed class DeezerTrackSearchTests
         returnCandidate = true;
         Assert.Equal("42", (await rig.Service.EnrichTrackAsync("Artist", "Track", includeYear: false))?.DeezerId);
         Assert.True(rig.Calls.Count > beforeRetry);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task UnavailableWebResultDoesNotDiscardVerifiedRecording(int missingIndex)
+    {
+        var nodes = new List<object?>
+        {
+            WebTrack("15615274", "The Modern Age", "The Strokes"),
+            WebTrack("2155576947", "The Modern Age (Rough Trade Version)", "The Strokes"),
+        };
+        nodes.Insert(missingIndex, null);
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "api.deezer.com" when request.Path == "/track/15615274" => Json(TrackDetail(15615274, "The Modern Age", "The Strokes")),
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(WebResponse(nodes, [MissingWebTrackError(missingIndex)])),
+            _ => Json(EmptyRest),
+        }));
+
+        var result = await rig.Service.EnrichTrackAsync("The Strokes", "The Modern Age", includeYear: false);
+
+        Assert.Equal("15615274", result?.DeezerId);
+        Assert.Single(rig.Calls, call => call.Path == "/track/15615274");
+        Assert.DoesNotContain(rig.Calls, call => call.Path == "/track/2155576947");
+        Assert.InRange(rig.Calls.Count, 1, 7);
+    }
+
+    [Fact]
+    public async Task UnavailableWebResultDoesNotNegativeCacheNoMatch()
+    {
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(WebResponse([WebTrack("42", "Track (Demo)", "Artist"), null], [MissingWebTrackError(1)])),
+            _ => Json(EmptyRest),
+        }));
+
+        Assert.Null(await rig.Service.EnrichTrackAsync("Artist", "Track", includeYear: false));
+        Assert.Null(await rig.Service.EnrichTrackAsync("Artist", "Track", includeYear: false));
+
+        Assert.Equal(2, rig.Calls.Count(call => call.Host == "pipe.deezer.com"));
+        Assert.DoesNotContain(rig.Calls, call => call.Path == "/track/42");
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("root")]
+    [InlineData("out-of-bounds")]
+    [InlineData("non-null")]
+    [InlineData("mixed")]
+    public async Task UnsafePartialWebErrorsStillRejectHealthyLookingData(string failure)
+    {
+        object[] errors = failure switch
+        {
+            "unknown" => [new { type = "UnexpectedError" }],
+            "root" => [new { type = "TrackMediaNotFoundException", path = new[] { "instantSearch" } }],
+            "out-of-bounds" => [MissingWebTrackError(2)],
+            "non-null" => [MissingWebTrackError(0)],
+            "mixed" => [MissingWebTrackError(1), new { type = "UnexpectedError" }],
+            _ => throw new ArgumentOutOfRangeException(nameof(failure)),
+        };
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(WebResponse([WebTrack("42", "Track", "Artist"), null], errors)),
+            _ => Json(EmptyRest),
+        }));
+
+        Assert.Null(await rig.Service.EnrichTrackAsync("Artist", "Track", includeYear: false));
+        Assert.DoesNotContain(rig.Calls, call => call.Path == "/track/42");
     }
 
     [Fact]
@@ -598,8 +674,15 @@ public sealed class DeezerTrackSearchTests
         album = new { id = "album-7", displayTitle = "Reading, Writing And Arithmetic" },
     };
 
-    private static string WebResponse(IEnumerable<object> nodes) => JsonSerializer.Serialize(new
+    private static object MissingWebTrackError(int index) => new
     {
+        type = "TrackMediaNotFoundException",
+        path = new object[] { "instantSearch", "results", "tracks", "edges", index, "node" },
+    };
+
+    private static string WebResponse(IEnumerable<object?> nodes, object[]? errors = null) => JsonSerializer.Serialize(new
+    {
+        errors,
         data = new
         {
             instantSearch = new

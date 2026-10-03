@@ -288,6 +288,7 @@ public partial class DeezerMetadataService
             using var response = await DiscoveryRequestAsync("https://pipe.deezer.com/api", budget, body, token);
             if (response.Transient || response.Doc is null) return (new DeezerResponse { Transient = true }, null);
             var root = response.Doc.RootElement;
+            var unavailableNodes = new HashSet<int>();
             if (root.TryGetProperty("errors", out var errors) && errors.ValueKind != JsonValueKind.Null)
             {
                 if (errors.ValueKind != JsonValueKind.Array) return (new DeezerResponse { Transient = true }, null);
@@ -296,17 +297,36 @@ public partial class DeezerMetadataService
                     var expired = errors.EnumerateArray().Any(error => Str(error, "type") == "JwtTokenExpiredError"
                         || error.TryGetProperty("extensions", out var extension) && Str(extension, "type") == "JwtTokenExpiredError");
                     if (expired && attempt == 0 && (token = await SearchTokenAsync(budget, token)) is not null) continue;
-                    return (new DeezerResponse { Transient = true }, null);
+                    // An unavailable result can coexist with usable recordings. Accept only
+                    // this known node-local error; all broader failures remain retryable.
+                    foreach (var error in errors.EnumerateArray())
+                    {
+                        var type = Str(error, "type") ?? (error.TryGetProperty("extensions", out var extension)
+                            ? Str(extension, "type") : null);
+                        if (type != "TrackMediaNotFoundException"
+                            || !error.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.Array
+                            || path.GetArrayLength() != 6 || path[0].GetString() != "instantSearch"
+                            || path[1].GetString() != "results" || path[2].GetString() != "tracks"
+                            || path[3].GetString() != "edges" || path[4].ValueKind != JsonValueKind.Number
+                            || !path[4].TryGetInt32(out var index) || index < 0 || path[5].GetString() != "node")
+                            return (new DeezerResponse { Transient = true }, null);
+                        unavailableNodes.Add(index);
+                    }
+                    budget.Incomplete = true;
                 }
             }
             var tracks = root.GetProperty("data").GetProperty("instantSearch").GetProperty("results").GetProperty("tracks");
             var edges = tracks.GetProperty("edges");
             if (edges.ValueKind != JsonValueKind.Array) return (new DeezerResponse { Transient = true }, null);
+            if (unavailableNodes.Any(index => index >= edges.GetArrayLength()
+                || edges[index].GetProperty("node").ValueKind != JsonValueKind.Null))
+                return (new DeezerResponse { Transient = true }, null);
             budget.Incomplete |= tracks.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
             var candidates = new List<object>();
-            foreach (var edge in edges.EnumerateArray())
+            for (var index = 0; index < edges.GetArrayLength(); index++)
             {
-                var node = edge.GetProperty("node");
+                if (unavailableNodes.Contains(index)) continue;
+                var node = edges[index].GetProperty("node");
                 if (node.ValueKind != JsonValueKind.Object) throw new JsonException("Missing search track.");
                 var names = new List<string>();
                 if (node.TryGetProperty("contributors", out var contributors) && contributors.ValueKind == JsonValueKind.Object

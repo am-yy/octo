@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Octo.Models.Domain;
+using Octo.Services.Common;
 
 namespace Octo.Services.Subsonic;
 
@@ -101,14 +102,16 @@ public sealed class ExternalSaveStore
 
     private readonly string _path;
     private readonly ILogger<ExternalSaveStore> _logger;
+    private readonly AcquisitionTracker? _tracker;
     private readonly object _gate = new();
     private State _state;
 
-    public ExternalSaveStore(string path, ILogger<ExternalSaveStore> logger)
+    public ExternalSaveStore(string path, ILogger<ExternalSaveStore> logger, AcquisitionTracker? tracker = null)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("A state path is required.", nameof(path));
         _path = Path.GetFullPath(path);
         _logger = logger;
+        _tracker = tracker;
         _state = Load();
     }
 
@@ -616,6 +619,7 @@ public sealed class ExternalSaveStore
         if (!File.Exists(localPath) || !string.Equals(Path.GetExtension(localPath), ".flac", StringComparison.OrdinalIgnoreCase))
             return Task.FromResult(0);
         var replaced = 0;
+        var imported = false;
         Mutate(state =>
         {
             var intent = FindAcquisition(state, provider, externalId);
@@ -682,7 +686,10 @@ public sealed class ExternalSaveStore
                 intent.LastError = null;
                 intent.RetryAfterUtc = null;
             }
+            imported = true;
         });
+        // Both existing-file detection and delayed reconciliation finish through this commit.
+        if (imported) _tracker?.Complete(provider, externalId, localId);
         return Task.FromResult(replaced);
     }
 

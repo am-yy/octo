@@ -224,8 +224,13 @@ public partial class SubsonicController
     {
         foreach (var song in songs.Where(song => !song.IsLocal))
         {
-            _acquisitionTracker?.Begin(song.ExternalProvider ?? "soulseek", song.ExternalId ?? song.Id,
+            var provider = song.ExternalProvider ?? "soulseek";
+            var externalId = song.ExternalId ?? song.Id;
+            _acquisitionTracker?.Begin(provider, externalId,
                 song.Id, _subsonicSettings.RecordRequestedBy ? user : null, song.Artist, song.Title, song.Album);
+            // Import may have completed while this request still held external metadata.
+            if (_externalSaves?.GetSong(song.Id) is { IsLocal: true } imported)
+                _acquisitionTracker?.Complete(provider, externalId, imported.Id);
         }
         _saveWorker?.Wake();
         return Task.CompletedTask;

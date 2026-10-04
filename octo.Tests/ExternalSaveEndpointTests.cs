@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Octo.Models.Domain;
 using Octo.Services;
+using Octo.Services.Common;
 using Octo.Services.Local;
 using Octo.Services.Subsonic;
 
@@ -281,8 +282,10 @@ public sealed class ExternalSaveEndpointTests
         Assert.Equal(new[] { "real", "library-123" }, fixture.Upstream.DownloadedIds);
     }
 
-    [Fact]
-    public async Task DurableMetadataRecognizesImportBeforeLidarrSubmission()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExistingImportCompletesProgressWithoutLidarrSubmission(bool reconcile)
     {
         using var fixture = new SavesFixture();
         var song = new Song { Id = "ext-deezer-123", Artist = "Artist", Title = "Outside",
@@ -292,12 +295,73 @@ public sealed class ExternalSaveEndpointTests
         await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
         await using var app = fixture.App(imported: new Song { Id = "library-123", IsLocal = true, Suffix = "flac", LocalPath = path });
         using var client = app.CreateClient();
-        var service = app.Services.GetRequiredService<Octo.Services.Lidarr.ILidarrHeartAcquisitionService>();
+        fixture.Tracker.Begin("deezer", "123", song.Id, "alice", song.Artist, song.Title);
+        fixture.Tracker.Stage("deezer", "123", AcquisitionState.Searching, "Lidarr");
 
-        Assert.True(await service.TryAcquireTrackAsync("deezer", "123"));
+        if (reconcile)
+            await app.Services.GetRequiredService<ExternalSaveReconciler>().ReconcileImportedAsync();
+        else
+            Assert.True(await app.Services.GetRequiredService<Octo.Services.Lidarr.ILidarrHeartAcquisitionService>()
+                .TryAcquireTrackAsync("deezer", "123"));
         Assert.Equal("imported", fixture.Store.Snapshot().Acquisitions.Single().Status);
         Assert.Equal("library-123", fixture.Store.CanonicalSongId(song.Id));
+        var progress = Assert.Single(fixture.Tracker.ForUser("alice"));
+        Assert.Equal(AcquisitionState.Done, progress.State);
+        Assert.Equal("library-123", progress.LibraryId);
         Assert.Empty(fixture.Upstream.Requests);
+    }
+
+    [Fact]
+    public async Task FailedImportCommitDoesNotReportCompletedProgress()
+    {
+        using var fixture = new SavesFixture();
+        var song = new Song { Id = "ext-deezer-123", ExternalProvider = "deezer", ExternalId = "123" };
+        await fixture.Store.SetHeartAsync("alice", song, true);
+        fixture.Tracker.Begin("deezer", "123", song.Id, "alice");
+        fixture.Tracker.Stage("deezer", "123", AcquisitionState.Searching, "Lidarr");
+        var path = Path.Combine(Path.GetDirectoryName(fixture.StatePath)!, "imported.flac");
+        await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
+        File.Move(fixture.StatePath, fixture.StatePath + ".backup");
+        Directory.CreateDirectory(fixture.StatePath);
+
+        await Assert.ThrowsAnyAsync<IOException>(() => fixture.Store.MarkImportedAsync("deezer", "123", "library-123", path));
+
+        Assert.Equal(AcquisitionState.Searching, Assert.Single(fixture.Tracker.ForUser("alice")).State);
+        Assert.False(fixture.Store.GetSong(song.Id)!.IsLocal);
+    }
+
+    [Fact]
+    public async Task PlaylistSaveRacingWithImportDoesNotReopenCompletedProgress()
+    {
+        using var fixture = new SavesFixture();
+        await using var app = fixture.App();
+        using var client = app.CreateClient();
+        var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookup = new TaskCompletionSource<Song?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Metadata.Setup(m => m.GetSongAsync("deezer", "123")).Returns(() =>
+        {
+            lookupStarted.TrySetResult();
+            return lookup.Task;
+        });
+        var save = client.GetStringAsync("/rest/updatePlaylist?u=alice&f=json&playlistId=p1&songIdToAdd=ext-deezer-123");
+        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var song = new Song { Id = "ext-deezer-123", ExternalProvider = "deezer", ExternalId = "123",
+            Artist = "Artist", Title = "Outside" };
+        await fixture.Store.SetHeartAsync("alice", song, true);
+        fixture.Tracker.Begin("deezer", "123", song.Id, "alice");
+        var path = Path.Combine(Path.GetDirectoryName(fixture.StatePath)!, "imported.flac");
+        await File.WriteAllBytesAsync(path, DeezerAudioCacheTests.MinimalFlacSample());
+        await fixture.Store.MarkImportedAsync("deezer", "123", "library-123", path);
+
+        // The request resumes with metadata read before the import, after its saved alias changed.
+        lookup.SetResult(song);
+        Assert.Contains("\"ok\"", await save.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Equal("library-123", fixture.Store.GetPlaylist("alice", "p1")!.Tracks.Last().SongId);
+        var progress = Assert.Single(fixture.Tracker.ForUser("alice"));
+        Assert.Equal(AcquisitionState.Done, progress.State);
+        Assert.Equal("library-123", progress.LibraryId);
+        Assert.Empty(fixture.Store.GetPendingAcquisitions());
     }
 
     [Fact]
@@ -393,12 +457,13 @@ public sealed class ExternalSaveEndpointTests
         private readonly string _root = Path.Combine(Path.GetTempPath(), "octo-save-api-" + Guid.NewGuid().ToString("N"));
         public string StatePath => Path.Combine(_root, "state.json");
         public ExternalSaveStore Store { get; }
+        public AcquisitionTracker Tracker { get; } = new(NullLogger<AcquisitionTracker>.Instance);
         public SaveHandler Upstream { get; } = new();
         public Mock<IMusicMetadataService> Metadata { get; } = new();
         public SavesFixture()
         {
             Directory.CreateDirectory(_root);
-            Store = new ExternalSaveStore(StatePath, NullLogger<ExternalSaveStore>.Instance);
+            Store = new ExternalSaveStore(StatePath, NullLogger<ExternalSaveStore>.Instance, Tracker);
         }
         public WebApplicationFactory<Program> App(Octo.Services.Deezer.DeezerAudioCache? cache = null, Song? imported = null)
         {
@@ -423,8 +488,10 @@ public sealed class ExternalSaveEndpointTests
                     services.RemoveAll<IHostedService>(); services.RemoveAll<IHttpClientFactory>();
                     services.RemoveAll<ILocalLibraryService>(); services.RemoveAll<IMusicMetadataService>();
                     services.RemoveAll<ExternalSaveStore>();
+                    services.RemoveAll<AcquisitionTracker>();
                     services.AddSingleton(http.Object); services.AddSingleton(library.Object);
                     services.AddSingleton(metadata.Object); services.AddSingleton(Store);
+                    services.AddSingleton(Tracker);
                     if (cache is not null)
                     { services.RemoveAll<Octo.Services.Deezer.DeezerAudioCache>(); services.AddSingleton(cache); }
                 });

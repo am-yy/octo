@@ -140,16 +140,19 @@ public sealed class LidarrClient
             $"/api/v1/album?foreignAlbumId={Uri.EscapeDataString(candidate.ForeignAlbumId)}", ct);
 
         int albumId;
+        int? artistId;
+        var refreshNewArtist = false;
         if (existing.Count > 0)
         {
             var existingAlbum = existing[0];
             albumId = Int(existing[0], "id");
+            artistId = NullableInt(existingAlbum, "artistId")
+                ?? (existingAlbum["artist"] is JsonObject parent ? NullableInt(parent, "id") : null);
             if (settings.MonitorRequestedAlbums)
             {
                 var artist = existingAlbum["artist"] as JsonObject;
                 if (artist is null)
                 {
-                    var artistId = Int(existingAlbum, "artistId");
                     artist = (await GetArrayAsync("/api/v1/artist", ct))
                         .FirstOrDefault(a => Int(a, "id") == artistId)
                         ?? throw new InvalidOperationException("Lidarr did not return the existing album's artist.");
@@ -212,31 +215,11 @@ public sealed class LidarrClient
 
             var added = await SendJsonAsync(HttpMethod.Post, "/api/v1/album", resource, ct);
             albumId = Int(added, "id");
-            if (existingArtist is null && settings.RefreshArtistOnAdd)
-            {
-                // Adding an album can create its artist without refreshing that artist's
-                // complete release catalog. Match Lidarr's normal new-artist refresh.
-                var artistId = NullableInt(added, "artistId");
-                if (artistId is null or <= 0)
-                    throw new InvalidOperationException("Lidarr did not return the created album's artist ID.");
-                await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
-                {
-                    ["name"] = "RefreshArtist",
-                    ["artistIds"] = new JsonArray(artistId.Value),
-                    ["isNewArtist"] = true,
-                }, ct);
-            }
+            artistId = NullableInt(added, "artistId");
+            refreshNewArtist = existingArtist is null && settings.RefreshArtistOnAdd;
         }
 
-        // POST /album returns before metadata refresh loads its tracks. Searching earlier can
-        // finish successfully while producing no downloads.
-        var metadataDeadline = DateTime.UtcNow.AddSeconds(Math.Max(1, settings.ImportTimeoutSeconds));
-        while ((await GetArrayAsync($"/api/v1/track?albumId={albumId}", ct)).Count == 0)
-        {
-            if (DateTime.UtcNow >= metadataDeadline)
-                throw new TimeoutException("Lidarr did not load album track metadata before the search deadline.");
-            await Task.Delay(TimeSpan.FromSeconds(1), ct);
-        }
+        await EnsureAlbumMetadataAsync(albumId, artistId, refreshNewArtist, settings.ImportTimeoutSeconds, ct);
 
         if (beforeSearch is not null) await beforeSearch(albumId);
         await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
@@ -245,6 +228,87 @@ public sealed class LidarrClient
             ["albumIds"] = new JsonArray(albumId),
         }, ct);
         return albumId;
+    }
+
+    private async Task EnsureAlbumMetadataAsync(int albumId, int? artistId, bool refreshNewArtist,
+        int timeoutSeconds, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)));
+        var token = deadline.Token;
+        try
+        {
+            var tracks = await GetArrayAsync($"/api/v1/track?albumId={albumId}", token);
+            if (tracks.Count > 0 && !refreshNewArtist) return;
+            if (artistId is null or <= 0)
+                throw new InvalidOperationException("Lidarr did not return the artist ID required for metadata refresh.");
+
+            // POST /album already queues native metadata work. Joining it avoids concurrent
+            // artist refreshes inserting the same catalog albums.
+            var commands = await GetArrayAsync("/api/v1/command", token);
+            var artistRefresh = commands.Any(command => IsArtistRefresh(command, artistId.Value)
+                && (IsActiveCommand(command) || Str(command, "status") == "completed"
+                    && Str(command, "result") == "successful"));
+            foreach (var command in commands.Where(command => IsActiveCommand(command)
+                && (IsArtistRefresh(command, artistId.Value) || Str(command, "name") == "RefreshAlbum"
+                    && command["body"] is JsonObject body && NullableInt(body, "albumId") == albumId)))
+                await WaitForRefreshAsync(command, token);
+
+            if (refreshNewArtist && !artistRefresh)
+            {
+                // Use the native command's defaults so Lidarr can deduplicate a refresh
+                // queued between our command listing and this fallback request.
+                var command = await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
+                {
+                    ["name"] = "RefreshArtist",
+                    ["artistIds"] = new JsonArray(artistId.Value),
+                }, token);
+                await WaitForRefreshAsync(command, token);
+            }
+
+            if ((await GetArrayAsync($"/api/v1/track?albumId={albumId}", token)).Count > 0) return;
+
+            // An interrupted initial refresh can leave an existing album permanently empty.
+            // Recover once; successful completion without tracks is a failure, not a new poll loop.
+            var recovery = await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
+            {
+                ["name"] = "RefreshAlbum",
+                ["albumId"] = albumId,
+            }, token);
+            await WaitForRefreshAsync(recovery, token);
+            if ((await GetArrayAsync($"/api/v1/track?albumId={albumId}", token)).Count == 0)
+                throw new InvalidOperationException($"Lidarr metadata refresh completed without tracks for album {albumId}.");
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("Lidarr did not load album track metadata before the search deadline.", ex);
+        }
+    }
+
+    private static bool IsArtistRefresh(JsonObject command, int artistId)
+    {
+        var name = Str(command, "name");
+        if (name is not ("RefreshArtist" or "BulkRefreshArtist") || command["body"] is not JsonObject body)
+            return false;
+        var ids = body["artistIds"] as JsonArray;
+        return name == "RefreshArtist" && (ids is null || ids.Count == 0)
+            || ids?.Any(id => id?.GetValue<int>() == artistId) == true;
+    }
+
+    private static bool IsActiveCommand(JsonObject command) => Str(command, "status") is "queued" or "started";
+
+    private async Task WaitForRefreshAsync(JsonObject command, CancellationToken ct)
+    {
+        var id = NullableInt(command, "id");
+        if (id is null or <= 0) throw new InvalidOperationException("Lidarr returned no metadata refresh command ID.");
+        while (IsActiveCommand(command))
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            command = await GetObjectAsync($"/api/v1/command/{id}", ct);
+        }
+        ct.ThrowIfCancellationRequested();
+        if (Str(command, "status") != "completed" || Str(command, "result") != "successful")
+            throw new InvalidOperationException($"Lidarr metadata refresh {id} did not succeed ({Str(command, "status")}).");
     }
 
     private async Task EnsureArtistMonitoredAsync(JsonObject artist, CancellationToken ct)

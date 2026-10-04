@@ -146,7 +146,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/artist") => "[]",
                 ("POST", "/api/v1/album") => "{\"id\":42,\"artistId\":7}",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 _ => "[]",
             },
         };
@@ -172,7 +172,7 @@ public class LidarrClientTests
         Assert.Equal(2, commands.Count);
         Assert.Equal("RefreshArtist", commands[0]["name"]!.GetValue<string>());
         Assert.Equal(7, commands[0]["artistIds"]![0]!.GetValue<int>());
-        Assert.True(commands[0]["isNewArtist"]!.GetValue<bool>());
+        Assert.Null(commands[0]["isNewArtist"]); // Match Lidarr's native command defaults for deduplication.
         Assert.Equal("AlbumSearch", commands[1]["name"]!.GetValue<string>());
         Assert.Equal(42, Assert.Single((JsonArray)commands[1]["albumIds"]!)!.GetValue<int>());
     }
@@ -188,7 +188,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/artist") => "[]",
                 ("POST", "/api/v1/album") => "{\"id\":42,\"artistId\":7}",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 _ => "[]",
             },
         };
@@ -225,7 +225,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/artist") => "[]",
                 ("POST", "/api/v1/album") => "{\"id\":42,\"artistId\":7}",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 _ => "[]",
             },
         };
@@ -297,7 +297,7 @@ public class LidarrClientTests
                     "[{\"id\":7,\"foreignArtistId\":\"artist-mbid\",\"path\":\"/existing/Artist\",\"qualityProfileId\":9,\"metadataProfileId\":10,\"monitored\":true,\"monitorNewItems\":\"all\"}]",
                 ("POST", "/api/v1/album") => "{\"id\":42,\"artistId\":7}",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 _ => "[]",
             },
         };
@@ -330,7 +330,7 @@ public class LidarrClientTests
                     "[{\"id\":7,\"foreignArtistId\":\"artist-mbid\",\"monitored\":false,\"monitorNewItems\":\"all\"}]",
                 ("POST", "/api/v1/album") => "{\"id\":42,\"artistId\":7}",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 ("PUT", "/api/v1/artist/editor") => "{}",
                 _ => "[]",
             },
@@ -361,7 +361,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/album") =>
                     "[{\"id\":12,\"foreignAlbumId\":\"mbid\",\"monitored\":true,\"artist\":{\"id\":7,\"monitored\":false}}]",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 ("PUT", "/api/v1/artist/editor") => "{}",
                 _ => "[]",
             },
@@ -391,7 +391,7 @@ public class LidarrClientTests
                 ("GET", "/api/v1/album") =>
                     "[{\"id\":12,\"foreignAlbumId\":\"mbid\",\"monitored\":false,\"artist\":{\"id\":7,\"qualityProfileId\":9}}]",
                 ("GET", "/api/v1/track") => "[{\"id\":1}]",
-                ("POST", "/api/v1/command") => "{\"id\":9}",
+                ("POST", "/api/v1/command") => """{"id":9,"status":"completed","result":"successful"}""",
                 _ => "[]",
             },
         };
@@ -416,34 +416,194 @@ public class LidarrClientTests
     }
 
     [Fact]
-    public async Task AlbumSearchWaitsForLidarrTrackMetadata()
+    public async Task AlbumSearchWaitsForFallbackArtistRefreshAndTrackMetadata()
     {
-        var trackReads = 0;
+        var ready = false;
         var commandPosts = 0;
         var handler = new Handler
         {
             Respond = req =>
             {
                 if (req.RequestUri!.AbsolutePath == "/api/v1/track")
-                    return ++trackReads == 1 ? "[]" : "[{\"id\":1}]";
-                if (req.RequestUri.AbsolutePath == "/api/v1/command")
+                    return ready ? """[{"id":1}]""" : "[]";
+                if (req.Method == HttpMethod.Post && req.RequestUri.AbsolutePath == "/api/v1/command")
                 {
-                    if (++commandPosts == 1) return "{\"id\":9}";
-                    Assert.True(trackReads >= 2, "Search must wait for album tracks to load.");
-                    return "{\"id\":9}";
+                    if (++commandPosts == 1) return """{"id":9,"status":"started"}""";
+                    Assert.True(ready, "Search must wait for album tracks to load.");
+                    return """{"id":10}""";
                 }
-                return req.Method == HttpMethod.Post ? "{\"id\":42,\"artistId\":7}" : "[]";
+                if (req.RequestUri.AbsolutePath == "/api/v1/command/9")
+                {
+                    ready = true;
+                    return """{"id":9,"status":"completed","result":"successful"}""";
+                }
+                return req.Method == HttpMethod.Post ? """{"id":42,"artistId":7}""" : "[]";
             },
         };
 
         Assert.Equal(42, await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020)));
         var commands = handler.Requests
-            .Where(r => r.Path == "/api/v1/command")
+            .Where(r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command")
             .Select(r => JsonNode.Parse(r.Body!)!["name"]!.GetValue<string>())
             .ToList();
         Assert.Equal(["RefreshArtist", "AlbumSearch"], commands);
         Assert.All(handler.Requests.Where(r => r.Path.StartsWith("/api/v1/track")),
             r => Assert.Equal("/api/v1/track?albumId=42", r.Path));
+    }
+
+    [Theory]
+    [InlineData("queued")]
+    [InlineData("started")]
+    [InlineData("completed")]
+    public async Task NewArtistReusesLidarrRefreshInsteadOfStartingAnother(string status)
+    {
+        var ready = status == "completed";
+        var handler = new Handler
+        {
+            Respond = req =>
+            {
+                if (req.RequestUri!.AbsolutePath == "/api/v1/command/9")
+                {
+                    ready = true;
+                    return """{"id":9,"status":"completed","result":"successful"}""";
+                }
+                return (req.Method.Method, req.RequestUri.AbsolutePath) switch
+                {
+                    ("GET", "/api/v1/album") or ("GET", "/api/v1/artist") => "[]",
+                    ("POST", "/api/v1/album") => """{"id":42,"artistId":7}""",
+                    ("GET", "/api/v1/track") => ready ? """[{"id":1}]""" : "[]",
+                    ("GET", "/api/v1/command") => $$"""[{"id":9,"name":"RefreshArtist","body":{"artistIds":[7]},"status":"{{status}}","result":"successful"}]""",
+                    _ => """{"id":10,"status":"completed","result":"successful"}""",
+                };
+            },
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020), deadline.Token);
+
+        var post = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command");
+        Assert.Equal("AlbumSearch", JsonNode.Parse(post.Body!)!["name"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("album")]
+    [InlineData("artist")]
+    [InlineData("all-artists")]
+    [InlineData("bulk-artists")]
+    [InlineData("other-artist")]
+    public async Task EmptyExistingAlbumRefreshesOnceAfterMatchingActiveWork(string active)
+    {
+        var joined = false;
+        var refreshed = false;
+        var commandPosts = 0;
+        var body = active switch
+        {
+            "album" => """ "name":"RefreshAlbum","body":{"albumId":42}""",
+            "all-artists" => """ "name":"RefreshArtist","body":{"artistIds":[]}""",
+            "bulk-artists" => """ "name":"BulkRefreshArtist","body":{"artistIds":[7,8]}""",
+            "other-artist" => """ "name":"RefreshArtist","body":{"artistIds":[8]}""",
+            _ => """ "name":"RefreshArtist","body":{"artistIds":[7]}""",
+        };
+        var handler = new Handler
+        {
+            Respond = req =>
+            {
+                if (req.RequestUri!.AbsolutePath == "/api/v1/command/9")
+                {
+                    joined = true;
+                    return """{"id":9,"status":"completed","result":"successful"}""";
+                }
+                if (req.Method == HttpMethod.Post && req.RequestUri.AbsolutePath == "/api/v1/command")
+                {
+                    Assert.True(active is "none" or "other-artist" || joined);
+                    commandPosts++;
+                    refreshed = true;
+                    return """{"id":10,"status":"completed","result":"successful"}""";
+                }
+                return (req.Method.Method, req.RequestUri.AbsolutePath) switch
+                {
+                    ("GET", "/api/v1/album") => """[{"id":42,"artistId":7,"artist":{"id":7,"monitored":true}}]""",
+                    ("GET", "/api/v1/track") => refreshed ? """[{"id":1}]""" : "[]",
+                    ("GET", "/api/v1/command") => active == "none" ? "[]" : "[{\"id\":9,\"status\":\"started\"," + body + "}]",
+                    _ => "{}",
+                };
+            },
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var marker = false;
+
+        await Build(handler).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020), deadline.Token,
+            beforeSearch: id => { Assert.True(refreshed); marker = true; return Task.CompletedTask; });
+
+        Assert.True(marker);
+        Assert.Equal(2, commandPosts);
+        var posts = handler.Requests.Where(r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command")
+            .Select(r => JsonNode.Parse(r.Body!)!).ToList();
+        Assert.Equal("RefreshAlbum", posts[0]["name"]!.GetValue<string>());
+        Assert.Equal(42, posts[0]["albumId"]!.GetValue<int>());
+        Assert.Equal("AlbumSearch", posts[1]["name"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("completed", "successful")]
+    [InlineData("completed", "unsuccessful")]
+    [InlineData("failed", "unsuccessful")]
+    [InlineData("aborted", "unsuccessful")]
+    [InlineData("cancelled", "unsuccessful")]
+    [InlineData("orphaned", "unsuccessful")]
+    public async Task UnusableRefreshNeverSubmitsAlbumSearch(string status, string result)
+    {
+        var handler = new Handler
+        {
+            Respond = req => (req.Method.Method, req.RequestUri!.AbsolutePath) switch
+            {
+                ("GET", "/api/v1/album") => """[{"id":42,"artistId":7,"artist":{"id":7,"monitored":true}}]""",
+                ("GET", "/api/v1/track") or ("GET", "/api/v1/command") => "[]",
+                ("POST", "/api/v1/command") => $$"""{"id":9,"status":"{{status}}","result":"{{result}}"}""",
+                _ => "{}",
+            },
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var marked = false;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Build(handler).EnsureAlbumAndSearchAsync(
+            Candidate("mbid", "Album", "Artist", 2020), deadline.Token,
+            beforeSearch: _ => { marked = true; return Task.CompletedTask; }));
+
+        Assert.False(marked);
+        var post = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post && r.Path == "/api/v1/command");
+        Assert.Equal("RefreshAlbum", JsonNode.Parse(post.Body!)!["name"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActiveRefreshHonorsTimeoutAndCallerCancellation(bool cancel)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new Handler
+        {
+            Respond = req =>
+            {
+                if (req.RequestUri!.AbsolutePath == "/api/v1/command" && cancel) cancellation.Cancel();
+                return req.RequestUri.AbsolutePath switch
+                {
+                    "/api/v1/album" => """[{"id":42,"artistId":7,"artist":{"id":7,"monitored":true}}]""",
+                    "/api/v1/track" => "[]",
+                    "/api/v1/command" => """[{"id":9,"name":"RefreshArtist","body":{"artistIds":[7]},"status":"started"}]""",
+                    "/api/v1/command/9" => """{"id":9,"status":"started"}""",
+                    _ => "{}",
+                };
+            },
+        };
+        var settings = new LidarrSettings { BaseUrl = "http://lidarr:8686", ApiKey = "secret",
+            RootFolderPath = "/data/music", QualityProfileId = 3, MetadataProfileId = 4, ImportTimeoutSeconds = 1 };
+        var work = Build(handler, settings).EnsureAlbumAndSearchAsync(Candidate("mbid", "Album", "Artist", 2020), cancellation.Token);
+
+        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
+        else await Assert.ThrowsAsync<TimeoutException>(() => work);
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Post);
     }
 
     [Fact]

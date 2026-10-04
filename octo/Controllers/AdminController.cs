@@ -900,6 +900,7 @@ public class AdminController : ControllerBase
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
                 ["PreferWordTimedLyrics"] = _metadataOpts.CurrentValue.PreferWordTimedLyrics,
                 ["WriteLyricsBesideAllSongs"] = _metadataOpts.CurrentValue.WriteLyricsBesideAllSongs,
+                ["SaveLyricsTo"] = LyricsSaveTo.Normalize(_metadataOpts.CurrentValue.SaveLyricsTo),
             },
             ["GeneratedPlaylists"] = new Dictionary<string, object>
             {
@@ -1734,6 +1735,7 @@ public class AdminController : ControllerBase
                 ["LyricsSources"] = _metadataOpts.CurrentValue.LyricsSources ?? "",
                 ["PreferWordTimedLyrics"] = _metadataOpts.CurrentValue.PreferWordTimedLyrics,
                 ["WriteLyricsBesideAllSongs"] = _metadataOpts.CurrentValue.WriteLyricsBesideAllSongs,
+                ["SaveLyricsTo"] = LyricsSaveTo.Normalize(_metadataOpts.CurrentValue.SaveLyricsTo),
             },
             ["GeneratedPlaylists"] = new JsonObject
             {
@@ -1925,7 +1927,7 @@ public class AdminController : ControllerBase
             "Metadata:Language", "Metadata:AlbumFromTitle", "Metadata:UseCoverArtArchive",
             "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile", "Metadata:EmbedFullSizeCovers",
             "Metadata:FetchLyrics", "Metadata:LyricsSources", "Metadata:PreferWordTimedLyrics",
-            "Metadata:WriteLyricsBesideAllSongs",
+            "Metadata:WriteLyricsBesideAllSongs", "Metadata:SaveLyricsTo",
             "GeneratedPlaylists:PopularNow",
             "GeneratedPlaylists:Enabled", "GeneratedPlaylists:Genres", "GeneratedPlaylists:Decades",
             "GeneratedPlaylists:TrackCount", "GeneratedPlaylists:MaxPerArtist", "GeneratedPlaylists:CreateAt",

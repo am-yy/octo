@@ -53,8 +53,8 @@ public sealed class MusicBrainzClient
     }
 
     /// <summary>
-    /// The release group of the oldest official studio album a song appears on, or of a
-    /// soundtrack when no studio album has it. Null when MusicBrainz knows neither.
+    /// The release group of the oldest studio album a song appears on, falling back to an
+    /// artist mixtape, then a soundtrack. Null when MusicBrainz knows none of these.
     /// </summary>
     public async Task<string?> FindStudioAlbumAsync(string artist, string title, CancellationToken ct)
     {
@@ -85,7 +85,8 @@ public sealed class MusicBrainzClient
                     || !group.TryGetProperty("primary-type", out var type) || type.GetString() != "Album") continue;
                 var secondary = group.TryGetProperty("secondary-types", out var s) && s.ValueKind == JsonValueKind.Array
                     ? s.EnumerateArray().Select(x => x.GetString()).ToList() : [];
-                var rank = secondary.Count == 0 ? 0 : secondary is ["Soundtrack"] ? 1 : -1;
+                var rank = secondary.Count == 0 ? 0
+                    : secondary is ["Mixtape/Street"] ? 1 : secondary is ["Soundtrack"] ? 2 : -1;
                 if (rank < 0 || rank > groupRank) continue;
 
                 var date = release.TryGetProperty("date", out var d) && !string.IsNullOrEmpty(d.GetString())

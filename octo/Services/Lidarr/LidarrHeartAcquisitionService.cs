@@ -119,7 +119,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             }
 
             // Deezer names the release a hit came out on first, usually the single, which Lidarr
-            // then cannot match. MusicBrainz knows which studio album the song belongs to.
+            // then cannot match. MusicBrainz can identify its studio album or artist mixtape.
             var studioAlbumId = _musicBrainz is null ? null
                 : await _musicBrainz.FindStudioAlbumAsync(song.Artist ?? "", song.Title ?? "", CancellationToken.None);
             var studio = studioAlbumId is null ? null : await _client.ResolveAlbumByForeignIdAsync(studioAlbumId);

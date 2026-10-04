@@ -43,6 +43,59 @@ public class MusicBrainzStudioAlbumTests
     }
 
     [Fact]
+    public void PicksArtistMixtape_WhenStreamingCatalogOnlyHasTheSingle()
+    {
+        // MusicBrainz's Guillotine response includes Exmilitary as Album + Mixtape/Street.
+        const string search = """
+        {"recordings":[{"title":"Guillotine","releases":[
+          {"date":"2011-08-03","release-group":{"id":"single","primary-type":"Single"}},
+          {"date":"2012-01-16","release-group":{"id":"compilation","primary-type":"Album","secondary-types":["Compilation"]}},
+          {"date":"2011-04-25","release-group":{"id":"f1f6c7e2-7848-4554-b36c-2190e1d6bfb0","primary-type":"Album","secondary-types":["Mixtape/Street"]}}]}]}
+        """;
+
+        Assert.Equal("f1f6c7e2-7848-4554-b36c-2190e1d6bfb0", Pick(search, "Guillotine"));
+    }
+
+    [Fact]
+    public void PrefersStudioAlbumOverEarlierMixtape()
+    {
+        const string search = """
+        {"recordings":[{"title":"Song","releases":[
+          {"date":"2010-01-01","release-group":{"id":"film","primary-type":"Album","secondary-types":["Soundtrack"]}},
+          {"date":"2012-01-01","release-group":{"id":"studio","primary-type":"Album"}},
+          {"date":"2011-01-01","release-group":{"id":"mixtape","primary-type":"Album","secondary-types":["Mixtape/Street"]}}]}]}
+        """;
+
+        Assert.Equal("studio", Pick(search, "Song"));
+    }
+
+    [Fact]
+    public void PrefersArtistMixtapeOverSoundtrack()
+    {
+        const string search = """
+        {"recordings":[{"title":"Song","releases":[
+          {"date":"2010-01-01","release-group":{"id":"film","primary-type":"Album","secondary-types":["Soundtrack"]}},
+          {"date":"2011-01-01","release-group":{"id":"mixtape","primary-type":"Album","secondary-types":["Mixtape/Street"]}}]}]}
+        """;
+
+        Assert.Equal("mixtape", Pick(search, "Song"));
+    }
+
+    [Theory]
+    [InlineData("Compilation")]
+    [InlineData("Live")]
+    [InlineData("Remix")]
+    public void RejectsMixtapesThatAreAlsoCompilationsLiveOrRemixes(string secondaryType)
+    {
+        var search = $$$"""
+        {"recordings":[{"title":"Song","releases":[
+          {"release-group":{"id":"wrong-version","primary-type":"Album","secondary-types":["Mixtape/Street","{{{secondaryType}}}"]}}]}]}
+        """;
+
+        Assert.Null(Pick(search, "Song"));
+    }
+
+    [Fact]
     public void FallsBackToSoundtrack_OnlyWithoutStudioAlbum()
     {
         const string soundtrackOnly = """

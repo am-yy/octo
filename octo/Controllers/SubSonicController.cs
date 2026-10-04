@@ -2736,8 +2736,8 @@ public partial class SubsonicController : ControllerBase
 
     /// <summary>
     /// Navidrome's extension list with octoAcquisitions added, so a client can tell this server
-    /// answers getAcquisitions before it asks, and octoLibraryActions while library actions are
-    /// on. Relayed, then merged; no credentials are needed, as the OpenSubsonic spec has it.
+    /// answers getAcquisitions before it asks, octoLibraryActions while library actions are
+    /// on, and octoTopSongs while search discovery is. Relayed, then merged; no credentials are needed, as the OpenSubsonic spec has it.
     /// </summary>
     [HttpGet, HttpPost]
     [Route("rest/getOpenSubsonicExtensions")]
@@ -2751,7 +2751,8 @@ public partial class SubsonicController : ControllerBase
             relay.Success ? relay.Body : null, relay.ContentType,
             lyricsChoices: _lyricsChoices is not null && _metadataSettings?.CurrentValue.FetchLyrics == true,
             libraryActions: _libraryActions is not null && _libraryActionSettings.CurrentValue.Enabled,
-            radioSources: _songRadio.Enabled);
+            radioSources: _songRadio.Enabled,
+            topSongs: _subsonicSettings.EnableSearchDiscovery);
     }
 
     /// <summary>

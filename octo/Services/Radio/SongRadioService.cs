@@ -12,7 +12,7 @@ namespace Octo.Services.Radio;
 public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackResolver resolver,
     IOptionsMonitor<LastFmSettings> lastFmSettings,
     IOptionsMonitor<SubsonicSettings> subsonicSettings,
-    ILogger<SongRadioService> logger)
+    ILogger<SongRadioService> logger, RadioOutcomeStore? outcomes = null)
 {
     /// <summary>Picks resolved beyond the count asked for, so the sound check has some to drop.</summary>
     internal const double PickHeadroom = 1.5;
@@ -89,6 +89,7 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
                 ExplicitFilter.ExplicitOnly => song.ExplicitContentLyrics is not 3,
                 _ => true,
             }).Take(count).ToList();
+        outcomes?.Served(listener, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))));
 
         // A library-led radio keeps its order: its neighbours often share the seed's artist (one
         // uploader for a whole playlist), and spacing by artist would push every one of them back.

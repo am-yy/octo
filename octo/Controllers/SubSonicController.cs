@@ -44,6 +44,7 @@ public partial class SubsonicController : ControllerBase
     private readonly LastFmService? _lastFmService;
     private readonly LastFmRadioTrackResolver _radioTrackResolver;
     private readonly Octo.Services.Radio.SongRadioService _songRadio;
+    private readonly RadioOutcomeStore? _radioOutcomes;
     private readonly Octo.Services.ListenBrainz.ListenBrainzService? _listenBrainz;
     private readonly LastFmScrobbleService? _lastFmScrobbles;
     private readonly IOptionsMonitor<LastFmSettings> _lastFmSettingsOptions;
@@ -103,6 +104,7 @@ public partial class SubsonicController : ControllerBase
         NavidromeIdentityService navIdentity,
         LastFmRadioTrackResolver radioTrackResolver,
         Octo.Services.Radio.SongRadioService songRadio,
+        RadioOutcomeStore radioOutcomes,
         ILogger<SubsonicController> logger,
         IOptionsMonitor<LastFmSettings> lastFmSettings,
         LastFmRadioStreamSessionStore radioStreamSessions,
@@ -175,6 +177,7 @@ public partial class SubsonicController : ControllerBase
         _navIdentity = navIdentity;
         _radioTrackResolver = radioTrackResolver;
         _songRadio = songRadio;
+        _radioOutcomes = radioOutcomes;
         _playlistSyncService = playlistSyncService;
         _lastFmService = lastFmService;
         _lastFmSettingsOptions = lastFmSettings;
@@ -488,6 +491,10 @@ public partial class SubsonicController : ControllerBase
         // id, on a copy, since a catalog row is shared with other responses.
         songs = songs.Select(song => suggested.TryGetValue(song.Id, out var by) && song.SuggestedBy != by
             ? WithSuggestion(song, by) : song).ToList();
+        // A station refetched by a syncing client is not the listener choosing it, so it never
+        // renews the window in which a start counts for radio.
+        _radioOutcomes?.Served(username, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))),
+            refresh: false);
         _radioQueueStore.Register(songs.Select(song => song.Id));
         _ = PrewarmPlaybackAsync(songs, 8);
         QueueRefreshIfStale(username);
@@ -2908,6 +2915,7 @@ public partial class SubsonicController : ControllerBase
             var rated = await _radioTrackResolver.ResolveScrobbleAsync(itemId, parameters);
             if (rated is not null)
                 _radioStateStore.SetRadioBan(username, itemId, rated.Artist, rated.Title, stars == 1);
+            if (stars == 1) _radioOutcomes?.Disliked(username, itemId, DateTime.UtcNow);
         }
         catch (Exception ex)
         {
@@ -3146,6 +3154,9 @@ public partial class SubsonicController : ControllerBase
         var username = await _requestIdentity.UsernameAsync(authenticatedParameters, _proxyService,
             HttpContext.RequestAborted);
         if (string.IsNullOrEmpty(username)) return;
+        // What radio learns: a song it suggested, started and then played through, or started and
+        // never finished. Before the early return below, so it works with stations off.
+        _radioOutcomes?.Observe(username, ids, submissions, DateTime.UtcNow);
         if (ids.FirstOrDefault() is { Length: > 0 } currentId)
         {
             var upcoming = _radioQueueStore.GetUpcomingFrom(currentId, count: 16);

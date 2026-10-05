@@ -320,6 +320,23 @@ builder.Services.AddSingleton<LastFmService>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.LastFmRadioSource>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.YouTubeMusicRadioSource>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.ListenBrainzRadioSource>();
+// Where radio's state files go: tests point it at their own folder, since SettingsFilePath is a
+// fixed /app/config path (C:\app\config on a developer's Windows machine). Read when the store
+// is made, not here: a test host's settings are not in builder.Configuration yet at this point.
+static string RadioStateDirectory(IServiceProvider sp) =>
+    sp.GetRequiredService<IConfiguration>()["Octo:StateDirectory"] is { Length: > 0 } stateDir
+        ? stateDir : System.IO.Path.GetDirectoryName(SettingsFilePath)!;
+// What radio learns from listening: which source's songs each listener plays through or skips.
+builder.Services.AddSingleton(sp =>
+{
+    var store = new Octo.Services.Radio.RadioOutcomeStore(
+        System.IO.Path.Combine(RadioStateDirectory(sp), "radio-outcomes.json"),
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<RadioSourceSettings>>(),
+        sp.GetRequiredService<ILogger<Octo.Services.Radio.RadioOutcomeStore>>());
+    // It writes every few seconds at most; whatever changed since goes down on the way out.
+    sp.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(store.Flush);
+    return store;
+});
 builder.Services.AddSingleton<Octo.Services.Radio.RadioSourceSet>();
 builder.Services.AddScoped<Octo.Services.Radio.SongRadioService>();
 

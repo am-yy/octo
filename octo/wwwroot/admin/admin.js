@@ -51,6 +51,7 @@ function activateTab(name, { focus = false } = {}) {
   if (name === 'raw' && typeof loadRawConfig === 'function') loadRawConfig();
   if (name === 'sources' && typeof loadConfigSources === 'function') loadConfigSources();
   if (name === 'lastfm' && typeof loadRadioStatus === 'function') loadRadioStatus();
+  if (name === 'lastfm' && typeof loadRadioOutcomes === 'function') loadRadioOutcomes();
   if (name === 'lastfm' && typeof loadLastFmScrobbling === 'function') loadLastFmScrobbling();
   if (name === 'lastfm' && typeof loadLastFmAccount === 'function') loadLastFmAccount();
   if (focus) {
@@ -1524,6 +1525,56 @@ document.getElementById('duplicates-scan')?.addEventListener('click', async (eve
     button.disabled = false;
   }
 });
+
+// What radio has learned from listening, per source, across listeners.
+async function loadRadioOutcomes() {
+  const table = document.getElementById('radio-outcomes');
+  const summary = document.getElementById('radio-outcomes-summary');
+  if (!table || !summary) return;
+  try {
+    const response = await api('/api/admin/radio-outcomes');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const rows = await response.json();
+    const body = table.querySelector('tbody');
+    body.replaceChildren(...rows.map(r => {
+      const tr = document.createElement('tr');
+      const range = r.lowestMultiplier === r.highestMultiplier
+        ? `x${r.lowestMultiplier.toFixed(2)}`
+        : `x${r.lowestMultiplier.toFixed(2)} to x${r.highestMultiplier.toFixed(2)}`;
+      for (const text of [r.name, String(r.plays), `${Math.round(r.keepRate * 100)}%`, range]) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        tr.append(td);
+      }
+      return tr;
+    }));
+    table.hidden = rows.length === 0;
+    summary.textContent = rows.length === 0
+      ? 'Nothing yet: radio learns as songs it suggested are played or skipped.'
+      : 'Across every listener. Each listener has their own adjustments; the range shows how far apart they are.';
+  } catch (error) {
+    summary.textContent = `Could not read what radio has learned: ${error.message}`;
+  }
+}
+
+document.getElementById('radio-outcomes-reset')?.addEventListener('click', async (event) => {
+  // Taken before the question: once it is awaited the event no longer says which button it was.
+  const button = event.currentTarget;
+  if (!(await askConfirm('Forget what radio learned?', 'Every listener goes back to the base weights, and radio starts learning again.', 'Forget'))) return;
+  button.disabled = true;
+  try {
+    const response = await api('/api/admin/radio-outcomes/reset', { method: 'POST' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    note(button, 'Forgotten.');
+  } catch (error) {
+    note(button, error.message, 'error');
+  } finally {
+    button.disabled = false;
+    await loadRadioOutcomes();
+  }
+});
+loadRadioOutcomes();
+setInterval(() => { if (document.visibilityState === 'visible') loadRadioOutcomes(); }, 30000);
 
 document.getElementById('lidarr-test-connection')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;

@@ -372,7 +372,9 @@ public sealed class TrackerOpportunityService : BackgroundService
                         current.Names = [new(album.Artist, album.Title)];
                     }
                     // Managed identity is useful for already acquired local sources, without Deezer resolution at dispatch.
-                    if (current.IdentityStatus == "unresolved" && (evidence.Complete || evidence.Grabbed)
+                    // Legacy associations require explicit Recheck before this promotion.
+                    if ((current.IdentityStatus == "unresolved" || current.IdentityStatus == "legacy" && current.RecheckRequested)
+                        && (evidence.Complete || evidence.Grabbed)
                         && NameKey(row.Artist, row.Album) == NameKey(album.Artist, album.Title))
                     {
                         var type = album.Resource["albumType"]?.ToString().ToLowerInvariant();

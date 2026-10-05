@@ -306,18 +306,50 @@ public sealed class TrackerOpportunityLifecycleTests
     }
 
 
-    [Fact]
-    public async Task Adv_LegacyManagedAlbumDoesNotReplaceSavedSongParentNomination()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Adv_LegacyManagedAlbumDoesNotReplaceSavedSongParentNomination(bool explicitRecheck)
     {
         using var f = new Fixture { Acquired = true, ManagedTitle = "We Make Hits", ManagedType = "EP" };
         await File.WriteAllTextAsync(f.StatePath, JsonSerializer.Serialize(new[] { new TrackerOpportunity {
             Artist = "Artist", Album = "We Make Hits", Acquisition = "complete", ReferenceIds = ["ext-deezer-42"]
         } }));
         f.Restart(); await f.SaveAsync(album: "Crisps");
+        if (explicitRecheck) await f.Service.RecheckAsync(Assert.Single(await f.Service.ListAsync()).Key);
         await f.Service.RefreshAsync(); f.Clock.Advance(TimeSpan.FromDays(2)); await f.Service.RefreshAsync();
         var rows = await f.Service.ListAsync();
         var observed = string.Join("; ", rows.Select(r => $"{r.Album}/{r.IdentityStatus}/{r.IdentityDiagnostic}/saved={r.Saved}/acq={r.Acquisition}"));
         Assert.True(rows.Any(r => r.Album == "Crisps" && r.Saved), "saved song never nominates its album: " + observed);
+        Assert.Equal("unresolved", rows.Single(r => r.Album == "Crisps").Acquisition);
+        var old = rows.Single(r => r.Album == "We Make Hits");
+        Assert.Equal("complete", old.Acquisition); Assert.False(old.Saved); Assert.Empty(old.References);
+        if (explicitRecheck) Assert.True(old.ManagedIdentityVerified);
+    }
+
+    [Fact]
+    public async Task LegacyAcquiredAlbumRecoversOnRecheckWhenDeezerManifestIsIncomplete()
+    {
+        using var f = new Fixture { Acquired = true, DeclaredCount = 3 };
+        await File.WriteAllTextAsync(f.StatePath, JsonSerializer.Serialize(new[] { new TrackerOpportunity {
+            Artist = "Artist", Album = "Crisps", Acquisition = "complete", ReferenceIds = ["ext-deezer-42"]
+        } }));
+        f.Restart(); await f.SaveAsync(album: "Crisps"); await f.Service.RefreshAsync();
+        var legacy = Assert.Single(await f.Service.ListAsync());
+        Assert.Equal("legacy", legacy.IdentityStatus); Assert.Empty(f.HashTrackers);
+
+        await f.Service.RecheckAsync(legacy.Key); await f.Service.RefreshAsync();
+        var recovered = Assert.Single(await f.Service.ListAsync());
+        Assert.Equal("resolved", recovered.IdentityStatus); Assert.True(recovered.ManagedIdentityVerified);
+        Assert.Equal("complete", recovered.Acquisition); Assert.Equal("candidate", recovered.Ops.Status);
+        Assert.False(recovered.RecheckRequested); Assert.Null(recovered.Manifest); Assert.Empty(f.ProbeIds);
+        Assert.Equal(["red"], f.HashTrackers);
+        Assert.NotNull(Assert.Single(recovered.Assessments).CompletedUtc);
+
+        f.Restart(); f.Clock.Advance(TimeSpan.FromHours(52)); await f.Service.RefreshAsync();
+        var retained = Assert.Single(await f.Service.ListAsync());
+        Assert.Equal("resolved", retained.IdentityStatus); Assert.Equal("candidate", retained.Ops.Status);
+        Assert.False(retained.RecheckRequested); Assert.Single(retained.Assessments); Assert.Single(f.HashTrackers);
     }
 
     [Fact]

@@ -26,6 +26,7 @@ public class AdminContractTests
         ("Deezer", typeof(DeezerSettings)),
         ("Lidarr", typeof(LidarrSettings)),
         ("LastFm", typeof(LastFmSettings)),
+        ("RadioSources", typeof(RadioSourceSettings)),
         ("Genre", typeof(GenreSettings)),
         ("LibraryActions", typeof(LibraryActionSettings)),
         ("Notifications", typeof(NotificationSettings)),

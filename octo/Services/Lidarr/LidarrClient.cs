@@ -24,8 +24,15 @@ public sealed record LidarrImportedTrack(
 public sealed record LidarrAlbumImportState(
     IReadOnlyList<LidarrImportedTrack> Tracks, int TrackCount, int TrackFileCount)
 {
+    // Existing import/retry semantics use statistics: /track can include alternate-release rows.
     public bool IsComplete => TrackCount > 0 && TrackFileCount >= TrackCount;
+    public bool HasAlbumStatistics { get; init; }
+    public bool HasCompleteReleaseEvidence => HasAlbumStatistics && IsComplete
+        && Tracks.Where(t => t.HasFile && !string.IsNullOrWhiteSpace(t.Path) && t.SizeBytes > 0)
+            .Select(t => t.Path).Distinct(StringComparer.Ordinal).Count() >= TrackCount;
 }
+
+public sealed record LidarrAcquisitionEvidence(bool Complete, bool Grabbed, bool Failed);
 
 /// <summary>Small, purpose-built client for the Lidarr v1 endpoints Octo needs.</summary>
 public sealed class LidarrClient
@@ -364,8 +371,60 @@ public sealed class LidarrClient
         return new LidarrAlbumImportState(
             tracksTask.Result,
             statistics is null ? tracksTask.Result.Count : Int(statistics, "trackCount"),
-            statistics is null ? tracksTask.Result.Count(t => t.HasFile) : Int(statistics, "trackFileCount"));
+            statistics is null ? tracksTask.Result.Count(t => t.HasFile) : Int(statistics, "trackFileCount"))
+        { HasAlbumStatistics = statistics?["trackCount"] is not null && statistics["trackFileCount"] is not null };
     }
+
+    /// <summary>Read existing managed album without starting a search.</summary>
+    public async Task<int?> GetManagedAlbumIdAsync(string foreignAlbumId, CancellationToken ct = default)
+    {
+        var rows = await GetArrayAsync(
+            $"/api/v1/album?foreignAlbumId={Uri.EscapeDataString(foreignAlbumId)}", ct);
+        var row = rows.FirstOrDefault(x =>
+            string.Equals(Str(x, "foreignAlbumId"), foreignAlbumId, StringComparison.OrdinalIgnoreCase));
+        return row is null ? null : Int(row, "id");
+    }
+
+    public async Task<IReadOnlyList<LidarrAlbumCandidate>> GetManagedAlbumsAsync(CancellationToken ct = default)
+    {
+        var albums = await GetArrayAsync("/api/v1/album", ct);
+        if (albums.Any(a => a["artist"] is not JsonObject))
+        {
+            var artists = await GetArrayAsync("/api/v1/artist", ct);
+            foreach (var album in albums.Where(a => a["artist"] is not JsonObject))
+                album["artist"] = artists.FirstOrDefault(a => Int(a, "id") == Int(album, "artistId"))?.DeepClone();
+        }
+        var parsed = albums.Select(ParseAlbum).ToList();
+        if (parsed.Any(a => a.Id <= 0 || string.IsNullOrWhiteSpace(a.ForeignAlbumId)
+            || string.IsNullOrWhiteSpace(a.Title) || string.IsNullOrWhiteSpace(a.Artist)))
+            throw new InvalidDataException("Lidarr returned incomplete managed album metadata.");
+        return parsed;
+    }
+
+    public async Task<LidarrAcquisitionEvidence> GetAcquisitionEvidenceAsync(int albumId, CancellationToken ct = default)
+    {
+        var state = await GetAlbumImportStateAsync(albumId, ct);
+        if (state.HasCompleteReleaseEvidence) return new(true, true, false);
+        // A submitted AlbumSearch is not a grab. One actual album-level Grabbed event proves
+        // acquisition even after the queue, failed download, or imported files disappear.
+        var history = await GetObjectAsync($"/api/v1/history?albumId={albumId}&eventType=1&page=1&pageSize=1&sortKey=date&sortDirection=descending", ct);
+        if (history["records"] is not JsonArray records || history["totalRecords"] is null)
+            throw new InvalidDataException("Lidarr grab history is incomplete.");
+        var total = Int(history, "totalRecords");
+        if (total == 0 && records.Count == 0) return new(false, false, false);
+        if (total <= 0 || records.Count != 1 || records[0] is not JsonObject grab
+            || Int(grab, "albumId") != albumId || !HistoryType(grab, "grabbed", 1)
+            || string.IsNullOrWhiteSpace(Str(grab, "downloadId")))
+            throw new InvalidDataException("Lidarr grab history could not be reconciled.");
+        var latest = await GetObjectAsync($"/api/v1/history?albumId={albumId}&eventType=1&eventType=4&eventType=10&page=1&pageSize=1&sortKey=date&sortDirection=descending", ct);
+        var last = (latest["records"] as JsonArray)?.FirstOrDefault() as JsonObject;
+        return new(false, true, last is not null && (HistoryType(last, "downloadFailed", 4)
+            || HistoryType(last, "downloadIgnored", 10)));
+    }
+
+    private static bool HistoryType(JsonObject row, string name, int number) =>
+        string.Equals(row["eventType"]?.ToString(), name, StringComparison.OrdinalIgnoreCase)
+        || row["eventType"]?.ToString() == number.ToString();
 
     private LidarrSettings RequireSettings(bool requireProfiles = false)
     {
@@ -426,6 +485,8 @@ public sealed class LidarrClient
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         var node = await JsonNode.ParseAsync(stream, cancellationToken: ct) as JsonArray
             ?? throw new InvalidOperationException("Lidarr returned an invalid array response.");
+        if (node.Any(row => row is not JsonObject))
+            throw new InvalidDataException("Lidarr returned an incomplete array response.");
         return node.OfType<JsonObject>().ToList();
     }
 

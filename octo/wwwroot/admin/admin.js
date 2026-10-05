@@ -2597,6 +2597,7 @@ async function loadAcquisitions() {
 
 async function loadFetched({ withAcquisitions = true } = {}) {
   if (withAcquisitions) loadAcquisitions();
+  loadTrackerOpportunities();
   const list = document.getElementById('fetched-list');
   if (!list) return;
   try {
@@ -2638,6 +2639,59 @@ async function loadFetched({ withAcquisitions = true } = {}) {
   }
 }
 document.getElementById('fetched-refresh')?.addEventListener('click', loadFetched);
+
+async function loadTrackerOpportunities() {
+  const list = document.getElementById('tracker-opportunities');
+  if (!list) return;
+  try {
+    const response = await api('/api/admin/tracker-opportunities', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const rows = data.opportunities || [];
+    const jobs = data.jobs || [];
+    if (!rows.length) {
+      list.innerHTML = stateBlock('empty', 'Save a song or playlist to see release checks here.');
+      return;
+    }
+    list.innerHTML = rows.map(row => {
+      const tracker = (name, finding) => {
+        const status = finding?.status || 'unknown';
+        const matches = finding?.matches || [];
+        const links = matches.map(match =>
+          `<a href="${escapeHtml(match.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(name)} group ${escapeHtml(match.groupId)} · ${escapeHtml(match.seeders)} seeders</a>`).join(' · ');
+        const label = status === 'missing' ? 'No release found' : status === 'present' ? 'Present' : 'Unknown';
+        return `<div>${escapeHtml(name)}: ${label}${links ? ' · ' + links : ''} · checked ${escapeHtml(relTime(finding?.checkedUtc)) || 'never'}${finding?.error ? ' · ' + escapeHtml(finding.error) : ''}</div>`;
+      };
+      const sources = (row.sourceLinks || []).map(link =>
+        `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Deezer</a>`).join(' · ');
+      const pending = jobs.filter(job => (row.names || []).some(name =>
+        name.artist.toLowerCase() === job.artist.toLowerCase() && name.album.toLowerCase() === job.album.toLowerCase()));
+      const uploadJobs = pending.map(job => `${escapeHtml(job.target.toUpperCase())}: ${escapeHtml(job.status)} · seed ${escapeHtml(job.seedingStatus)} · import ${escapeHtml(job.importStatus)}`).join('; ') || 'none';
+      return `<div class="dl-item">
+        <div class="dl-main">
+          <div class="dl-title">${escapeHtml(row.artist)} <span class="dl-dash">·</span> ${escapeHtml(row.album)}</div>
+          <div class="dl-sub">${sources}${sources ? ' · ' : ''}Deezer ${row.deezerAvailability === 'catalog-present' ? 'in catalog (playback unverified)' : 'availability unknown'} · acquisition ${escapeHtml(row.acquisition)}${row.reconciliationError ? ' · ' + escapeHtml(row.reconciliationError) : ''}</div>
+          <div class="dl-sub">Upload jobs: ${uploadJobs}</div>
+          <div class="dl-sub">${tracker('RED', row.red)}${tracker('OPS', row.ops)}</div>
+        </div>
+        <div class="dl-side"><div class="dl-sub">Checked ${escapeHtml(relTime(row.red?.checkedUtc || row.ops?.checkedUtc)) || 'never'}</div>
+          <button type="button" class="btn btn-ghost tracker-recheck" data-key="${escapeHtml(row.key)}">Recheck</button></div>
+      </div>`;
+    }).join('');
+  } catch (error) {
+    list.innerHTML = stateBlock('error', `Tracker opportunities unavailable: ${error.message || 'error'}`);
+  }
+}
+document.getElementById('tracker-opportunities')?.addEventListener('click', async event => {
+  const button = event.target.closest('.tracker-recheck');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const response = await api(`/api/admin/tracker-opportunities/recheck?key=${encodeURIComponent(button.dataset.key)}`, { method: 'POST' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await loadTrackerOpportunities();
+  } catch (error) { button.textContent = `Failed: ${error.message || 'error'}`; button.disabled = false; }
+});
 
 // ────────────────────────────────────────────────────────────────
 // Segmented controls: buttons built from a hidden <select> they proxy to,

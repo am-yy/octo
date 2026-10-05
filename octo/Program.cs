@@ -267,25 +267,6 @@ builder.Services.AddSingleton<Octo.Services.Fingerprint.DownloadVerificationServ
 builder.Services.AddSingleton<IMusicMetadataService, SoulseekMetadataService>();
 builder.Services.AddSingleton<IDownloadService, SoulseekDownloadService>();
 builder.Services.AddSingleton<LidarrClient>();
-builder.Services.AddHttpClient("tracker-direct", client => client.Timeout = TimeSpan.FromSeconds(25))
-    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
-builder.Services.AddSingleton(sp => new Octo.Services.Trackers.TrackerDirectQueue(
-    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "tracker-cooldowns.json"),
-    sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHttpClientFactory>()));
-builder.Services.AddSingleton(sp => new Octo.Services.Trackers.TrackerOpportunityService(
-    sp.GetRequiredService<ExternalSaveStore>(), sp.GetRequiredService<LidarrClient>(),
-    sp.GetRequiredService<Octo.Services.Trackers.TrackerDirectQueue>(),
-    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "tracker-opportunities.json"),
-    sp.GetRequiredService<ILogger<Octo.Services.Trackers.TrackerOpportunityService>>(),
-    deezer: sp.GetRequiredService<Octo.Services.Metadata.DeezerMetadataService>(),
-    resolver: sp.GetRequiredService<Octo.Services.Deezer.DeezerResolver>(),
-    handoff: sp.GetRequiredService<Octo.Services.Trackers.SalmonMediaHandoff>(),
-    config: sp.GetRequiredService<IConfiguration>()));
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Trackers.TrackerOpportunityService>());
-builder.Services.AddSingleton<Octo.Services.Trackers.SalmonMediaHandoff>();
-builder.Services.AddHttpClient("SalmonMediaHandoff")
-    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
-builder.Services.AddSingleton<Octo.Services.Trackers.SalmonJobService>();
 builder.Services.AddSingleton<ILidarrHeartAcquisitionService, LidarrHeartAcquisitionService>();
 builder.Services.AddSingleton<HeartAcquisitionCoordinator>();
 

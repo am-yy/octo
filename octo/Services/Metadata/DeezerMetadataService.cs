@@ -45,8 +45,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// album, ep, single or compile.</summary>
     public record AlbumDetail(string DeezerId, string Title, string Artist,
         string? CoverUrl, int? Year, string? Genre, string? Label, List<AlbumTrack> Tracks,
-        string? RecordType = null, int? DeclaredTrackCount = null, int? ReturnedTotal = null,
-        bool Complete = false, string? CompletenessError = null);
+        string? RecordType = null);
 
     /// <summary>What the catalog said when asked for an album's detail.</summary>
     public enum AlbumAnswer
@@ -714,19 +713,19 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// <summary>Album detail plus its full tracklist, ordered by disc then track position.
     /// One bounded request per resource; a release larger than the cap is reported as
     /// truncated rather than silently presented as complete.</summary>
-    public async Task<AlbumDetail?> GetAlbumDetailAsync(string deezerId, CancellationToken ct = default, bool refresh = false) =>
-        (await LookUpAlbumDetailAsync(deezerId, ct, refresh)).Detail;
+    public async Task<AlbumDetail?> GetAlbumDetailAsync(string deezerId, CancellationToken ct = default) =>
+        (await LookUpAlbumDetailAsync(deezerId, ct)).Detail;
 
     /// <summary>
     /// <see cref="GetAlbumDetailAsync"/>, saying also why there is no detail when there is none:
     /// Deezer has no such album, it has the album but no tracks for it, or it did not answer
     /// this time. Only the last may come right on its own a moment later.
     /// </summary>
-    public async Task<AlbumLookup> LookUpAlbumDetailAsync(string deezerId, CancellationToken ct = default, bool refresh = false)
+    public async Task<AlbumLookup> LookUpAlbumDetailAsync(string deezerId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(deezerId)) return new AlbumLookup(null, AlbumAnswer.NoSuchAlbum);
         var cacheKey = $"ad|{deezerId}";
-        if (!refresh && TryGetCached<AlbumLookup>(cacheKey, out var cached)) return cached!;
+        if (TryGetCached<AlbumLookup>(cacheKey, out var cached)) return cached!;
         var unavailable = new AlbumLookup(null, AlbumAnswer.Unavailable);
 
         AlbumDetail? detail = null;
@@ -742,9 +741,6 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             // tracklist call, and this is what tells an empty tracklist apart from an
             // album that genuinely has no tracks.
             int? nbTracks = null;
-            int? returnedTotal = null;
-            bool truncated = false;
-            int returnedCount = 0;
 
             using (var r = await GetJsonAsync($"{Base}/album/{deezerId}", ct))
             {
@@ -753,7 +749,6 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                 {
                     var root = r.Doc.RootElement;
                     nbTracks = Int(root, "nb_tracks");
-                    partial |= !root.TryGetProperty("id", out var returnedAlbumId) || returnedAlbumId.ToString() != deezerId;
                     title = Str(root, "title") ?? "";
                     cover = Str(root, "cover_xl") ?? Str(root, "cover_medium") ?? "";
                     label = Str(root, "label") ?? "";
@@ -790,14 +785,9 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                     && tr.Doc.RootElement.TryGetProperty("data", out var data)
                     && data.ValueKind == JsonValueKind.Array)
                 {
-                    returnedCount = data.GetArrayLength();
-                    returnedTotal = Int(tr.Doc.RootElement, "total");
-                    truncated = Str(tr.Doc.RootElement, "next") is { Length: > 0 }
-                        || tr.Doc.RootElement.TryGetProperty("total", out _) && returnedTotal is null;
                     foreach (var t in data.EnumerateArray())
                     {
-                        if (t.ValueKind != JsonValueKind.Object) { partial = true; continue; }
-                        var tTitle = TrackTitle(t);
+                        var tTitle = Str(t, "title");
                         if (string.IsNullOrWhiteSpace(tTitle)) continue;
                         var tArtist = t.TryGetProperty("artist", out var ta) ? Str(ta, "name") : null;
                         tracks.Add(new AlbumTrack(
@@ -841,11 +831,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                 string.IsNullOrEmpty(cover) ? null : cover, year,
                 string.IsNullOrEmpty(genre) ? null : genre,
                 string.IsNullOrEmpty(label) ? null : label,
-                tracks, recordType, nbTracks, returnedTotal);
-            var complete = !partial && !truncated && returnedCount == tracks.Count
-                && Octo.Services.Trackers.DeezerAlbumManifest.Validate(detail) is null;
-            detail = detail with { Complete = complete, CompletenessError = complete ? null : "Incomplete or malformed ordered manifest" };
-            partial |= !complete;
+                tracks, recordType);
         }
         catch (Exception ex)
         {

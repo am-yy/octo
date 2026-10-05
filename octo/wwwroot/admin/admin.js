@@ -48,7 +48,6 @@ function activateTab(name, { focus = false } = {}) {
   if (typeof syncSegments === 'function') syncSegments(false);
   // Panes that show live data reload whenever they are opened, so they are never stale.
   if (name === 'fetched' && typeof loadFetched === 'function') loadFetched();
-  if (name === 'opportunities') loadTrackerOpportunities();
   if (name === 'raw' && typeof loadRawConfig === 'function') loadRawConfig();
   if (name === 'sources' && typeof loadConfigSources === 'function') loadConfigSources();
   if (name === 'lastfm' && typeof loadRadioStatus === 'function') loadRadioStatus();
@@ -2639,64 +2638,6 @@ async function loadFetched({ withAcquisitions = true } = {}) {
   }
 }
 document.getElementById('fetched-refresh')?.addEventListener('click', loadFetched);
-
-async function loadTrackerOpportunities() {
-  const list = document.getElementById('tracker-opportunities');
-  const jobList = document.getElementById('tracker-jobs');
-  if (!list || !jobList) return;
-  try {
-    const response = await api('/api/admin/tracker-opportunities', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    const checks = document.getElementById('tracker-view')?.value === 'checks';
-    const rows = (data.opportunities || []).filter(row => checks || [row.red, row.ops].some(f => f?.status === 'candidate'));
-    const findingHtml = (target, finding) => {
-      const candidate = finding?.status === 'candidate';
-      const mode = finding?.uploadMode === 'existing-group' ? 'existing group' : 'new group';
-      const label = candidate ? `${target} — add ${finding.sourceMedium} FLAC to ${mode}`
-        : `${target} — ${finding?.status === 'ignored' ? 'same-medium FLAC exists' : finding?.error || 'Unknown'}`;
-      const links = (finding?.matches || []).map(m =>
-        `<a href="${escapeHtml(m.url)}" target="_blank" rel="noopener noreferrer">Group ${escapeHtml(m.groupId)}</a>`).join(' · ');
-      const coverage = (finding?.queryCoverage || []).map(q => `${q.query}: ${q.pages} pages, ${q.results} results, ${q.complete ? 'complete' : 'incomplete'}`).join('; ');
-      const diagnostics = (finding?.diagnostics || []).slice(0, 8).join('; ');
-      return `<div>${escapeHtml(label)}${links ? ' · ' + links : ''} · checked ${escapeHtml(relTime(finding?.checkedUtc)) || 'never'}
-        ${coverage ? `<div>${escapeHtml(coverage)}</div>` : ''}${diagnostics ? `<div>${escapeHtml(diagnostics)}</div>` : ''}</div>`;
-    };
-    list.innerHTML = rows.length ? rows.map(row => {
-      const manifest = row.manifest;
-      const source = manifest ? `${manifest.albumType} · ${manifest.declaredCount} tracks · complete manifest · Deezer ${row.deezerAvailability}` : 'No qualified Deezer source';
-      const local = (row.sources || []).map(s => `${s.tracker?.toUpperCase() || 'Unknown tracker'} · ${s.complete ? 'complete local source' : s.error || 'missing source'}`).join('; ');
-      return `<div class="dl-item"><div class="dl-main">
-        <div class="dl-title">${escapeHtml(row.artist)} <span class="dl-dash">·</span> ${escapeHtml(row.album)}</div>
-        <div class="dl-sub">${escapeHtml(source)}${local ? ' · ' + escapeHtml(local) : ''} · acquisition ${escapeHtml(row.acquisition)}</div>
-        <div class="dl-sub">${escapeHtml(row.identityChanged ? 'identity changed — Recheck' : row.identityDiagnostic || row.identityStatus)}${row.reconciliationError ? ' · ' + escapeHtml(row.reconciliationError) : ''}
-          · parent search ${row.parentSearchComplete ? 'complete' : 'incomplete'} · ${escapeHtml(row.parentsInspected || 0)} inspected</div>
-        <div class="dl-sub">${findingHtml('RED', row.red)}${findingHtml('OPS', row.ops)}</div>
-      </div><div class="dl-side"><button type="button" class="btn btn-ghost tracker-recheck" data-key="${escapeHtml(row.key)}">Recheck</button></div></div>`;
-    }).join('') : stateBlock('empty', checks ? 'No saved release checks yet.' : 'No qualified candidates. Checks contains exclusions and Recheck recovery.');
-    // Job identity is stable even when release metadata changes or saves disappear.
-    const jobs = (data.jobs || []).filter(job => checks || job.status !== 'uploaded' || job.seedingStatus !== 'seeding' || job.importStatus !== 'imported');
-    jobList.innerHTML = jobs.length ? jobs.map(job => `<div class="dl-item"><div class="dl-main">
-      <div class="dl-title">${escapeHtml(job.target?.toUpperCase() || '')} · ${escapeHtml(job.artist || '')} · ${escapeHtml(job.album || '')}</div>
-      <div class="dl-sub">Job ${escapeHtml(job.id)} · ${escapeHtml(job.status)} · seed ${escapeHtml(job.seedingStatus)} · import ${escapeHtml(job.importStatus)}</div>
-      <div class="dl-sub">${escapeHtml(job.error || '')} · Resume with salmon-local finalize ${escapeHtml(job.id)}</div>
-    </div></div>`).join('') : stateBlock('empty', checks ? 'No upload jobs.' : 'No unfinished upload jobs.');
-  } catch (error) {
-    list.innerHTML = stateBlock('error', `Tracker opportunities unavailable: ${error.message || 'error'}`);
-  }
-}
-document.getElementById('tracker-refresh')?.addEventListener('click', loadTrackerOpportunities);
-document.getElementById('tracker-view')?.addEventListener('change', loadTrackerOpportunities);
-document.getElementById('tracker-opportunities')?.addEventListener('click', async event => {
-  const button = event.target.closest('.tracker-recheck');
-  if (!button) return;
-  button.disabled = true;
-  try {
-    const response = await api(`/api/admin/tracker-opportunities/recheck?key=${encodeURIComponent(button.dataset.key)}`, { method: 'POST' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    await loadTrackerOpportunities();
-  } catch (error) { button.textContent = `Failed: ${error.message || 'error'}`; button.disabled = false; }
-});
 
 // ────────────────────────────────────────────────────────────────
 // Segmented controls: buttons built from a hidden <select> they proxy to,

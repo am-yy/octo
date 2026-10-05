@@ -23,7 +23,7 @@ WORKDIR /app
 # feature degrades to a no-op and logs once; it never fails a download.
 # Generated list covers set names in Inter (inside the app); Noto CJK and Symbola draw the
 # Chinese, Japanese, Korean and emoji names Inter has no letters for, DejaVu Arabic and Hebrew.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg flac fonts-dejavu-core fonts-noto-cjk fonts-symbola libchromaprint-tools \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-cjk fonts-symbola libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/downloads
 

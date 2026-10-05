@@ -87,7 +87,6 @@ public sealed class ExternalSaveSnapshot
     public IReadOnlyList<ExternalHeartMutation> HeartMutations { get; init; } = [];
     public IReadOnlyList<ExternalSongAlias> Aliases { get; init; } = [];
     public IReadOnlyList<ExternalAcquisitionIntent> Acquisitions { get; init; } = [];
-    public IReadOnlyList<ExternalAlbumSearch> AlbumSearches { get; init; } = [];
 }
 
 /// <summary>
@@ -126,7 +125,6 @@ public sealed class ExternalSaveStore
                 HeartMutations = _state.HeartMutations.Select(Clone).ToList(),
                 Aliases = _state.Aliases.Select(Clone).ToList(),
                 Acquisitions = _state.Acquisitions.Select(Clone).ToList(),
-                AlbumSearches = _state.AlbumSearches.Select(Clone).ToList(),
             };
     }
 

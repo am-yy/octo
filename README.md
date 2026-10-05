@@ -658,16 +658,6 @@ Yes. Enable Deezer for direct downloads, Lidarr for album-level heart acquisitio
 **Can it run without Last.fm?**
 Yes. Existing snapshots are served first; Starter and pinned stations can fall back to accessible local seeds/genres, but fresh external discovery is degraded. The Last.fm pane reports that state explicitly.
 
-### Tracker opportunities
-
-The admin **Tracker opportunities** pane evaluates complete album/EP sources nominated by saved songs. It shows ordinary WEB/CD FLAC additions to new or existing RED/OPS groups. Complete empty searches also support artists absent from the destination. Searches include recognized edition-label variants without treating shortened titles as verified identities. Same-medium FLAC excludes another edition; ambiguous or incomplete evidence stays in **Checks** with **Recheck** recovery. Upload jobs remain visible by ID independently of saved releases.
-
-Configure direct keys under `Trackers:{red|ops}:ApiKey` and exact Lidarr grab-history names under `Trackers:{red|ops}:LidarrIndexerNames`. Both name lists must be nonempty and disjoint; historical aliases require explicit entries. Unknown attribution or a failed source-hash lookup cannot qualify a local source. Tracker requests share persisted eleven-second queues; Prowlarr remains independent.
-
-Deezer availability requires a complete ordered manifest and exact FLAC track IDs. Proof expires after twelve hours. Local inventory checks require every torrent file on disk, including skipped files; listing does not download or recheck pieces. Acquisition closure and completed cross-upload assessments persist across restarts and removed/re-added saves. Metadata changes require **Recheck** before stale candidates become eligible again.
-
-Candidates authorize preparation only. Salmon keeps per-destination, revision-bound CLI review and approval; destination rules are reviewed separately. Acquisition remains manual for Deezer preparation, and the operator supplies local-file provenance. No automatic upload or second-destination submission runs.
-
 ### Development
 
 ```bash

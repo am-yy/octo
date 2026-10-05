@@ -558,6 +558,7 @@ public partial class SubsonicResponseBuilder
         ("songLyrics", [1, 2]),
         ("transcodeOffset", [1]),
         ("transcoding", [1]),
+        (RadioSourcesExtension, [RadioSourcesExtensionVersion]),
     ];
 
     /// <summary>
@@ -565,15 +566,17 @@ public partial class SubsonicResponseBuilder
     /// A failed answer passes through untouched; with no answer at all, Octo lists its own.
     /// </summary>
     public IActionResult MergeOpenSubsonicExtensions(string format, byte[]? upstream, string? contentType,
-        bool lyricsChoices = true, bool libraryActions = false)
+        bool lyricsChoices = true, bool libraryActions = false, bool radioSources = false)
     {
         var json = format.Equals("json", StringComparison.OrdinalIgnoreCase);
         // octoLyrics is only listed while its lookups can run, so a client never offers a
         // "choose lyrics" that can only answer that lookups are off. octoLibraryActions is only
-        // listed while library actions are on, for the same reason.
+        // listed while library actions are on, and octoRadioSources while radio can answer, for
+        // the same reason.
         var own = OwnExtensions
             .Where(extension => lyricsChoices || extension.Name != LyricsExtension)
             .Where(extension => libraryActions || extension.Name != LibraryActionsExtension)
+            .Where(extension => radioSources || extension.Name != RadioSourcesExtension)
             .ToArray();
         try
         {
@@ -794,6 +797,8 @@ public partial class SubsonicResponseBuilder
         };
 
         if (song.Year is int knownYear) fields["year"] = knownYear;
+        // Which radio source suggested the song; only radio answers carry it (octoRadioSources).
+        if (!string.IsNullOrEmpty(song.SuggestedBy)) fields["octoSuggestedBy"] = song.SuggestedBy;
 
         if (!song.IsLocal)
         {

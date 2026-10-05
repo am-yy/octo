@@ -113,6 +113,19 @@ public sealed class TrackerOpportunityService : BackgroundService
             row.IdentityStatus = "legacy"; row.IdentityDiagnostic = "Legacy album association needs reconciliation";
             row.SchemaVersion = 2;
         }
+        foreach (var row in _rows.Where(r => r.SchemaVersion < 3))
+        {
+            // Old literal-title searches may have missed groups with edition metadata.
+            // Preserve acquisition closure, assessment allowance, and cached evidence.
+            foreach (var finding in new[] { row.Red, row.Ops }.Concat(row.Assessments
+                .Select(a => a.Result).OfType<TrackerFinding>()).Where(f => f.Status == "candidate"))
+            {
+                finding.SearchComplete = false;
+                finding.Error = "Edition-aware search required — Recheck";
+                finding.Apply(new(TrackerDecision.Unknown, "none", null, finding.Error));
+            }
+            row.SchemaVersion = 3;
+        }
     }
 
     public async Task<IReadOnlyList<TrackerOpportunity>> ListAsync(CancellationToken ct = default)
@@ -266,7 +279,7 @@ public sealed class TrackerOpportunityService : BackgroundService
                 var row = rows.FirstOrDefault(r => r.References.Any(s => s.Id == id) || r.ReferenceIds.Intersect(references).Any());
                 if (row is null)
                 {
-                    row = new() { SchemaVersion = 2, Artist = song.AlbumArtist ?? song.Artist, Album = song.Album };
+                    row = new() { SchemaVersion = 3, Artist = song.AlbumArtist ?? song.Artist, Album = song.Album };
                     rows.Add(row);
                 }
                 var revision = ReferenceRevision(song);
@@ -315,7 +328,7 @@ public sealed class TrackerOpportunityService : BackgroundService
             if (!same && row.Acquisition != "unresolved")
             {
                 // A single's acquisition closure cannot close its newly discovered parent album.
-                var parent = new TrackerOpportunity { SchemaVersion = 2, References = row.References,
+                var parent = new TrackerOpportunity { SchemaVersion = 3, References = row.References,
                     ReferenceIds = row.ReferenceIds, Saved = row.Saved, RecheckVersion = row.RecheckVersion,
                     CheckedVersion = row.CheckedVersion, IdentityVersion = row.IdentityVersion + 1 };
                 row.References = []; row.ReferenceIds = []; row.Saved = false;

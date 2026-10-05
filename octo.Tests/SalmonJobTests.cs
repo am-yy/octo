@@ -41,6 +41,23 @@ public sealed class SalmonJobTests
     }
 
     [Fact]
+    public async Task BaseTitleGroupAppearingAfterDeluxeReviewPreventsUpload()
+    {
+        const string title = "Album (Deluxe Version)";
+        using var f = new Fixture(title);
+        await f.PrepareAsync(f.Submission(title: title));
+        var review = JsonSerializer.SerializeToNode(await f.Jobs.ReviewAsync(f.Id, default));
+        Assert.True(review!["canSubmit"]!.GetValue<bool>(), review.ToJsonString());
+
+        f.ExistingGroupId = 27;
+        var browseCount = f.Requests.Count(r => r.Action == "browse");
+        var state = JsonSerializer.SerializeToNode(await f.Jobs.SubmitAsync(f.Id, f.Revision, default));
+        Assert.Equal("prepared", state!["Status"]!.GetValue<string>());
+        Assert.Equal(4, f.Requests.Count(r => r.Action == "browse") - browseCount);
+        Assert.Equal(0, f.Uploads);
+    }
+
+    [Fact]
     public async Task AmbiguousPostPersistsAndNeverBlindlyRetries()
     {
         using var f = new Fixture { AmbiguousUpload = true };
@@ -512,17 +529,17 @@ public sealed class SalmonJobTests
         public bool Duplicate { get; set; }
         public bool AmbiguousUpload { get; init; }
         public HttpStatusCode? RejectedUpload { get; set; }
-        public int? ExistingGroupId { get; init; }
+        public int? ExistingGroupId { get; set; }
         public Action? AfterBrowse { get; set; }
         public List<(string Action, string? Query)> Requests { get; } = [];
         public List<(string Tracker, string Action, string? Query)> TrackerRequests { get; } = [];
         private TrackerDirectQueue _queue = null!;
-        public Fixture()
+        public Fixture(string title = "Album")
         {
             Directory.CreateDirectory(Root);
             var audioPath = Path.Combine(Root, "sample.flac");
             using var p = new Process { StartInfo = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, RedirectStandardError = true } };
-            foreach (var arg in new[] { "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.1", "-sample_fmt", "s16", "-metadata", "artist=Artist", "-metadata", "album_artist=Artist", "-metadata", "album=Album", "-metadata", "title=Track", "-metadata", "track=1", "-metadata", "disc=1", audioPath }) p.StartInfo.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.1", "-sample_fmt", "s16", "-metadata", "artist=Artist", "-metadata", "album_artist=Artist", "-metadata", "album=" + title, "-metadata", "title=Track", "-metadata", "track=1", "-metadata", "disc=1", audioPath }) p.StartInfo.ArgumentList.Add(arg);
             p.Start(); var error = p.StandardError.ReadToEnd(); p.WaitForExit();
             Assert.True(p.ExitCode == 0, error);
             Audio = File.ReadAllBytes(audioPath);
@@ -671,7 +688,7 @@ public sealed class SalmonJobTests
                     },
                 },
                 "torrent" => new JsonObject { ["torrent"] = new JsonObject { ["id"] = 5, ["infoHash"] = new SalmonTorrent(Torrent, "red").InfoHash }, ["group"] = new JsonObject { ["id"] = 6 } },
-                "browse" when ExistingGroupId is int groupId => new JsonObject
+                "browse" when ExistingGroupId is int groupId && (parameters["searchstr"] is "Artist Album" or "Album") => new JsonObject
                 {
                     ["pages"] = 1, ["currentPage"] = 1,
                     ["results"] = new JsonArray(new JsonObject

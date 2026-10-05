@@ -143,6 +143,101 @@ public sealed class TrackerCatalogClientTests
     }
 
 
+    [Theory]
+    [InlineData("red")]
+    [InlineData("ops")]
+    public async Task EmptyDeluxeQueriesCannotHideExistingBaseTitleGroup(string tracker)
+    {
+        using var fixture = new Fixture((action, _, query) => action == "browse"
+            ? query.Contains("Deluxe Version", StringComparison.Ordinal)
+                ? EmptyBrowse()
+                : BrowseGroup(1240, "A$AP Rocky", "Long.Live.A$AP", categoryName: "Music", categoryId: 1)
+            : throw new InvalidOperationException());
+        var finding = await fixture.Catalog.SearchAsync(tracker,
+            [new ReleaseName("A$AP Rocky", "LONG.LIVE.A$AP (Deluxe Version)")],
+            "WEB", 3, "album", CancellationToken.None);
+
+        Assert.NotNull(finding);
+        Assert.Equal(TrackerDecision.Unknown, finding.Decision);
+        Assert.Equal("none", finding.UploadMode);
+        Assert.Equal(4, finding.QueryCoverage.Count);
+        Assert.All(finding.QueryCoverage, q => Assert.True(q.Complete));
+        Assert.Contains(fixture.Calls, c => c.Query == "A$AP Rocky LONG.LIVE.A$AP");
+        Assert.Contains(fixture.Calls, c => c.Query == "LONG.LIVE.A$AP");
+        Assert.Contains(finding.Diagnostics, d => d.Contains("edition", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.Calls, c => c.Action == "torrentgroup");
+    }
+
+    [Theory]
+    [InlineData("Album (Deluxe Version)")]
+    [InlineData("Album [Expanded Edition]")]
+    [InlineData("Album - 20th Anniversary Edition")]
+    [InlineData("Album (2013 Remastered)")]
+    public async Task EmptyEditionSearchRequiresBothFullAndBaseQueries(string title)
+    {
+        using var fixture = new Fixture(_ => EmptyBrowse());
+        var finding = await fixture.Catalog.SearchAsync("red", [new ReleaseName("Artist", title)],
+            "WEB", 1, "album", CancellationToken.None);
+
+        Assert.NotNull(finding);
+        Assert.Equal(TrackerDecision.CandidateNewGroup, finding.Decision);
+        Assert.Equal(4, finding.QueryCoverage.Count);
+        Assert.Contains(fixture.Calls, c => c.Query == title);
+        Assert.Contains(fixture.Calls, c => c.Query == "Artist " + title);
+        Assert.Contains(fixture.Calls, c => c.Query == "Album");
+        Assert.Contains(fixture.Calls, c => c.Query == "Artist Album");
+    }
+
+    [Theory]
+    [InlineData("Album: Live at Home")]
+    [InlineData("Album (Part Two)")]
+    [InlineData("NotAnAnniversary")]
+    public async Task MeaningfulSubtitlesAndWordEndingsAreNotRemoved(string title)
+    {
+        using var fixture = new Fixture(_ => EmptyBrowse());
+        var finding = await fixture.Catalog.SearchAsync("red", [new ReleaseName("Artist", title)],
+            "WEB", 1, "album", CancellationToken.None);
+
+        Assert.NotNull(finding);
+        Assert.Equal(2, finding.QueryCoverage.Count);
+        Assert.All(fixture.Calls, c => Assert.EndsWith(title, c.Query));
+    }
+
+    [Fact]
+    public async Task FailedBaseTitleQueryCannotEstablishAbsence()
+    {
+        using var fixture = new Fixture((_, _, query) => query.Contains("Deluxe Version", StringComparison.Ordinal)
+            ? EmptyBrowse() : throw new HttpRequestException());
+        var finding = await fixture.Catalog.SearchAsync("red", [new ReleaseName("Artist", "Album (Deluxe Version)")],
+            "WEB", 1, "album", CancellationToken.None);
+
+        Assert.NotNull(finding);
+        Assert.Equal(TrackerDecision.Unknown, finding.Decision);
+        Assert.False(finding.SearchComplete);
+        Assert.Contains(finding.QueryCoverage, q => q.Query == "Artist Album" && !q.Complete);
+        Assert.Contains(finding.QueryCoverage, q => q.Query == "Album" && !q.Complete);
+    }
+
+    [Fact]
+    public async Task BaseQueryCanFindFullEditionIdentityAndExcludeSameMediumFlac()
+    {
+        const string title = "Album (Deluxe Version)";
+        using var fixture = new Fixture((action, _, query) => action switch
+        {
+            "browse" => query.Contains("Deluxe Version", StringComparison.Ordinal)
+                ? EmptyBrowse() : BrowseGroup(27, album: title),
+            "torrentgroup" => GroupDetail([Torrent(1, "WEB", "FLAC", "Lossless", 0)], album: title),
+            _ => throw new InvalidOperationException(),
+        });
+        var finding = await fixture.Catalog.SearchAsync("red", [new ReleaseName("Artist", title)],
+            "WEB", 1, "album", CancellationToken.None);
+
+        Assert.NotNull(finding);
+        Assert.Equal(TrackerDecision.IgnoreSameMediumFlac, finding.Decision);
+        Assert.Equal(4, finding.QueryCoverage.Count);
+        Assert.Single(fixture.Calls, c => c.Action == "torrentgroup");
+    }
+
     [Fact]
     public async Task EditionSubtitleIsNotDroppedToEstablishPresence()
     {
@@ -314,8 +409,8 @@ public sealed class TrackerCatalogClientTests
     private static string EmptyBrowse() => """{"results":[]}""";
 
     private static string GroupDetail(IEnumerable<string> torrents, int groupId = 27, int releaseType = 1,
-        string categoryName = "Music", int categoryId = 1) =>
-        "{\"group\":{\"id\":" + groupId + ",\"name\":\"Album\",\"categoryId\":" + categoryId + ",\"categoryName\":" + JsonSerializer.Serialize(categoryName) + ",\"releaseType\":" + releaseType + "," +
+        string categoryName = "Music", int categoryId = 1, string album = "Album") =>
+        "{\"group\":{\"id\":" + groupId + ",\"name\":" + JsonSerializer.Serialize(album) + ",\"categoryId\":" + categoryId + ",\"categoryName\":" + JsonSerializer.Serialize(categoryName) + ",\"releaseType\":" + releaseType + "," +
         "\"musicInfo\":{\"artists\":[{\"name\":\"Artist\"}]}},\"torrents\":[" + string.Join(",", torrents) + "]}";
 
     private static string Torrent(int id, string medium, string format, string encoding, int seeders) =>

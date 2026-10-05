@@ -62,7 +62,11 @@ public sealed class TrackerCatalogClient(TrackerDirectQueue queue, TimeProvider?
             finding.AddDiagnostic("Release identity count outside supported bounds.");
             return finding;
         }
-        var queries = wanted.SelectMany(n => new[] { n.Artist.Trim() + " " + n.Album.Trim(), n.Album.Trim() })
+        // Edition labels often live on torrents, not group titles. Search both forms,
+        // but keep the original names as the only authority for matching identity.
+        var queries = wanted.SelectMany(n => new[] { n.Album.Trim(), EditionBaseTitle(n.Album) }
+                .Where(title => !string.IsNullOrWhiteSpace(title))
+                .SelectMany(title => new[] { n.Artist.Trim() + " " + title, title }))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var groupRows = new Dictionary<int, BrowseGroup>();
         var uncertain = false;
@@ -98,7 +102,7 @@ public sealed class TrackerCatalogClient(TrackerDirectQueue queue, TimeProvider?
                             if (couldMatch)
                             {
                                 uncertain = true;
-                                finding.AddDiagnostic("Exact-title browse result lacks verified group identity.");
+                                finding.AddDiagnostic("Album/edition browse result lacks verified group identity.");
                             }
                             continue;
                         }
@@ -402,15 +406,15 @@ public sealed class TrackerCatalogClient(TrackerDirectQueue queue, TimeProvider?
     }
 
     private static bool IsEditionVariant(string expected, string actual) =>
-        AlbumKey(expected) != AlbumKey(actual) && EditionBaseKey(expected) == EditionBaseKey(actual);
+        AlbumKey(expected) != AlbumKey(actual) && AlbumKey(EditionBaseTitle(expected)) == AlbumKey(EditionBaseTitle(actual));
 
-    private static string EditionBaseKey(string? title)
+    private static string EditionBaseTitle(string? title)
     {
-        var folded = SongIdentity.Fold(WebUtility.HtmlDecode(title ?? "")).ToLowerInvariant();
+        var folded = SongIdentity.Fold(WebUtility.HtmlDecode(title ?? ""));
         var baseTitle = Regex.Replace(folded,
-            @"(?:\s*[(\[{\-:]?\s*)(?:(?:\d+(?:st|nd|rd|th)?\s+)?anniversary(?:\s+(?:edition|version))?|(?:deluxe|expanded|special|bonus)\s+(?:edition|version)|(?:\d{4}\s+)?re-?master(?:ed)?(?:\s+\d{4})?)(?:\s*[)\]}])?\s*$",
+            @"(?:\s*[(\[{\-:]\s*|\s+)(?:(?:\d+(?:st|nd|rd|th)?\s+)?anniversary(?:\s+(?:edition|version))?|(?:deluxe|expanded|special|bonus)\s+(?:edition|version)|(?:\d{4}\s+)?re-?master(?:ed)?(?:\s+\d{4})?)(?:\s*[)\]}])?\s*$",
             "", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return AlbumKey(baseTitle);
+        return baseTitle.Trim();
     }
 
     private static bool TryNormalizeTorrentMetadata(string? mediaText, string? formatText, out string media, out string format)

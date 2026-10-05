@@ -221,6 +221,47 @@ public sealed class TrackerOpportunityLifecycleTests
     }
 
     [Fact]
+    public async Task EditionSearchMigrationInvalidatesCandidatesWithoutResettingAssessmentAllowance()
+    {
+        using var f = new Fixture { Acquired = true };
+        await f.SaveAsync(album: "Crisps"); await f.Service.RefreshAsync();
+        var prior = Assert.Single(await f.Service.ListAsync());
+        var assessment = Assert.Single(prior.Assessments);
+        prior.SchemaVersion = 2;
+        await File.WriteAllTextAsync(f.StatePath, JsonSerializer.Serialize(new[] { prior }));
+        var requests = f.TrackerRequests;
+
+        f.Restart();
+        var migrated = Assert.Single(await f.Service.ListAsync());
+        Assert.Equal(3, migrated.SchemaVersion);
+        Assert.Equal("complete", migrated.Acquisition);
+        Assert.Equal(prior.IdentityVersion, migrated.IdentityVersion);
+        Assert.Equal(prior.Sources.Single().Hash, migrated.Sources.Single().Hash);
+        Assert.Equal(prior.References.Single().Id, migrated.References.Single().Id);
+        Assert.Equal(prior.RecheckVersion, migrated.RecheckVersion);
+        Assert.Equal(prior.CheckedVersion, migrated.CheckedVersion);
+        Assert.Equal(TrackerDecision.Unknown, migrated.Ops.Decision);
+        Assert.Equal("unknown", migrated.Ops.Status);
+        Assert.Equal("none", migrated.Ops.UploadMode);
+        Assert.Contains("Recheck", migrated.Ops.Error);
+        Assert.Equal(prior.Ops.CheckedUtc, migrated.Ops.CheckedUtc);
+        Assert.Equal(prior.Ops.QueryCoverage, migrated.Ops.QueryCoverage);
+        var retained = Assert.Single(migrated.Assessments);
+        Assert.Equal(assessment.Id, retained.Id);
+        Assert.Equal(assessment.CompletedUtc, retained.CompletedUtc);
+        Assert.Equal("unknown", retained.Result!.Status);
+        await f.Service.RefreshAsync(); f.Restart(); await f.Service.RefreshAsync();
+        Assert.Equal(requests, f.TrackerRequests);
+
+        Assert.True(await f.Service.RecheckAsync(prior.Key));
+        await f.Service.RefreshAsync(); f.Restart();
+        var refreshed = Assert.Single(await f.Service.ListAsync());
+        Assert.Equal("candidate", refreshed.Ops.Status);
+        Assert.Equal(2, refreshed.Assessments.Count);
+        Assert.False(refreshed.RecheckRequested);
+    }
+
+    [Fact]
     public async Task LegacySingleClosureStaysOnSingleWhenRecheckResolvesParent()
     {
         using var f = new Fixture();

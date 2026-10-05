@@ -660,7 +660,7 @@ Yes. Existing snapshots are served first; Starter and pinned stations can fall b
 
 ### Tracker opportunities
 
-The admin **Tracker opportunities** pane evaluates complete album/EP sources nominated by saved songs. It shows ordinary WEB/CD FLAC additions to new or existing RED/OPS groups. Complete empty searches also support artists absent from the destination. Same-medium FLAC excludes another edition; ambiguous or incomplete evidence stays in **Checks** with **Recheck** recovery. Upload jobs remain visible by ID independently of saved releases.
+The admin **Tracker opportunities** pane evaluates complete album/EP sources nominated by saved songs. It shows ordinary WEB/CD FLAC additions to new or existing RED/OPS groups. Complete empty searches also support artists absent from the destination. Searches include recognized edition-label variants without treating shortened titles as verified identities. Same-medium FLAC excludes another edition; ambiguous or incomplete evidence stays in **Checks** with **Recheck** recovery. Upload jobs remain visible by ID independently of saved releases.
 
 Configure direct keys under `Trackers:{red|ops}:ApiKey` and exact Lidarr grab-history names under `Trackers:{red|ops}:LidarrIndexerNames`. Both name lists must be nonempty and disjoint; historical aliases require explicit entries. Unknown attribution or a failed source-hash lookup cannot qualify a local source. Tracker requests share persisted eleven-second queues; Prowlarr remains independent.
 

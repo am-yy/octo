@@ -38,6 +38,10 @@
             <svg class="icon" aria-hidden="true"><use href="#i-tray-arrow-down"/></svg>
             <span>Fetched songs</span>
           </button>
+          <button class="sidebar-nav-item" data-tab="opportunities">
+            <svg class="icon" aria-hidden="true"><use href="#i-magnifying-glass"/></svg>
+            <span>Tracker opportunities</span>
+          </button>
         </div>
 
         <div class="sidebar-nav-section">
@@ -266,15 +270,24 @@
           <div id="acq-list" class="dl-list" aria-live="polite"></div>
         </div>
         <div class="set-head">
-          <h3 class="set-title">Tracker opportunities</h3>
-          <p class="set-desc">Saved releases checked directly on RED and OPS. Acquired releases stay visible without automatic checks.</p>
-        </div>
-        <div id="tracker-opportunities" class="dl-list" aria-live="polite"></div>
-        <div class="set-head">
           <h3 class="set-title">Added to your library</h3>
           <p class="set-desc">A failed heart is not listed here. Turn on <em>Download failed</em> under <button type="button" class="link-button" data-open-tab="notifications">Notifications</button> to hear about those.</p>
         </div>
         <div id="fetched-list" class="dl-list"><div class="state state-loading"><svg class="icon" aria-hidden="true"><use href="#i-circle-notch"/></svg><span>Loading…</span></div></div>
+      </section>
+
+      <section data-pane="opportunities">
+        <header class="page-header"><div><h1>Tracker opportunities</h1>
+          <p>Complete album and EP sources eligible for preparation. Each upload needs separate reviewed approval.</p></div>
+          <button type="button" class="btn btn-ghost" id="tracker-refresh">Refresh view</button>
+        </header>
+        <div class="set-row"><label for="tracker-view">Show</label>
+          <select id="tracker-view"><option value="candidates">Candidates</option><option value="checks">Checks</option></select>
+        </div>
+        <div id="tracker-opportunities" class="dl-list" aria-live="polite"></div>
+        <div class="set-head"><h3 class="set-title">Upload jobs</h3>
+          <p class="set-desc">Jobs remain available by ID through review, reconciliation, seeding, and import recovery.</p></div>
+        <div id="tracker-jobs" class="dl-list" aria-live="polite"></div>
       </section>
 
       <!-- ─── LIBRARY ────────────────────────────────────────── -->

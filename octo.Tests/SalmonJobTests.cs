@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using Octo.Models.Settings;
 using Octo.Services.Trackers;
 
@@ -31,7 +32,7 @@ public sealed class SalmonJobTests
         using var f = new Fixture();
         await f.PrepareAsync();
         var review = JsonSerializer.SerializeToNode(await f.Jobs.ReviewAsync(f.Id, default));
-        Assert.True(review!["canSubmit"]!.GetValue<bool>());
+        Assert.True(review!["canSubmit"]!.GetValue<bool>(), review.ToJsonString());
         f.Duplicate = true;
         var state = JsonSerializer.SerializeToNode(await f.Jobs.SubmitAsync(f.Id, f.Revision, default));
         Assert.Equal("prepared", state!["Status"]!.GetValue<string>());
@@ -178,6 +179,27 @@ public sealed class SalmonJobTests
     }
 
     [Fact]
+    public void TypedNewReleaseRequiresMqaCheckOnRedButLegacyRedPayloadRemainsValid()
+    {
+        using var f = new Fixture();
+        var legacy = f.Submission();
+        legacy.Checks["mqa"] = "unknown";
+        SalmonPayload.Validate(legacy);
+
+        var typed = f.Submission();
+        typed.UploadMode = "new-group";
+        typed.ReleaseMetadata = new SalmonReleaseMetadata
+        {
+            Title = "Album", ReleaseId = typed.ReleaseId, GroupYear = 2026, Year = 2026,
+            ReleaseType = "Album", Artists = [new SalmonArtistCredit("Artist", 1)],
+        };
+        typed.Checks["mqa"] = "unknown";
+        Assert.Throws<InvalidDataException>(() => SalmonPayload.Validate(typed));
+        typed.Checks["mqa"] = "passed";
+        SalmonPayload.Validate(typed);
+    }
+
+    [Fact]
     public void MainArtistSelectionPreservesCreditRolesAndValidatesAlignment()
     {
         using var f = new Fixture();
@@ -195,6 +217,127 @@ public sealed class SalmonJobTests
         Assert.Throws<InvalidDataException>(() => SalmonPayload.Validate(s));
         s.Fields.Remove("importance[]");
         Assert.Throws<InvalidDataException>(() => SalmonPayload.Validate(s));
+    }
+
+    [Fact]
+    public async Task SunDrugOpsNewGroupReviewUsesTypedArtistsWithoutArtistId()
+    {
+        using var f = new Fixture();
+        f.SetAlbumArtist("Sun Drug");
+        var submission = f.Submission("ops", "Sun Drug", "Album");
+        submission.UploadMode = "new-group";
+        submission.ReleaseMetadata = new SalmonReleaseMetadata
+        {
+            Title = "Album", ReleaseId = submission.ReleaseId, GroupYear = 2026, Year = 2026,
+            ReleaseType = "Album", Artists = [new SalmonArtistCredit("Sun Drug", 1)],
+        };
+
+        await f.PrepareAsync(submission);
+        var review = JsonSerializer.SerializeToNode(await f.Jobs.ReviewAsync(f.Id, default));
+
+        Assert.True(review!["canSubmit"]!.GetValue<bool>());
+        Assert.Equal("CandidateNewGroup", review["classification"]!["decision"]!.GetValue<string>());
+        Assert.Equal("new-group", review["submission"]!["uploadMode"]!.GetValue<string>());
+        Assert.Equal("Sun Drug", review["submission"]!["ReleaseMetadata"]!["Artists"]![0]!["Name"]!.GetValue<string>());
+        Assert.DoesNotContain("artistid", submission.Fields.Keys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ExistingGroupPayloadContainsOnlyExistingGroupReleaseFields()
+    {
+        using var f = new Fixture();
+        var s = f.Submission();
+        s.UploadMode = "existing-group";
+        s.GroupId = 7;
+        s.ReleaseMetadata = new SalmonReleaseMetadata
+        {
+            Title = "Album", ReleaseId = s.ReleaseId, GroupYear = 2026, Year = 2026,
+            ReleaseType = "Album", Artists = [new SalmonArtistCredit("Artist", 1)],
+        };
+        s.Fields = new()
+        {
+            ["submit"] = true, ["type"] = 0, ["groupid"] = 7, ["remaster"] = true,
+            ["remaster_year"] = 2026, ["format"] = "FLAC", ["bitrate"] = "Lossless",
+            ["vbr"] = false, ["media"] = "WEB", ["release_desc"] = "Release details",
+        };
+
+        SalmonPayload.Validate(s);
+        s.Fields["title"] = "Album";
+        Assert.Throws<InvalidDataException>(() => SalmonPayload.Validate(s));
+    }
+
+    [Fact]
+    public async Task ExistingGroupReceiptMismatchPreservesIdsAndBlocksHandoffAndRetry()
+    {
+        using var f = new Fixture { ExistingGroupId = 7 };
+        var submission = f.Submission();
+        submission.UploadMode = "existing-group";
+        submission.GroupId = 7;
+        submission.ReleaseMetadata = new SalmonReleaseMetadata
+        {
+            Title = "Album", ReleaseId = submission.ReleaseId, GroupYear = 2026, Year = 2026,
+            ReleaseType = "Album", Artists = [new SalmonArtistCredit("Artist", 1)],
+        };
+        submission.Fields = new()
+        {
+            ["submit"] = true, ["type"] = 0, ["groupid"] = 7, ["remaster"] = true,
+            ["remaster_year"] = 2026, ["format"] = "FLAC", ["bitrate"] = "Lossless",
+            ["vbr"] = false, ["media"] = "WEB", ["release_desc"] = "Release details",
+        };
+        await f.PrepareAsync(submission);
+        var review = JsonSerializer.SerializeToNode(await f.Jobs.ReviewAsync(f.Id, default));
+        Assert.True(review!["canSubmit"]!.GetValue<bool>(), review.ToJsonString());
+        Assert.Equal("CandidateExistingGroup", review["classification"]!["decision"]!.GetValue<string>());
+
+        var result = JsonSerializer.SerializeToNode(await f.Jobs.SubmitAsync(f.Id, f.Revision, default));
+        Assert.Equal("receipt-mismatch", result!["Status"]!.GetValue<string>());
+        Assert.Equal(5, result["TorrentId"]!.GetValue<int>());
+        Assert.Equal(6, result["GroupId"]!.GetValue<int>());
+        Assert.Equal(1, f.Uploads);
+        Assert.DoesNotContain(f.Requests, r => r.Action == "download");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Jobs.HandoffAsync(f.Id, default));
+        var recovered = JsonSerializer.SerializeToNode(await f.Jobs.ReconcileAsync(f.Id, default));
+        Assert.Equal("receipt-mismatch", recovered!["Status"]!.GetValue<string>());
+        Assert.Equal(5, recovered["TorrentId"]!.GetValue<int>());
+        Assert.Equal(6, recovered["GroupId"]!.GetValue<int>());
+        Assert.Equal(1, f.Uploads);
+    }
+
+    [Fact]
+    public async Task TrackerSourceContextUsesExactSourceTrackerAndRejectsUnknownOrDestinationMapping()
+    {
+        using (var f = new Fixture())
+        {
+            f.EnableSourceOpportunity("red", "Redacted (Prowlarr)");
+            var context = new SalmonPreparationContext("WEB", "Album", ["Artist"], "album", "new-group",
+                SourceTorrentHash: Fixture.SourceHash);
+
+            var result = JsonSerializer.SerializeToNode(await f.Jobs.ContextAsync("ops", context, default));
+
+            Assert.Equal("new-group", result!["uploadMode"]!.GetValue<string>());
+            Assert.Contains(f.TrackerRequests, r => r.Tracker == "red" && r.Action == "torrent"
+                && string.Equals(r.Query, Fixture.SourceHash, StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(f.TrackerRequests, r => r.Tracker == "ops" && r.Action == "torrent");
+            Assert.DoesNotContain(f.TrackerRequests, r => r.Tracker == "red" && r.Action == "browse");
+        }
+
+        using (var f = new Fixture())
+        {
+            f.EnableSourceOpportunity("red", "Redated alias");
+            var context = new SalmonPreparationContext("WEB", "Album", ["Artist"], "album", "new-group",
+                SourceTorrentHash: Fixture.SourceHash);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => f.Jobs.ContextAsync("ops", context, default));
+            Assert.Empty(f.TrackerRequests);
+        }
+
+        using (var f = new Fixture())
+        {
+            f.EnableSourceOpportunity("ops", "Orpheus (Prowlarr)");
+            var context = new SalmonPreparationContext("WEB", "Album", ["Artist"], "album", "new-group",
+                SourceTorrentHash: Fixture.SourceHash);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => f.Jobs.ContextAsync("ops", context, default));
+            Assert.Empty(f.TrackerRequests);
+        }
     }
 
     [Fact]
@@ -247,12 +390,13 @@ public sealed class SalmonJobTests
     private sealed class Fixture : HttpMessageHandler, IHttpClientFactory
     {
         public const string Passkey = "abcdef0123456789abcdef0123456789";
+        public const string SourceHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "octo-salmon-job-" + Guid.NewGuid().ToString("N"));
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public const string ReleaseRoot = "Artist - Album (2026)";
         public string FrozenFile => Path.Combine(Root, "music-prepared", Id, ReleaseRoot, "01.flac");
-        public byte[] Audio { get; }
-        public byte[] Torrent { get; }
+        public byte[] Audio { get; private set; }
+        public byte[] Torrent { get; private set; }
         public string Revision { get; private set; } = "";
         public SalmonJobService Jobs { get; private set; } = null!;
         private readonly IConfiguration _config;
@@ -262,53 +406,110 @@ public sealed class SalmonJobTests
         public bool Duplicate { get; set; }
         public bool AmbiguousUpload { get; init; }
         public HttpStatusCode? RejectedUpload { get; set; }
+        public int? ExistingGroupId { get; init; }
         public Action? AfterBrowse { get; set; }
+        public List<(string Action, string? Query)> Requests { get; } = [];
+        public List<(string Tracker, string Action, string? Query)> TrackerRequests { get; } = [];
+        private TrackerDirectQueue _queue = null!;
         public Fixture()
         {
             Directory.CreateDirectory(Root);
             var audioPath = Path.Combine(Root, "sample.flac");
             using var p = new Process { StartInfo = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, RedirectStandardError = true } };
-            foreach (var arg in new[] { "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.1", "-sample_fmt", "s16", "-metadata", "artist=Artist", "-metadata", "album=Album", "-metadata", "title=Track", "-metadata", "track=1", "-metadata", "disc=1", audioPath }) p.StartInfo.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.1", "-sample_fmt", "s16", "-metadata", "artist=Artist", "-metadata", "album_artist=Artist", "-metadata", "album=Album", "-metadata", "title=Track", "-metadata", "track=1", "-metadata", "disc=1", audioPath }) p.StartInfo.ArgumentList.Add(arg);
             p.Start(); var error = p.StandardError.ReadToEnd(); p.WaitForExit();
             Assert.True(p.ExitCode == 0, error);
             Audio = File.ReadAllBytes(audioPath);
-            Torrent = Bencode(new SortedDictionary<string, object>(StringComparer.Ordinal)
+            Torrent = MakeTorrent("red");
+            _config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["announce"] = "https://flacsfor.me/" + Passkey + "/announce",
+                ["Salmon:Root"] = Root, ["Trackers:red:ApiKey"] = "fake-key", ["Trackers:ops:ApiKey"] = "fake-ops-key",
+                ["Salmon:QbittorrentUrl"] = "http://qbt.invalid",
+            ["Trackers:red:LidarrIndexerNames:0"] = "Redacted (Prowlarr)",
+                ["Trackers:ops:LidarrIndexerNames:0"] = "Orpheus (Prowlarr)",
+            }).Build();
+            Restart();
+        }
+        public void Restart(string? opportunityPath = null)
+        {
+            _queue = new TrackerDirectQueue(Path.Combine(Root, "cooldowns.json"), _config, this, Clock);
+            var handoff = new SalmonMediaHandoff(this, _config, TestOptions.Monitor(new LidarrSettings()));
+            var opportunities = opportunityPath is null ? null : new TrackerOpportunityService(null!, null!, _queue,
+                opportunityPath, NullLogger<TrackerOpportunityService>.Instance, Clock, config: _config);
+            Jobs = new SalmonJobService(_queue, handoff, _config, Clock, opportunities);
+        }
+        public void EnableSourceOpportunity(string tracker, string indexer)
+        {
+            var sourcePath = Path.Combine(Root, ReleaseRoot, "01.flac");
+            Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+            File.WriteAllBytes(sourcePath, Audio);
+            var row = new TrackerOpportunity
+            {
+                SchemaVersion = 2, Key = new string('b', 32), Artist = "Artist", Album = "Album", AlbumType = "Album",
+                Names = [new ReleaseName("Artist", "Album")], IdentityStatus = "resolved", IdentityVersion = 4,
+                Sources = [new TrackerLocalSource { Hash = SourceHash, Tracker = tracker, Indexer = indexer,
+                    Complete = true, ObservedUtc = Clock.GetUtcNow().UtcDateTime.AddMinutes(-16) }],
+            };
+            var path = Path.Combine(Root, "opportunities.json");
+            File.WriteAllText(path, JsonSerializer.Serialize(new[] { row }));
+            Restart(path);
+        }
+        public SalmonSubmission Submission(string target = "red", string artist = "Artist", string title = "Album") => new()
+        {
+            Target = target, RootName = ReleaseRoot, ReleaseId = "official-release-id", Source = "WEB",
+            SourceEvidence = new("purchased-download", "https://label.example/release", "Receipt and complete official manifest reviewed"),
+            Tracks = [new(1, 1, "Track", "01.flac")], Files = [new("01.flac", Audio.Length, Convert.ToHexStringLower(SHA256.HashData(Audio)))],
+            TorrentBase64 = Convert.ToBase64String(target == "red" ? Torrent : MakeTorrent(target)),
+            Fields = new() { ["submit"] = true, ["type"] = 0, ["artists[]"] = new JsonArray(artist), ["importance[]"] = new JsonArray(1), ["title"] = title, ["year"] = 2026, ["releasetype"] = 1, ["format"] = "FLAC", ["bitrate"] = "Lossless", ["media"] = "WEB", ["tags"] = "ambient", ["remaster"] = true, ["remaster_year"] = 2026, ["release_desc"] = "Release details" },
+            Checks = new() { ["integrity"] = "passed", ["trackManifest"] = "passed", ["mqa"] = "passed" },
+        };
+        private byte[] MakeTorrent(string target)
+        {
+            var host = target == "ops" ? "home.opsfet.ch" : "flacsfor.me";
+            return Bencode(new SortedDictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["announce"] = "https://" + host + "/" + Passkey + "/announce",
                 ["info"] = new SortedDictionary<string, object>(StringComparer.Ordinal)
                 {
                     ["files"] = new object[] { new SortedDictionary<string, object>(StringComparer.Ordinal) { ["length"] = Audio.Length, ["path"] = new object[] { "01.flac" } } },
-                    ["name"] = ReleaseRoot, ["piece length"] = 16384, ["pieces"] = SHA1.HashData(Audio), ["private"] = 1, ["source"] = "RED",
+                    ["name"] = ReleaseRoot, ["piece length"] = 16384, ["pieces"] = SHA1.HashData(Audio), ["private"] = 1, ["source"] = target.ToUpperInvariant(),
                 },
             });
-            _config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Salmon:Root"] = Root, ["Trackers:red:ApiKey"] = "fake-key" }).Build();
-            Restart();
         }
-        public void Restart()
+        public void SetAlbumArtist(string artist)
         {
-            var queue = new TrackerDirectQueue(Path.Combine(Root, "cooldowns.json"), _config, this, Clock);
-            var handoff = new SalmonMediaHandoff(this, _config, TestOptions.Monitor(new LidarrSettings()));
-            Jobs = new SalmonJobService(queue, handoff, _config, Clock);
+            var path = Path.Combine(Root, "sample.flac");
+            using (var file = TagLib.File.Create(path))
+            {
+                file.Tag.Performers = [artist];
+                file.Tag.AlbumArtists = [artist];
+                file.Save();
+            }
+            Audio = File.ReadAllBytes(path);
+            Torrent = MakeTorrent("red");
         }
-        public SalmonSubmission Submission() => new()
+        public async Task PrepareAsync(SalmonSubmission? submission = null)
         {
-            Target = "red", RootName = ReleaseRoot, ReleaseId = "official-release-id", Source = "WEB",
-            SourceEvidence = new("purchased-download", "https://label.example/release", "Receipt and complete official manifest reviewed"),
-            Tracks = [new(1, 1, "Track", "01.flac")], Files = [new("01.flac", Audio.Length, Convert.ToHexStringLower(SHA256.HashData(Audio)))],
-            TorrentBase64 = Convert.ToBase64String(Torrent),
-            Fields = new() { ["type"] = 0, ["artists[]"] = new JsonArray("Artist"), ["importance[]"] = new JsonArray(1), ["title"] = "Album", ["year"] = 2026, ["releasetype"] = 1, ["format"] = "FLAC", ["bitrate"] = "Lossless", ["media"] = "WEB", ["tags"] = "ambient" },
-            Checks = new() { ["integrity"] = "passed", ["trackManifest"] = "passed", ["mqa"] = "passed" },
-        };
-        public async Task PrepareAsync()
-        {
-            var result = JsonSerializer.SerializeToNode(await Jobs.CreateAsync(Id, Submission(), default));
+            var result = JsonSerializer.SerializeToNode(await Jobs.CreateAsync(Id, submission ?? Submission(), default));
             Revision = result!["Revision"]!.GetValue<string>();
             await Jobs.PutFileAsync(Id, 0, new MemoryStream(Audio), default);
         }
         public HttpClient CreateClient(string name) => new(this, false);
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (request.RequestUri!.Host == "qbt.invalid")
+            {
+                var body = request.RequestUri.AbsolutePath.EndsWith("/torrents/info", StringComparison.Ordinal)
+                    ? JsonSerializer.Serialize(new[] { new { hash = SourceHash, name = ReleaseRoot, save_path = Root, progress = 1.0, state = "uploading" } })
+                    : JsonSerializer.Serialize(new[] { new { name = ReleaseRoot + "/01.flac", size = Audio.Length, progress = 1.0, priority = 0 } });
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+            }
             var action = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["action"];
+            var parameters = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
+            var query = parameters["hash"] ?? parameters["id"];
+            Requests.Add((action ?? "", query));
+            var tracker = request.RequestUri.Host == "redacted.sh" ? "red" : "ops";
+            TrackerRequests.Add((tracker, action ?? "", query));
             if (action == "upload")
             {
                 Uploads++;
@@ -323,7 +524,39 @@ public sealed class SalmonJobTests
             {
                 "index" => new JsonObject { ["passkey"] = Passkey, ["authkey"] = "fake-auth-key" },
                 "upload" => new JsonObject { ["torrentId"] = 5, ["groupId"] = 6 },
+                "torrent" when string.Equals(query, SourceHash, StringComparison.OrdinalIgnoreCase) => new JsonObject
+                {
+                    ["torrent"] = new JsonObject { ["id"] = 8, ["hash"] = SourceHash, ["media"] = "WEB", ["format"] = "FLAC" },
+                    ["group"] = new JsonObject
+                    {
+                        ["id"] = 9, ["name"] = "Album", ["releaseType"] = "Album", ["categoryName"] = "Music", ["categoryId"] = 1,
+                        ["musicInfo"] = new JsonObject { ["artists"] = new JsonArray(new JsonObject { ["name"] = "Artist" }) },
+                    },
+                },
                 "torrent" => new JsonObject { ["torrent"] = new JsonObject { ["id"] = 5, ["infoHash"] = new SalmonTorrent(Torrent, "red").InfoHash }, ["group"] = new JsonObject { ["id"] = 6 } },
+                "browse" when ExistingGroupId is int groupId => new JsonObject
+                {
+                    ["pages"] = 1, ["currentPage"] = 1,
+                    ["results"] = new JsonArray(new JsonObject
+                    {
+                        ["groupId"] = groupId, ["artist"] = "Artist", ["groupName"] = "Album",
+                        ["releaseType"] = "Album", ["categoryName"] = "Music", ["categoryId"] = 1,
+                    }),
+                },
+                "torrentgroup" when ExistingGroupId is int groupId => new JsonObject
+                {
+                    ["group"] = new JsonObject
+                    {
+                        ["id"] = groupId, ["name"] = "Album", ["releaseType"] = "Album",
+                        ["categoryName"] = "Music", ["categoryId"] = 1,
+                        ["musicInfo"] = new JsonObject { ["artists"] = new JsonArray(new JsonObject { ["name"] = "Artist" }) },
+                    },
+                    ["torrents"] = new JsonArray(new JsonObject
+                    {
+                        ["id"] = 8, ["media"] = "CD", ["format"] = "FLAC", ["encoding"] = "Lossless",
+                        ["seeders"] = 0, ["scene"] = false,
+                    }),
+                },
                 _ => JsonNode.Parse(Duplicate ? """{"currentPage":1,"pages":1,"results":[{"groupId":6,"artist":"Artist","groupName":"Album","torrents":[{"seeders":0}]}]}""" : """{"results":[],"youMightLike":[]}""")!,
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(new JsonObject { ["status"] = "success", ["response"] = response }.ToJsonString()) });

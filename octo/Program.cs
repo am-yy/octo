@@ -277,7 +277,10 @@ builder.Services.AddSingleton(sp => new Octo.Services.Trackers.TrackerOpportunit
     sp.GetRequiredService<Octo.Services.Trackers.TrackerDirectQueue>(),
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "tracker-opportunities.json"),
     sp.GetRequiredService<ILogger<Octo.Services.Trackers.TrackerOpportunityService>>(),
-    deezer: sp.GetRequiredService<Octo.Services.Metadata.DeezerMetadataService>()));
+    deezer: sp.GetRequiredService<Octo.Services.Metadata.DeezerMetadataService>(),
+    resolver: sp.GetRequiredService<Octo.Services.Deezer.DeezerResolver>(),
+    handoff: sp.GetRequiredService<Octo.Services.Trackers.SalmonMediaHandoff>(),
+    config: sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Trackers.TrackerOpportunityService>());
 builder.Services.AddSingleton<Octo.Services.Trackers.SalmonMediaHandoff>();
 builder.Services.AddHttpClient("SalmonMediaHandoff")

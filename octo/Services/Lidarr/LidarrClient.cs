@@ -32,6 +32,8 @@ public sealed record LidarrAlbumImportState(
             .Select(t => t.Path).Distinct(StringComparer.Ordinal).Count() >= TrackCount;
 }
 
+public sealed record LidarrSourceEvidence(string Hash, string? Indexer, bool Imported, bool CompleteRelease);
+
 public sealed record LidarrAcquisitionEvidence(bool Complete, bool Grabbed, bool Failed);
 
 /// <summary>Small, purpose-built client for the Lidarr v1 endpoints Octo needs.</summary>
@@ -420,6 +422,41 @@ public sealed class LidarrClient
         var last = (latest["records"] as JsonArray)?.FirstOrDefault() as JsonObject;
         return new(false, true, last is not null && (HistoryType(last, "downloadFailed", 4)
             || HistoryType(last, "downloadIgnored", 10)));
+    }
+
+    /// <summary>Exact import/grab joins. Read even after acquisition closure; never attributes by title.</summary>
+    public async Task<IReadOnlyList<LidarrSourceEvidence>> GetAlbumSourcesAsync(int albumId, CancellationToken ct = default)
+    {
+        var rows = new List<JsonObject>();
+        int? expected = null;
+        for (var page = 1; page <= 10; page++)
+        {
+            var body = await GetObjectAsync($"/api/v1/history?albumId={albumId}&page={page}&pageSize=100&sortKey=date&sortDirection=descending", ct);
+            if (body["records"] is not JsonArray records || NullableInt(body, "totalRecords") is not int total
+                || total < 0 || total > 1000 || expected is int previous && previous != total
+                || records.Any(r => r is not JsonObject || Int((JsonObject)r, "albumId") != albumId))
+                throw new InvalidDataException("Source history incomplete.");
+            expected = total;
+            rows.AddRange(records.OfType<JsonObject>());
+            if (rows.Count == total) break;
+            if (records.Count == 0 || rows.Count > total || page == 10)
+                throw new InvalidDataException("Source history truncated.");
+        }
+        var state = await GetAlbumImportStateAsync(albumId, ct);
+        var complete = state.HasCompleteReleaseEvidence;
+        return rows.Where(r => Str(r, "downloadId").Length == 40 && Str(r, "downloadId").All(Uri.IsHexDigit))
+            .GroupBy(r => Str(r, "downloadId"), StringComparer.OrdinalIgnoreCase).Select(group =>
+            {
+                var grabs = group.Where(r => HistoryType(r, "grabbed", 1)).ToList();
+                var indexers = grabs.Select(r => r["data"] is JsonObject data ? NullableStr(data, "indexer") : null).Distinct(StringComparer.Ordinal).ToList();
+                var imported = group.Any(r => HistoryType(r, "downloadImported", 8));
+                // Track-level imports are not proof that this hash delivered a whole release.
+                return new LidarrSourceEvidence(group.Key.ToLowerInvariant(),
+                    grabs.Count > 0 && indexers.Count == 1 && !string.IsNullOrWhiteSpace(indexers[0]) ? indexers[0] : null,
+                    imported, imported || complete && grabs.Count > 0
+                        && group.Where(r => HistoryType(r, "trackFileImported", 3)).Select(r => NullableInt(r, "trackId"))
+                            .OfType<int>().Where(id => id > 0).Distinct().Count() >= state.TrackCount);
+            }).OrderByDescending(s => s.Imported).ThenBy(s => s.Hash).ToList();
     }
 
     private static bool HistoryType(JsonObject row, string name, int number) =>

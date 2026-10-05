@@ -314,7 +314,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     }
 
     public async Task<DeezerSourceInfo?> ProbeSourceAsync(string trackId, string? quality = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool requireExactTrack = false)
     {
         var selected = NormalizeStrictQuality(quality ?? CacheQuality);
         var rejectedAccounts = new HashSet<string>();
@@ -325,6 +325,11 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             try
             {
                 media = await ResolveMediaAsync(trackId, selected, ct, rejectedAccounts, selected);
+                if (requireExactTrack && media.TrackId != trackId)
+                {
+                    InvalidateMedia(media, trackId, selected, selected);
+                    return null;
+                }
                 using var request = new HttpRequestMessage(HttpMethod.Head, media.Url);
                 using var response = await httpFactory.CreateClient(StreamClientName)
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);

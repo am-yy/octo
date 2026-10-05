@@ -13,6 +13,7 @@ using Octo.Models.Settings;
 namespace Octo.Services.Trackers;
 
 public sealed record HandoffResult(string State, string? Error = null, int? AlbumId = null, int? CommandId = null);
+public sealed record LocalTorrentObservation(string Hash, bool Complete, string? Error, DateTime ObservedUtc, string? RootName = null);
 
 /// <summary>Verifies prepared payload copies, registers official torrents with qBittorrent,
 /// and imports a separate listening copy through Lidarr's manual import command.</summary>
@@ -35,6 +36,53 @@ public sealed class SalmonMediaHandoff
         _configuration = configuration;
         _lidarrSettings = lidarrSettings;
         _root = Path.GetFullPath(configuration["Salmon:Root"] ?? "/hangar/torrent-downloads");
+    }
+
+    /// <summary>Read-only inventory check for a local source torrent. Never rechecks or mutates qBittorrent.</summary>
+    public async Task<LocalTorrentObservation> InspectLocalSourceAsync(string hash, CancellationToken ct = default)
+    {
+        var normalized = (hash ?? "").ToLowerInvariant();
+        if (!ValidHash(normalized)) return Observation(false, "invalid_hash");
+        try
+        {
+            using var qb = await QbSession.ConnectAsync(_httpFactory, _configuration, ct);
+            var row = await qb.GetTorrentAsync(normalized, ct);
+            if (row is null) return Observation(false, "torrent_missing");
+            var actualHash = String(row, "hash");
+            var rootName = String(row, "name");
+            if (!actualHash.Equals(normalized, StringComparison.OrdinalIgnoreCase)) return Observation(false, "hash_mismatch", rootName);
+            if (IsChecking(String(row, "state")) || !double.IsFinite(Number(row, "progress")) || Number(row, "progress") < 1)
+                return Observation(false, "torrent_incomplete", rootName);
+
+            var savePath = String(row, "save_path");
+            if (!ValidRootName(rootName) || !PathWithinOrEqual(savePath, _root))
+                return Observation(false, "unsafe_torrent_path", rootName);
+            var files = await qb.GetFilesAsync(normalized, ct);
+            if (files.Count == 0) return Observation(false, "file_inventory_empty", rootName);
+            var resolved = new HashSet<string>(PathComparer());
+            foreach (var file in files)
+            {
+                if (file is not JsonObject item || !double.IsFinite(Number(item, "progress")) || Number(item, "progress") < 1)
+                    return Observation(false, "file_incomplete", rootName);
+                var expectedSize = Number(item, "size");
+                if (item["size"] is null || !double.IsFinite(expectedSize) || expectedSize < 0
+                    || expectedSize != Math.Truncate(expectedSize) || expectedSize > long.MaxValue)
+                    return Observation(false, "file_size_invalid", rootName);
+                string path;
+                try { path = ResolveLocalTorrentFile(savePath, _root, rootName, String(item, "name")); }
+                catch { return Observation(false, "unsafe_torrent_file_path", rootName); }
+                if (!resolved.Add(path) || !File.Exists(path) || Directory.Exists(path) || HasLinkedComponent(path, _root))
+                    return Observation(false, "local_file_missing_or_linked", rootName);
+                if (new FileInfo(path).Length != (long)expectedSize)
+                    return Observation(false, "local_file_size_mismatch", rootName);
+            }
+            return Observation(true, null, rootName);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return Observation(false, "source_inventory_unavailable"); }
+
+        LocalTorrentObservation Observation(bool complete, string? error, string? name = null) =>
+            new(normalized, complete, error, DateTime.UtcNow, name);
     }
 
     /// <summary>Force a full qBittorrent recheck of a completed source torrent. Restores its prior run state.</summary>
@@ -1025,6 +1073,9 @@ public sealed class SalmonMediaHandoff
             return rows.Count > 0 && rows.All(x => x is JsonObject row && Number(row, "progress") >= 1);
         }
 
+        public async Task<JsonArray> GetFilesAsync(string hash, CancellationToken ct) =>
+            await GetArrayAsync("torrents/files?hash=" + Uri.EscapeDataString(hash), ct);
+
         private static bool PathEquals(string left, string right) =>
             Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar).Equals(
                 Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar),
@@ -1261,6 +1312,55 @@ public sealed class SalmonMediaHandoff
         var fullPath = Path.GetFullPath(path);
         var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return fullPath.StartsWith(fullRoot, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    }
+
+    private static bool PathWithinOrEqual(string path, string root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root)) return false;
+        var fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return fullPath.Equals(fullRoot, comparison) || fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static string ResolveLocalTorrentFile(string savePath, string hangarRoot, string rootName, string torrentFileName)
+    {
+        if (!PathWithinOrEqual(savePath, hangarRoot) || string.IsNullOrWhiteSpace(torrentFileName)
+            || Path.IsPathRooted(torrentFileName) || torrentFileName.Any(char.IsControl)) throw new InvalidDataException();
+        var normalized = torrentFileName.Replace('\\', '/');
+        var parts = normalized.Split('/');
+        if (parts.Any(part => part is "" or "." or ".." || part.Contains(':'))) throw new InvalidDataException();
+        var candidates = new List<string> { Path.GetFullPath(Path.Combine(savePath, Path.Combine(parts))) };
+        var saveRootName = Path.GetFileName(Path.TrimEndingDirectorySeparator(savePath));
+        if (!parts[0].Equals(rootName, StringComparison.Ordinal))
+            candidates.Add(Path.GetFullPath(Path.Combine(savePath, rootName, Path.Combine(parts))));
+        else if (saveRootName.Equals(rootName, StringComparison.Ordinal) && parts.Length > 1)
+            candidates.Add(Path.GetFullPath(Path.Combine(savePath, Path.Combine(parts.Skip(1).ToArray()))));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var safe = candidates.Distinct(PathComparer()).Where(path => PathWithin(path, hangarRoot)
+            && PathWithin(path, savePath)
+            && !path.Equals(Path.GetFullPath(savePath), comparison)).ToList();
+        var existing = safe.Where(File.Exists).ToList();
+        if (existing.Count == 1) return existing[0];
+        if (existing.Count == 0 && safe.Count == 1) return safe[0];
+        throw new InvalidDataException();
+    }
+
+    private static bool HasLinkedComponent(string path, string boundary)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullBoundary = Path.GetFullPath(boundary).TrimEnd(Path.DirectorySeparatorChar);
+        if (!PathWithin(fullPath, fullBoundary)) return true;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var current = fullPath;
+        while (true)
+        {
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
+            if (current.TrimEnd(Path.DirectorySeparatorChar).Equals(fullBoundary, comparison)) return false;
+            var parent = Path.GetDirectoryName(current);
+            if (parent is null) return true;
+            current = parent;
+        }
     }
 
     private static bool PathEquals(string left, string right) =>

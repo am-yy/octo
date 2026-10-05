@@ -15,6 +15,60 @@ public sealed class SalmonMediaHandoffTests
     private const string RootName = "Test Album (2024)";
     private const string Announce = "https://flacsfor.me/AAAAAAAAAAAAAAAAAAAAAAAA/announce";
 
+    [Fact]
+    public async Task LocalSourceInventoryIsReadOnlyAndChecksSkippedFilesOnDisk()
+    {
+        using var temp = new TempDirectory();
+        var hash = new string('a', 40);
+        var filePath = Path.Combine(temp.Path, RootName, "01.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        var bytes = Encoding.UTF8.GetBytes("verified local file");
+        await File.WriteAllBytesAsync(filePath, bytes);
+        var handler = new FakeQbHandler(hash, RootName, temp.Path, "", "", Announce)
+        {
+            HasTorrent = true,
+            FileName = RootName + "/01.flac",
+            FileSize = bytes.Length,
+            FilePriority = 0,
+        };
+
+        var complete = await Build(temp.Path, handler).InspectLocalSourceAsync(hash);
+        Assert.True(complete.Complete);
+        Assert.Null(complete.Error);
+        Assert.DoesNotContain(handler.Requests, r => r.Path.EndsWith("/torrents/recheck", StringComparison.Ordinal)
+            || r.Path.EndsWith("/torrents/export", StringComparison.Ordinal)
+            || r.Path.EndsWith("/torrents/add", StringComparison.Ordinal));
+
+        File.Delete(filePath);
+        var missing = await Build(temp.Path, handler).InspectLocalSourceAsync(hash);
+        Assert.False(missing.Complete);
+        Assert.Equal("local_file_missing_or_linked", missing.Error);
+    }
+
+    [Fact]
+    public async Task LocalSourceInventoryRejectsIncompleteSkippedFile()
+    {
+        using var temp = new TempDirectory();
+        var hash = new string('b', 40);
+        var filePath = Path.Combine(temp.Path, RootName, "01.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        var bytes = Encoding.UTF8.GetBytes("verified local file");
+        await File.WriteAllBytesAsync(filePath, bytes);
+        var handler = new FakeQbHandler(hash, RootName, temp.Path, "", "", Announce)
+        {
+            HasTorrent = true,
+            FileName = RootName + "/01.flac",
+            FileSize = bytes.Length,
+            FileProgressOverride = 0.99,
+            FilePriority = 0,
+        };
+
+        var observation = await Build(temp.Path, handler).InspectLocalSourceAsync(hash);
+
+        Assert.False(observation.Complete);
+        Assert.Equal("file_incomplete", observation.Error);
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -697,6 +751,9 @@ public sealed class SalmonMediaHandoffTests
         public byte[]? ExportBytes { get; set; }
         public double RecheckProgress { get; set; } = 1;
         public double? FileProgressOverride { get; set; }
+        public string? FileName { get; set; }
+        public long? FileSize { get; set; }
+        public int FilePriority { get; set; } = 1;
         public bool FastRecheck { get; set; }
         public int InfoMissesAfterAdd { get; set; }
         public IReadOnlyList<string> ExtraTrackerUrls { get; set; } = [];
@@ -751,7 +808,10 @@ public sealed class SalmonMediaHandoffTests
                 foreach (var extra in ExtraTrackerUrls) urls.Add(new JsonObject { ["url"] = extra });
                 return Ok(urls.ToJsonString());
             }
-            if (path.EndsWith("/torrents/files", StringComparison.Ordinal)) return Ok($"[{{\"progress\":{FileProgressOverride ?? (_rechecked ? RecheckProgress : 1.0)}}}]");
+            if (path.EndsWith("/torrents/files", StringComparison.Ordinal)) return Ok(System.Text.Json.JsonSerializer.Serialize(new[]
+            {
+                new { name = FileName ?? "01.flac", size = FileSize ?? 1, progress = FileProgressOverride ?? (_rechecked ? RecheckProgress : 1.0), priority = FilePriority },
+            }));
             if (path.EndsWith("/torrents/export", StringComparison.Ordinal))
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(ExportBytes ?? []) };
             if (path.EndsWith("/torrents/add", StringComparison.Ordinal))

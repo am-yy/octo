@@ -11,6 +11,9 @@ public sealed class SalmonController(SalmonJobService jobs) : ControllerBase
     private CancellationToken Ct => HttpContext.RequestAborted;
     [HttpPost("context/{target}")]
     public Task<IActionResult> Context(string target) => Run(() => jobs.ContextAsync(target, Ct));
+    [HttpPost("context/{target}/prepare")]
+    public Task<IActionResult> PrepareContext(string target, [FromBody] SalmonPreparationContext context) =>
+        Run(() => jobs.ContextAsync(target, context, Ct));
     [HttpPost("source/{infohash}")]
     public Task<IActionResult> Source(string infohash) => Run(() => jobs.SourceAsync(infohash, Ct));
     [HttpPost("jobs")]

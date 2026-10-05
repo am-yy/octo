@@ -697,6 +697,8 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 | `getLyricsBySongId`, `getLyrics` | lyrics for outside songs and for library songs Navidrome has none for; chosen or hidden lyrics for every client; word cues with `enhanced=true` |
 | `getLyricsCandidates`, `setLyricsChoice` | the `octoLyrics` extension: every lyrics entry for a song, and pinning one, hiding lyrics, or going back to automatic |
 | `getLibraryActions`, `libraryAction` | the `octoLibraryActions` extension: what the caller may do to library files, and removing one song the way the Delete playlist does |
+| `getTopSongs` | the standard top songs of an artist (by name, or by id as Navidrome's `topSongsByArtistId`), for every app: ranked as `getArtistTopSongs` ranks them, songs you have as your library's own and the rest as outside songs (only yours while search discovery is off); Navidrome's answer when Octo has none |
+| `getArtistTopSongs`, `getTopChart` | the `octoTopSongs` extension: an artist's most played songs and the chart of the moment, each marked in the caller's library or playable from outside it |
 | `/api/artist/{id}`, `/api/album?artist_id=` | Navidrome's own API, for clients that use it (Feishin): an outside artist's page and its albums |
 | `getOpenSubsonicExtensions` | Navidrome's list plus `octoAcquisitions`, `octoLyrics` (while lyrics lookups are on), `octoLibraryActions` (while library actions are on), `octoRadioSources` (while radio can answer: radio songs carry `octoSuggestedBy`) and `songLyrics` 1 and 2 |
 

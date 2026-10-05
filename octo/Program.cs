@@ -266,6 +266,9 @@ builder.Services.AddSingleton(sp => new Octo.Services.Library.GeneratedPlaylistS
     sp.GetRequiredService<ILogger<Octo.Services.Library.GeneratedPlaylistService>>()));
 builder.Services.AddHostedService(sp =>
     sp.GetRequiredService<Octo.Services.Library.DuplicateScanWorker>());
+// Which outside albums the library already holds, from Navidrome's song list kept 5 minutes.
+builder.Services.AddSingleton<Octo.Services.Library.LibrarySnapshot>();
+builder.Services.AddSingleton<Octo.Services.Library.AlbumOwnership>();
 builder.Services.AddHttpClient(Octo.Services.Fingerprint.MusicBrainzClient.ClientName, c =>
 {
     c.BaseAddress = new Uri("https://musicbrainz.org/ws/2/");

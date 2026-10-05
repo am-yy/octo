@@ -715,17 +715,17 @@ Octo hijacks these endpoints; everything else proxies to Navidrome unchanged:
 
 | Endpoint | Why |
 |---|---|
-| `search3` | merge local + Last.fm-driven external songs and Deezer-driven external albums; later pages carry on through the outside songs page one started |
-| `getSimilarSongs2` | radio queue blended from Last.fm, YouTube Music, ListenBrainz and Sounds alike, local first; a song the catalogs cannot place is led by its album and genre; each song carries `octoSuggestedBy` |
-| `getPlaylists`, `getPlaylist` | append authenticated per-user read-only Radio snapshots, mixes and Popular right now, and materialize tracks local-first |
+| `search3` | merge local + Last.fm-driven external songs and Deezer-driven external albums; later pages carry on through the outside songs page one started; an outside album the library holds whole (by its songs, under any album name) or by its very name is listed as the library's album, and one held in part carries `ownedCount` beside `songCount` |
+| `getSimilarSongs2` | radio queue with local-first preference |
+| `getPlaylists`, `getPlaylist` | append authenticated per-user read-only Radio snapshots and materialize tracks local-first |
 | `createPlaylist`, `updatePlaylist`, `deletePlaylist` | protect reserved Radio IDs while relaying ordinary mutations |
 | `getInternetRadioStations` | append startup-warmed authenticated Octo stations immediately, with a one-starter same-request fallback, while preserving ordinary internet radio |
 | `createInternetRadioStation`, `updateInternetRadioStation`, `deleteInternetRadioStation` | protect Octo stations while relaying ordinary internet-radio mutations |
 | `/radio/stream/{token}` | consume the ready MP3 pool, optionally frame its existing artist/title as client-requested ICY metadata, and replenish it until disconnect |
 | `stream` / `download` | selected FLAC/MP3 source, progressive playback and original downloads with HEAD/range support; client MP3/Opus transcoding |
 | `getCoverArt` | Deezer → iTunes → Last.fm aggregator with Octo watermark |
-| `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` |
-| `getAlbum` | external album tracklists, and fills in tracks you're missing from an album you own |
+| `getArtist` | an artist's albums, EPs and singles from Deezer beside the ones you own, each with its OpenSubsonic `releaseTypes` and, when counted, `ownedCount` |
+| `getAlbum` | external album tracklists, with the songs you already have given as your library's copies (and `ownedCount`), and fills in tracks you're missing from an album you own |
 | `star` | try enabled heart sources in priority order and stop after the first successful track/album acquisition |
 | `scrobble` | relay library plays to Navidrome, send outside plays to ListenBrainz and Last.fm instead (Navidrome does not know them), prewarm the next 8, and learn deduplicated completed plays for the authenticated user |
 | `getTranscodeDecision` / `getTranscodeStream` | OpenSubsonic: negotiate client capabilities and stream authenticated output; library tracks relay to Navidrome |

@@ -777,9 +777,20 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             // album that genuinely has no tracks.
             int? nbTracks = null;
 
+            // Both calls at once: the tracklist does not depend on the album's answer, and an
+            // album opened or counted from a search waits on the slower of the two rather than
+            // on both in turn. When the album call says there is nothing, the tracklist's
+            // answer is dropped unread.
+            var tracksCall = GetJsonAsync($"{Base}/album/{deezerId}/tracks?limit=300", ct, background);
+            async Task<AlbumLookup> Without(AlbumLookup answer)
+            {
+                (await tracksCall).Dispose();
+                return answer;
+            }
+
             using (var r = await GetJsonAsync($"{Base}/album/{deezerId}", ct, background))
             {
-                if (r.Transient) return unavailable;
+                if (r.Transient) return await Without(unavailable);
                 if (r.Doc is not null)
                 {
                     var root = r.Doc.RootElement;
@@ -805,11 +816,11 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             {
                 var none = new AlbumLookup(null, AlbumAnswer.NoSuchAlbum);
                 Put(cacheKey, none, NegativeTtl);
-                return none;
+                return await Without(none);
             }
 
             var tracks = new List<AlbumTrack>();
-            using (var tr = await GetJsonAsync($"{Base}/album/{deezerId}/tracks?limit=300", ct, background))
+            using (var tr = await tracksCall)
             {
                 // The album call can succeed while the tracklist call is throttled. That
                 // built a perfectly valid AlbumDetail carrying title, year and genre with
@@ -877,6 +888,24 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         var lookup = detail is null ? unavailable : new AlbumLookup(detail, AlbumAnswer.Found);
         Put(cacheKey, lookup, detail is null ? NegativeTtl : partial ? PartialTtl : PositiveTtl);
         return lookup;
+    }
+
+    /// <summary>
+    /// <see cref="LookUpAlbumDetailAsync"/> from the cache, or from one request shared by every
+    /// caller asking at once. The request runs without the caller's token, so a search that
+    /// stops waiting still leaves the answer cached for the next one. <paramref name="background"/>
+    /// puts it behind anything a listener is waiting on.
+    /// </summary>
+    /// <summary>The album's detail when it is already cached, without asking Deezer.</summary>
+    public AlbumLookup? CachedAlbumDetail(string deezerId) =>
+        !string.IsNullOrWhiteSpace(deezerId) && TryGetCached<AlbumLookup>($"ad|{deezerId}", out var cached) ? cached : null;
+
+    public Task<AlbumLookup> SharedAlbumDetailAsync(string deezerId, bool background, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(deezerId)) return Task.FromResult(new AlbumLookup(null, AlbumAnswer.NoSuchAlbum));
+        var cacheKey = $"ad|{deezerId}";
+        if (TryGetCached<AlbumLookup>(cacheKey, out var cached)) return Task.FromResult(cached!);
+        return SharedAsync(cacheKey, () => LookUpAlbumDetailAsync(deezerId, CancellationToken.None, background), ct);
     }
 
     private Task<(int? Year, bool Transient)> AlbumYearAsync(long albumId, CancellationToken ct)

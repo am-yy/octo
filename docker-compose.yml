@@ -95,6 +95,11 @@ services:
       Lidarr__CompletionMode: ${LIDARR_COMPLETION_MODE:-Accepted}
       Lidarr__ImportTimeoutSeconds: ${LIDARR_IMPORT_TIMEOUT_SECONDS:-1800}
       Lidarr__WebhookSecret: ${LIDARR_WEBHOOK_SECRET:-}
+      # ----- Dashboard sign-in -----
+      # A Navidrome admin account signs in to the dashboard. off only behind a proxy
+      # that signs people in itself. ADMIN_PORT gives the dashboard a port of its own.
+      Admin__SignIn: ${ADMIN_SIGN_IN:-required}
+      Admin__Port: ${ADMIN_PORT:-0}
 
       # ----- Last.fm radio (core Octo feature; no separate Radio service) -----
       LastFm__ApiKey: ${LASTFM_API_KEY:-}

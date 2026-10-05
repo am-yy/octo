@@ -1654,7 +1654,8 @@ document.getElementById('radio-outcomes-reset')?.addEventListener('click', async
   }
 });
 ready.then(loadRadioOutcomes);
-setInterval(() => { if (document.visibilityState === 'visible') loadRadioOutcomes(); }, 30000);
+// Not while the sign-in screen is up: every refused poll would wait behind it and fire at once after.
+setInterval(() => { if (document.visibilityState === 'visible' && !gatePromise) loadRadioOutcomes(); }, 30000);
 
 document.getElementById('lidarr-test-connection')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;

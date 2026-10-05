@@ -73,6 +73,7 @@ public sealed class DeezerDiscoveryTests
         var song = Song();
         Assert.False(DeezerMetadataService.DiscoveryRecordingMatches(song,new(song.Title+" (Live)","Artist",180,1,1,song.Isrc,"42")));
         Assert.False(DeezerMetadataService.DiscoveryRecordingMatches(song,new(song.Title,"Artist",240,1,1,song.Isrc,"42")));
+        Assert.False(DeezerMetadataService.DiscoveryRecordingMatches(song,new(song.Title,"Artist",180,1,1,"USXYZ1900009","42")));
         song.Isrc=null; song.Duration=null;
         Assert.False(DeezerMetadataService.DiscoveryRecordingMatches(song,new(song.Title,"Artist",180,1,1,null,"42")));
     }

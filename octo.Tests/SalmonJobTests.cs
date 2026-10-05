@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Octo.Models.Settings;
+using Octo.Services.Lidarr;
 using Octo.Services.Trackers;
 
 namespace Octo.Tests;
@@ -304,6 +305,106 @@ public sealed class SalmonJobTests
     }
 
     [Fact]
+    public async Task TrackerPreparationRefreshesIncompleteSourceForUnsavedOpportunity()
+    {
+        using var f = new Fixture();
+        f.EnableSourceOpportunity("red", "Redacted (Prowlarr)", complete: false);
+        Assert.False(f.OpportunityRows()[0].Sources[0].Complete);
+        Assert.False(f.OpportunityRows()[0].Saved);
+
+        var context = new SalmonPreparationContext("WEB", "Album", ["Artist"], "album", "new-group",
+            SourceTorrentHash: Fixture.SourceHash);
+        var result = JsonSerializer.SerializeToNode(await f.Jobs.ContextAsync("ops", context, default));
+
+        Assert.Equal("new-group", result!["uploadMode"]!.GetValue<string>());
+        Assert.True(f.OpportunityRows()[0].Sources.Single().Complete);
+        Assert.Contains(f.LidarrRequests, path => path.StartsWith("/api/v1/history?albumId=42", StringComparison.Ordinal));
+        Assert.Contains(f.TrackerRequests, request => request.Tracker == "red" && request.Action == "torrent"
+            && string.Equals(request.Query, Fixture.SourceHash, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(f.TrackerRequests, request => request.Tracker == "ops" && request.Action == "torrent");
+    }
+
+    [Fact]
+    public async Task TrackerPreparationRefreshUsesUniqueHashWhenAlbumNamesRepeat()
+    {
+        using var f = new Fixture();
+        f.EnableSourceOpportunity("red", "Redacted (Prowlarr)", complete: false);
+        var rows = f.OpportunityRows();
+        rows.Add(new TrackerOpportunity
+        {
+            SchemaVersion = 2, Key = "cccccccccccccccccccccccccccccccc", Artist = "Artist", Album = "Album",
+            AlbumType = "Album", LidarrAlbumId = 43, Names = [new ReleaseName("Artist", "Album")],
+            IdentityStatus = "resolved", IdentityVersion = 4,
+            Sources = [new TrackerLocalSource { Hash = new string('c', 40), Tracker = "red",
+                Indexer = "Redacted (Prowlarr)", Complete = true }],
+        });
+        await File.WriteAllTextAsync(f.OpportunityPath, JsonSerializer.Serialize(rows));
+        f.Restart(f.OpportunityPath);
+
+        var context = new SalmonPreparationContext("WEB", "Album", ["Artist"], "album", "new-group",
+            SourceTorrentHash: Fixture.SourceHash);
+        await f.Jobs.ContextAsync("ops", context, default);
+
+        Assert.Contains(f.LidarrRequests, path => path.StartsWith("/api/v1/history?albumId=42", StringComparison.Ordinal));
+        Assert.DoesNotContain(f.LidarrRequests, path => path.StartsWith("/api/v1/history?albumId=43", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TrackerJobCreationRefreshesIncompleteSourceForUnsavedOpportunity()
+    {
+        using var f = new Fixture();
+        f.EnableSourceOpportunity("red", "Redacted (Prowlarr)", complete: false);
+        var submission = f.Submission("ops");
+        submission.SourceEvidence = submission.SourceEvidence with { Kind = "tracker-download", Description = "Complete source torrent" };
+        submission.SourceTorrentHash = Fixture.SourceHash;
+        submission.OpportunityKey = Fixture.OpportunityKey;
+        submission.IdentityVersion = 4;
+        submission.ReleaseMetadata = new SalmonReleaseMetadata
+        {
+            Title = "Album", ReleaseId = submission.ReleaseId, GroupYear = 2026, Year = 2026,
+            ReleaseType = "Album", Artists = [new SalmonArtistCredit("Artist", 1)],
+        };
+        submission.Checks["sourceTorrent"] = "passed";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => f.Jobs.CreateAsync(f.Id, submission, default));
+
+        Assert.Equal("Source torrent must complete a full successful recheck before preparation.", error.Message);
+        Assert.True(f.OpportunityRows()[0].Sources.Single().Complete);
+        Assert.Contains(f.TrackerRequests, request => request.Tracker == "red" && request.Action == "torrent"
+            && string.Equals(request.Query, Fixture.SourceHash, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(f.TrackerRequests, request => request.Tracker == "ops" && request.Action == "torrent");
+    }
+
+    [Fact]
+    public async Task ExistingPreparationReplaySurvivesStaleOpportunityIdentity()
+    {
+        using var f = new Fixture();
+        f.EnableSourceOpportunity("red", "Redacted (Prowlarr)");
+        SalmonSubmission SubmissionWithIdentity()
+        {
+            var submission = f.Submission();
+            submission.IdentityVersion = 4;
+            submission.OpportunityKey = Fixture.OpportunityKey;
+            submission.ReleaseMetadata = new SalmonReleaseMetadata
+            {
+                Title = "Album", ReleaseId = submission.ReleaseId, GroupYear = 2026, Year = 2026,
+                ReleaseType = "Album", Artists = [new SalmonArtistCredit("Artist", 1)],
+            };
+            return submission;
+        }
+
+        var first = JsonSerializer.Serialize(await f.Jobs.CreateAsync(f.Id, SubmissionWithIdentity(), default));
+        var rows = f.OpportunityRows();
+        rows[0].IdentityStatus = "unresolved";
+        rows[0].IdentityChanged = true;
+        await File.WriteAllTextAsync(f.OpportunityPath, JsonSerializer.Serialize(rows));
+        f.Restart(f.OpportunityPath);
+        Assert.Equal("unresolved", Assert.Single(await f.Opportunities!.ListAsync()).IdentityStatus);
+
+        Assert.Equal(first, JsonSerializer.Serialize(await f.Jobs.CreateAsync(f.Id, SubmissionWithIdentity(), default)));
+    }
+
+    [Fact]
     public async Task TrackerSourceContextUsesExactSourceTrackerAndRejectsUnknownOrDestinationMapping()
     {
         using (var f = new Fixture())
@@ -391,7 +492,11 @@ public sealed class SalmonJobTests
     {
         public const string Passkey = "abcdef0123456789abcdef0123456789";
         public const string SourceHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        public const string OpportunityKey = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "octo-salmon-job-" + Guid.NewGuid().ToString("N"));
+        public string OpportunityPath => Path.Combine(Root, "opportunities.json");
+        public List<string> LidarrRequests { get; } = [];
+        public string LidarrIndexer { get; private set; } = "Redacted (Prowlarr)";
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public const string ReleaseRoot = "Artist - Album (2026)";
         public string FrozenFile => Path.Combine(Root, "music-prepared", Id, ReleaseRoot, "01.flac");
@@ -399,6 +504,7 @@ public sealed class SalmonJobTests
         public byte[] Torrent { get; private set; }
         public string Revision { get; private set; } = "";
         public SalmonJobService Jobs { get; private set; } = null!;
+        public TrackerOpportunityService? Opportunities { get; private set; }
         private readonly IConfiguration _config;
         public TrackerDiscoveryTests.AdvancingClock Clock { get; } = new();
         public int Uploads { get; private set; }
@@ -425,6 +531,7 @@ public sealed class SalmonJobTests
             {
                 ["Salmon:Root"] = Root, ["Trackers:red:ApiKey"] = "fake-key", ["Trackers:ops:ApiKey"] = "fake-ops-key",
                 ["Salmon:QbittorrentUrl"] = "http://qbt.invalid",
+                ["Lidarr:BaseUrl"] = "http://lidarr.invalid", ["Lidarr:ApiKey"] = "lidarr-key",
             ["Trackers:red:LidarrIndexerNames:0"] = "Redacted (Prowlarr)",
                 ["Trackers:ops:LidarrIndexerNames:0"] = "Orpheus (Prowlarr)",
             }).Build();
@@ -433,24 +540,29 @@ public sealed class SalmonJobTests
         public void Restart(string? opportunityPath = null)
         {
             _queue = new TrackerDirectQueue(Path.Combine(Root, "cooldowns.json"), _config, this, Clock);
-            var handoff = new SalmonMediaHandoff(this, _config, TestOptions.Monitor(new LidarrSettings()));
-            var opportunities = opportunityPath is null ? null : new TrackerOpportunityService(null!, null!, _queue,
-                opportunityPath, NullLogger<TrackerOpportunityService>.Instance, Clock, config: _config);
-            Jobs = new SalmonJobService(_queue, handoff, _config, Clock, opportunities);
+            var lidarrSettings = TestOptions.Monitor(new LidarrSettings { BaseUrl = "http://lidarr.invalid", ApiKey = "lidarr-key" });
+            var handoff = new SalmonMediaHandoff(this, _config, lidarrSettings);
+            Opportunities = opportunityPath is null ? null : new TrackerOpportunityService(null!,
+                new LidarrClient(this, lidarrSettings), _queue, opportunityPath,
+                NullLogger<TrackerOpportunityService>.Instance, Clock, handoff: handoff, config: _config);
+            Jobs = new SalmonJobService(_queue, handoff, _config, Clock, Opportunities);
         }
-        public void EnableSourceOpportunity(string tracker, string indexer)
+        public void EnableSourceOpportunity(string tracker, string indexer, bool complete = true)
         {
+            LidarrIndexer = indexer;
             var sourcePath = Path.Combine(Root, ReleaseRoot, "01.flac");
             Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
             File.WriteAllBytes(sourcePath, Audio);
             var row = new TrackerOpportunity
             {
-                SchemaVersion = 2, Key = new string('b', 32), Artist = "Artist", Album = "Album", AlbumType = "Album",
-                Names = [new ReleaseName("Artist", "Album")], IdentityStatus = "resolved", IdentityVersion = 4,
+                SchemaVersion = 2, Key = OpportunityKey, Artist = "Artist", Album = "Album", AlbumType = "Album",
+                LidarrAlbumId = 42, Names = [new ReleaseName("Artist", "Album")],
+                IdentityStatus = "resolved", IdentityVersion = 4, Saved = false,
                 Sources = [new TrackerLocalSource { Hash = SourceHash, Tracker = tracker, Indexer = indexer,
-                    Complete = true, ObservedUtc = Clock.GetUtcNow().UtcDateTime.AddMinutes(-16) }],
+                    Complete = complete, Error = complete ? null : "torrent_incomplete",
+                    ObservedUtc = Clock.GetUtcNow().UtcDateTime.AddMinutes(-16) }],
             };
-            var path = Path.Combine(Root, "opportunities.json");
+            var path = OpportunityPath;
             File.WriteAllText(path, JsonSerializer.Serialize(new[] { row }));
             Restart(path);
         }
@@ -494,9 +606,34 @@ public sealed class SalmonJobTests
             Revision = result!["Revision"]!.GetValue<string>();
             await Jobs.PutFileAsync(Id, 0, new MemoryStream(Audio), default);
         }
+        public List<TrackerOpportunity> OpportunityRows() => JsonSerializer.Deserialize<List<TrackerOpportunity>>(
+            File.ReadAllText(OpportunityPath)) ?? [];
         public HttpClient CreateClient(string name) => new(this, false);
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (request.RequestUri!.Host == "lidarr.invalid")
+            {
+                var path = request.RequestUri.PathAndQuery;
+                LidarrRequests.Add(path);
+                JsonNode body = path.StartsWith("/api/v1/history?", StringComparison.Ordinal)
+                    ? new JsonObject
+                    {
+                        ["totalRecords"] = 2,
+                        ["records"] = new JsonArray(
+                            new JsonObject { ["albumId"] = 42, ["eventType"] = "grabbed", ["downloadId"] = SourceHash,
+                                ["data"] = new JsonObject { ["indexer"] = LidarrIndexer } },
+                            new JsonObject { ["albumId"] = 42, ["eventType"] = "downloadImported", ["downloadId"] = SourceHash }),
+                    }
+                    : path == "/api/v1/album/42"
+                        ? new JsonObject { ["id"] = 42, ["statistics"] = new JsonObject { ["trackCount"] = 1, ["trackFileCount"] = 1 } }
+                    : path.StartsWith("/api/v1/track?", StringComparison.Ordinal)
+                        ? new JsonArray(new JsonObject { ["id"] = 55, ["title"] = "Track", ["trackNumber"] = "1",
+                            ["duration"] = 1000, ["hasFile"] = true, ["trackFileId"] = 77 })
+                    : path.StartsWith("/api/v1/trackFile?", StringComparison.Ordinal)
+                        ? new JsonArray(new JsonObject { ["id"] = 77, ["path"] = Path.Combine(Root, ReleaseRoot, "01.flac"), ["size"] = Audio.Length })
+                    : new JsonArray();
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body.ToJsonString()) });
+            }
             if (request.RequestUri!.Host == "qbt.invalid")
             {
                 var body = request.RequestUri.AbsolutePath.EndsWith("/torrents/info", StringComparison.Ordinal)

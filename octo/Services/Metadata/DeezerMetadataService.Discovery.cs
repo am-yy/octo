@@ -79,7 +79,7 @@ public partial class DeezerMetadataService
             return false;
         var isrc = SongIdentity.NormalizeIsrc(song.Isrc);
         var got = SongIdentity.NormalizeIsrc(track.Isrc);
-        if (isrc is not null && isrc == got) return true;
+        if (isrc is not null && got is not null) return isrc == got;
         return song.Duration is > 0 && track.Duration is > 0
             && SongIdentity.Key(song.Artist) == SongIdentity.Key(track.Artist)
             && SongIdentity.Key(song.Title) == SongIdentity.Key(track.Title);

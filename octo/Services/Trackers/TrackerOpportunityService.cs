@@ -57,6 +57,7 @@ public sealed class TrackerOpportunity
     public string IdentityStatus { get; set; } = "unresolved";
     public long IdentityVersion { get; set; } = 1;
     public bool IdentityChanged { get; set; }
+    public bool ManagedIdentityVerified { get; set; }
     public string? IdentityDiagnostic { get; set; }
     public bool ParentSearchComplete { get; set; }
     public int ParentsInspected { get; set; }
@@ -124,10 +125,13 @@ public sealed class TrackerOpportunityService : BackgroundService
             {
                 if (row.Manifest is not null && row.DeezerProofExpiresUtc <= Now) row.DeezerAvailability = "expired-proof";
                 foreach (var finding in new[] { row.Red, row.Ops })
-                    if (finding.Status == "candidate" && (row.IdentityChanged || finding.IdentityVersion != row.IdentityVersion
+                    if (finding.Status == "candidate" && (row.IdentityStatus != "resolved" || row.ReconciliationError is not null
+                        || row.IdentityChanged || finding.IdentityVersion != row.IdentityVersion
                         || finding.SourceManifestRevision is not null && (finding.SourceManifestRevision != row.Manifest?.Revision || !(row.DeezerProofExpiresUtc > Now))
-                        || finding.SourceHash is not null && !row.Sources.Any(s => s.Hash == finding.SourceHash && s.Complete && s.ObservedUtc >= Now.AddMinutes(-15))))
-                    { finding.Status = "unknown"; finding.Error = row.IdentityChanged ? "identity changed — Recheck" : "Source proof expired — Recheck"; }
+                        || finding.SourceHash is not null && !row.Sources.Any(s => s.Hash == finding.SourceHash && SourceEligible(s) && s.ObservedUtc >= Now.AddMinutes(-15))))
+                    { finding.Status = "unknown"; finding.Error = row.IdentityChanged ? "identity changed — Recheck"
+                        : row.IdentityStatus != "resolved" ? "Release identity unresolved — Recheck"
+                        : row.ReconciliationError ?? "Source proof expired — Recheck"; }
             }
             return rows.OrderBy(r => r.Artist).ThenBy(r => r.Album).ToList();
         }
@@ -181,14 +185,14 @@ public sealed class TrackerOpportunityService : BackgroundService
             var attempted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var row in (await ListAsync(ct)).Where(r => r.Saved && !r.IdentityChanged || r.RecheckRequested)
                 .Where(r => r.IdentityStatus != "resolved" || r.RecheckRequested)
-                .Where(r => r.Acquisition == "unresolved" || r.RecheckRequested)
+                .Where(r => r.Acquisition == "unresolved" || r.IdentityStatus == "legacy" || r.RecheckRequested)
                 .Where(r => r.NextAttemptUtc is null || r.NextAttemptUtc <= Now))
             {
                 if (attempted.Count >= 10 || _deezer is null) break;
                 var reference = row.References.FirstOrDefault();
                 if (reference is null || !attempted.Add(reference.Id)) continue;
                 var answer = await _deezer.ResolveDiscoveryAlbumAsync(reference.Song, ct, refresh: row.RecheckRequested);
-                await ApplyIdentityAsync(row.Key, answer, ct);
+                await ApplyIdentityAsync(row.Key, row.IdentityVersion, row.RecheckVersion, answer, ct);
             }
             foreach (var row in (await ListAsync(ct)).Where(r => r.Saved || r.RecheckRequested || r.Assessments.Any(a => a.CompletedUtc is null)))
                 if (row.InventoryCheckedUtc is null || row.InventoryCheckedUtc <= Now.AddMinutes(-15))
@@ -211,7 +215,8 @@ public sealed class TrackerOpportunityService : BackgroundService
                     }
                     await MutateAsync(rows =>
                     {
-                        if (Find(rows, row.Key) is not { } current || current.IdentityVersion != row.IdentityVersion) return;
+                        if (Find(rows, row.Key) is not { } current || current.IdentityVersion != row.IdentityVersion
+                            || current.RecheckVersion != row.RecheckVersion || current.IdentityStatus != "resolved" || current.IdentityChanged) return;
                         current.DeezerCheckedUtc = Now; current.DeezerAvailability = success ? "available" : "unavailable";
                         current.DeezerProofExpiresUtc = success ? Now.AddHours(12) : null;
                         if (success) { current.Failures = 0; current.NextAttemptUtc = null; } else Backoff(current);
@@ -225,9 +230,14 @@ public sealed class TrackerOpportunityService : BackgroundService
                         token => EligibleAtDispatchAsync(row.Key, row.IdentityVersion, row.RecheckVersion, null, true, token));
                     if (result is null) { complete = false; break; }
                     result.SourceManifestRevision = row.Manifest.Revision;
-                    await StoreFindingAsync(row.Key, row.IdentityVersion, target, result, ct);
+                    await StoreFindingAsync(row.Key, row.IdentityVersion, row.RecheckVersion, target, result, ct);
                 }
-                if (complete) await MutateAsync(rows => { if (Find(rows, row.Key) is { } r) r.CheckedVersion = row.RecheckVersion; }, ct);
+                if (complete) await MutateAsync(rows =>
+                {
+                    if (Find(rows, row.Key) is { } r && r.IdentityVersion == row.IdentityVersion
+                        && r.RecheckVersion == row.RecheckVersion && r.IdentityStatus == "resolved" && !r.IdentityChanged
+                        && !HasOutstandingAssessments(rows, r)) r.CheckedVersion = row.RecheckVersion;
+                }, ct);
             }
         }
         finally { _refresh.Release(); }
@@ -280,15 +290,27 @@ public sealed class TrackerOpportunityService : BackgroundService
         }, ct);
     }
 
-    private async Task ApplyIdentityAsync(string key, DiscoveryAlbumResult answer, CancellationToken ct)
+    private async Task ApplyIdentityAsync(string key, long version, long recheck, DiscoveryAlbumResult answer, CancellationToken ct)
     {
         await MutateAsync(rows =>
         {
-            if (Find(rows, key) is not { } row) return;
+            if (Find(rows, key) is not { } row || row.IdentityVersion != version || row.RecheckVersion != recheck) return;
             row.ParentSearchComplete = answer.SearchComplete; row.ParentsInspected = answer.CandidatesInspected;
             row.IdentityDiagnostic = answer.Diagnostic;
             if (answer.Status != DiscoveryResolution.Resolved || answer.Manifest is not { } manifest)
-            { row.IdentityStatus = answer.Status == DiscoveryResolution.Ambiguous ? "ambiguous" : "unresolved"; Backoff(row); return; }
+            {
+                // Failed provider resolution cannot invalidate independent, verified Lidarr album evidence.
+                if (row.IdentityStatus != "resolved" || !row.ManagedIdentityVerified)
+                {
+                    if (row.IdentityStatus == "resolved" || row.Manifest is not null)
+                    { row.IdentityVersion++; InvalidatePending(row, "Release identity unresolved — Recheck"); }
+                    if (row.IdentityStatus != "legacy")
+                        row.IdentityStatus = answer.Status == DiscoveryResolution.Ambiguous ? "ambiguous" : "unresolved";
+                    row.Manifest = null; row.ManagedIdentityVerified = false;
+                    row.DeezerAvailability = "unknown"; row.DeezerProofExpiresUtc = null;
+                }
+                Backoff(row); return;
+            }
             var same = NameKey(row.Artist, row.Album) == NameKey(manifest.Artist, manifest.Title);
             if (!same && row.Acquisition != "unresolved")
             {
@@ -302,6 +324,7 @@ public sealed class TrackerOpportunityService : BackgroundService
             }
             if (row.Manifest?.Revision != manifest.Revision)
             { row.IdentityVersion++; InvalidatePending(row, "identity changed — Recheck"); }
+            if (!same || row.AlbumType != manifest.AlbumType) row.ManagedIdentityVerified = false;
             row.Artist = manifest.Artist; row.Album = manifest.Title; row.AlbumType = manifest.AlbumType;
             row.Manifest = manifest; row.IdentityStatus = "resolved"; row.IdentityChanged = false;
             row.Names = [new(manifest.Artist, manifest.Title)]; row.Failures = 0; row.NextAttemptUtc = null;
@@ -330,12 +353,15 @@ public sealed class TrackerOpportunityService : BackgroundService
                 ? Same(a.ForeignAlbumId, row.ForeignAlbumId) : NameKey(a.Artist, a.Title) == NameKey(row.Artist, row.Album)).ToList();
             if (candidates.Count > 1) throw new InvalidDataException();
             var album = candidates.SingleOrDefault();
-            var evidence = album is not null && row.Acquisition != "complete"
+            var evidence = album is not null && (row.Acquisition != "complete" || row.RecheckRequested || !row.ManagedIdentityVerified)
                 ? await _lidarr.GetAcquisitionEvidenceAsync(album.Id, ct) : new LidarrAcquisitionEvidence(false, false, false);
             await MutateAsync(rows =>
             {
-                if (Find(rows, key) is not { } current) return;
+                if (Find(rows, key) is not { } current || current.IdentityVersion != row.IdentityVersion
+                    || current.RecheckVersion != row.RecheckVersion) return;
                 current.ReconciliationError = null;
+                var previouslyVerified = current.ManagedIdentityVerified && current.LidarrAlbumId == album?.Id;
+                current.ManagedIdentityVerified = false;
                 if (album is not null)
                 {
                     current.ForeignAlbumId = album.ForeignAlbumId; current.LidarrAlbumId = album.Id;
@@ -346,26 +372,34 @@ public sealed class TrackerOpportunityService : BackgroundService
                         current.Names = [new(album.Artist, album.Title)];
                     }
                     // Managed identity is useful for already acquired local sources, without Deezer resolution at dispatch.
-                    if (current.IdentityStatus == "legacy" || current.IdentityStatus == "unresolved" && (evidence.Complete || evidence.Grabbed))
+                    if (current.IdentityStatus == "unresolved" && (evidence.Complete || evidence.Grabbed)
+                        && NameKey(row.Artist, row.Album) == NameKey(album.Artist, album.Title))
                     {
                         var type = album.Resource["albumType"]?.ToString().ToLowerInvariant();
                         if (type is "album" or "ep")
                         {
+                            current.IdentityVersion++; InvalidatePending(current, "Managed album identity replaced provider identity");
+                            current.Manifest = null; current.DeezerAvailability = "unknown"; current.DeezerProofExpiresUtc = null;
                             current.Artist = album.Artist; current.Album = album.Title; current.AlbumType = type;
                             current.Names = [new(album.Artist, album.Title)]; current.IdentityStatus = "resolved";
                             current.IdentityDiagnostic = "Verified managed album association";
                         }
                     }
                 }
+                if (album is not null && current.IdentityStatus == "resolved"
+                    && NameKey(current.Artist, current.Album) == NameKey(album.Artist, album.Title)
+                    && current.AlbumType == album.Resource["albumType"]?.ToString().ToLowerInvariant())
+                    current.ManagedIdentityVerified = evidence.Complete || evidence.Grabbed || previouslyVerified;
                 if (evidence.Complete) current.Acquisition = "complete";
                 else if (evidence.Grabbed) current.Acquisition = evidence.Failed ? "failed" : "grabbed";
             }, ct); return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
-        { await MutateAsync(rows => { if (Find(rows, key) is { } r) r.ReconciliationError = "Album acquisition needs reconciliation"; }, ct); return false; }
+        { await MutateAsync(rows => { if (Find(rows, key) is { } r && r.IdentityVersion == row.IdentityVersion
+            && r.RecheckVersion == row.RecheckVersion) r.ReconciliationError = "Album acquisition needs reconciliation"; }, ct); return false; }
     }
 
-    private async Task RefreshSourcesAsync(string key, CancellationToken ct)
+    public async Task RefreshSourcesAsync(string key, CancellationToken ct = default)
     {
         var row = Find(await ListAsync(ct), key); if (row is null || row.LidarrAlbumId is not int id || _handoff is null) return;
         try
@@ -379,10 +413,12 @@ public sealed class TrackerOpportunityService : BackgroundService
                     Complete = evidence.CompleteRelease && local.Complete, ObservedUtc = Now,
                     Error = !evidence.CompleteRelease ? "Complete release not verified" : local.Error ?? (tracker is null ? "Source indexer unknown" : null) });
             }
-            await MutateAsync(rows => { if (Find(rows, key) is { } r) { r.Sources = observations; r.InventoryCheckedUtc = Now; } }, ct);
+            await MutateAsync(rows => { if (Find(rows, key) is { } r && r.IdentityVersion == row.IdentityVersion
+                && r.RecheckVersion == row.RecheckVersion && r.LidarrAlbumId == id) { r.Sources = observations; r.InventoryCheckedUtc = Now; } }, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
-        { await MutateAsync(rows => { if (Find(rows, key) is { } r) { r.InventoryCheckedUtc = Now; r.Sources.ForEach(s => { s.Complete = false; s.Error = "Local source inventory unavailable"; }); } }, ct); }
+        { await MutateAsync(rows => { if (Find(rows, key) is { } r && r.IdentityVersion == row.IdentityVersion
+            && r.RecheckVersion == row.RecheckVersion && r.LidarrAlbumId == id) { r.InventoryCheckedUtc = Now; r.Sources.ForEach(s => { s.Complete = false; s.Error = "Local source inventory unavailable"; }); } }, ct); }
     }
 
     private async Task AssessOneSourceAsync(CancellationToken ct)
@@ -394,18 +430,32 @@ public sealed class TrackerOpportunityService : BackgroundService
         if (row is null)
         {
             row = rows.FirstOrDefault(r => (r.Saved || r.RecheckRequested) && !r.IdentityChanged && r.IdentityStatus == "resolved"
-                && r.Sources.Any(s => s.Complete && Destinations(s.Tracker).Any(t => AssessmentAllowed(rows, r, s, t))));
+                && r.Sources.Any(s => SourceEligible(s) && Destinations(s.Tracker).Any(t => AssessmentAllowed(rows, r, s, t))));
             if (row is null) return;
-            var source = row.Sources.First(s => s.Complete && Destinations(s.Tracker).Any(t => AssessmentAllowed(rows, row, s, t)));
+            var source = row.Sources.First(s => SourceEligible(s) && Destinations(s.Tracker).Any(t => AssessmentAllowed(rows, row, s, t)));
             var destination = Destinations(source.Tracker).First(t => AssessmentAllowed(rows, row, source, t));
             assessment = NewAssessment(row, source, destination);
-            await MutateAsync(state => Find(state, row.Key)!.Assessments.Add(assessment), ct);
+            var added = false;
+            await MutateAsync(state =>
+            {
+                if (Find(state, row.Key) is not { } current || current.IdentityVersion != row.IdentityVersion
+                    || current.RecheckVersion != row.RecheckVersion || current.IdentityStatus != "resolved" || current.IdentityChanged) return;
+                current.Assessments.Add(assessment); added = true;
+            }, ct);
+            if (!added) return;
         }
         var key = row.Key; var version = row.IdentityVersion; var intent = assessment!;
         var unknown = new TrackerFinding { IdentityVersion = version, CheckedUtc = Now, Error = "Source evidence unknown" };
         if (intent.SourceTracker is null || !await EligibleAtDispatchAsync(key, version, row.RecheckVersion, intent.Id, false, ct))
         { await CompleteAssessmentAsync(key, intent.Id, unknown, ct); return; }
-        await MutateAsync(state => { var a = Find(state, key)!.Assessments.First(a => a.Id == intent.Id); a.Progress = "source-identification"; }, ct);
+        await MutateAsync(state =>
+        {
+            if (Find(state, key) is not { } current) return;
+            var a = current.Assessments.First(a => a.Id == intent.Id);
+            if (current.IdentityVersion == version && current.RecheckVersion == intent.RecheckVersion
+                && current.IdentityStatus == "resolved" && !current.IdentityChanged && a.CompletedUtc is null)
+                a.Progress = "source-identification";
+        }, ct);
         var lookup = intent.SourceLookup is { Verified: true } && intent.SourceVerifiedUtc >= Now.AddMinutes(-15)
             ? intent.SourceLookup
             : await _catalog.LookupSourceByHashAsync(intent.SourceTracker, intent.SourceHash, new(row.Artist, row.Album), ct,
@@ -415,7 +465,8 @@ public sealed class TrackerOpportunityService : BackgroundService
         await MutateAsync(state =>
         {
             var current = Find(state, key)!; var a = current.Assessments.First(a => a.Id == intent.Id);
-            if (current.IdentityVersion != version || current.IdentityChanged) return;
+            if (current.IdentityVersion != version || current.RecheckVersion != intent.RecheckVersion
+                || current.IdentityStatus != "resolved" || current.IdentityChanged || a.CompletedUtc is not null) return;
             a.SourceLookup = lookup; a.Medium = lookup.SourceMedium; a.SourceVerifiedUtc = Now; a.Progress = "destination-search";
         }, ct);
         var result = await _catalog.SearchAsync(intent.Destination, row.Names, lookup.SourceMedium!, version, row.AlbumType ?? "unknown", ct,
@@ -428,18 +479,18 @@ public sealed class TrackerOpportunityService : BackgroundService
         {
             if (Find(rows, key) is not { } r) return;
             var a = r.Assessments.First(x => x.Id == id);
-            if (r.IdentityChanged || r.IdentityVersion != a.IdentityVersion || r.RecheckVersion != a.RecheckVersion || a.CompletedUtc is not null) return;
+            if (r.IdentityStatus != "resolved" || r.IdentityChanged || r.IdentityVersion != a.IdentityVersion || r.RecheckVersion != a.RecheckVersion || a.CompletedUtc is not null) return;
             result.SourceHash = a.SourceHash;
             a.Result = result; a.CompletedUtc = Now; a.Progress = "complete";
             if (a.Destination == "red") r.Red = result; else r.Ops = result;
-            r.CheckedVersion = Math.Max(r.CheckedVersion, a.RecheckVersion);
+            if (!HasOutstandingAssessments(rows, r)) r.CheckedVersion = Math.Max(r.CheckedVersion, a.RecheckVersion);
         }, ct);
 
     private async Task<bool> EligibleAtDispatchAsync(string key, long version, long recheck, string? assessmentId, bool destination, CancellationToken ct)
     {
         await ReconcileReferencesAsync(ct);
         var row = Find(await ListAsync(ct), key);
-        if (row is null || row.IdentityChanged || row.IdentityStatus != "resolved" || row.IdentityVersion != version || row.ReconciliationError is not null) return false;
+        if (row is null || row.IdentityChanged || row.IdentityStatus != "resolved" || row.IdentityVersion != version || row.RecheckVersion != recheck || row.ReconciliationError is not null) return false;
         if (assessmentId is not null)
         {
             var a = row.Assessments.FirstOrDefault(a => a.Id == assessmentId);
@@ -453,7 +504,8 @@ public sealed class TrackerOpportunityService : BackgroundService
         try { if (!await ReconcileAcquisitionAsync(key, await _lidarr.GetManagedAlbumsAsync(ct), ct)) return false; }
         catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
         row = Find(await ListAsync(ct), key);
-        return row is not null && !row.IdentityChanged && row.IdentityVersion == version
+        return row is not null && row.IdentityStatus == "resolved" && !row.IdentityChanged && row.IdentityVersion == version
+            && row.RecheckVersion == recheck
             && (recheck > row.CheckedVersion || row.Saved && row.Acquisition == "unresolved")
             && (!destination || row.DeezerAvailability == "available" && row.DeezerProofExpiresUtc > Now);
     }
@@ -472,8 +524,14 @@ public sealed class TrackerOpportunityService : BackgroundService
         && row.ReconciliationError is null && (row.NextAttemptUtc is null || row.NextAttemptUtc <= Now)
         && (row.RecheckRequested || row.Saved && row.Acquisition == "unresolved"
             && (row.Red.CheckedUtc is null || row.Ops.CheckedUtc is null || row.Red.CheckedUtc < Now.AddHours(-24) || row.Ops.CheckedUtc < Now.AddHours(-24)));
-    private Task StoreFindingAsync(string key, long version, string target, TrackerFinding finding, CancellationToken ct) =>
-        MutateAsync(rows => { if (Find(rows, key) is { } r && r.IdentityVersion == version && !r.IdentityChanged) { if (target == "red") r.Red = finding; else r.Ops = finding; } }, ct);
+    private Task StoreFindingAsync(string key, long version, long recheck, string target, TrackerFinding finding, CancellationToken ct) =>
+        MutateAsync(rows => { if (Find(rows, key) is { } r && r.IdentityVersion == version && r.RecheckVersion == recheck
+            && r.IdentityStatus == "resolved" && !r.IdentityChanged) { if (target == "red") r.Red = finding; else r.Ops = finding; } }, ct);
+    private bool SourceEligible(TrackerLocalSource source) => source.Complete && source.Error is null
+        && source.Tracker is not null && source.Tracker == TrackerSourceMapping.Resolve(_config, source.Indexer);
+    private bool HasOutstandingAssessments(IReadOnlyList<TrackerOpportunity> rows, TrackerOpportunity row) =>
+        row.Assessments.Any(a => a.CompletedUtc is null && a.IdentityVersion == row.IdentityVersion && a.RecheckVersion == row.RecheckVersion)
+        || row.Sources.Any(s => SourceEligible(s) && Destinations(s.Tracker).Any(t => AssessmentAllowed(rows, row, s, t)));
     private void Backoff(TrackerOpportunity row)
     { row.Failures++; row.NextAttemptUtc = Now.AddMinutes(Math.Min(720, 10 * Math.Pow(2, Math.Min(row.Failures - 1, 7)))); }
     private static IEnumerable<string> Destinations(string? tracker) => new[] { "red", "ops" }.Where(t => t != tracker);

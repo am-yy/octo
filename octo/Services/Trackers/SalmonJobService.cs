@@ -26,6 +26,7 @@ public sealed class SalmonJobService(TrackerDirectQueue queue, SalmonMediaHandof
     public async Task<object> ContextAsync(string target, SalmonPreparationContext context, CancellationToken ct)
     {
         ValidatePreparationContext(target, context);
+        await RefreshTrackerSourceInventoryAsync(context.OpportunityKey, context.SourceTorrentHash, context, ct);
         var identity = await ResolveOpportunityAsync(context.OpportunityKey, context.IdentityVersion,
             context.DeezerAlbumId, context.DeezerManifestRevision, context.SourceTorrentHash, context, ct);
         if (context.SourceTorrentHash is not null)
@@ -64,15 +65,6 @@ public sealed class SalmonJobService(TrackerDirectQueue queue, SalmonMediaHandof
     {
         ValidateId(id);
         SalmonPayload.Validate(submission);
-        if (!await IdentityCurrentAsync(submission, ct))
-            throw new InvalidOperationException("Release identity or source proof changed; prepare again after Recheck.");
-        if (submission.DeezerDownload is not null)
-        {
-            var source = submission.DeezerDownload;
-            var manifest = _opportunities is null ? null : await _opportunities.GetManifestAsync(source.AlbumId, source.ManifestRevision, ct);
-            if (manifest is null || !ValidateDeezerMapping(submission, manifest))
-                throw new InvalidOperationException("Deezer source manifest is no longer current and qualified.");
-        }
         var bytes = Convert.FromBase64String(submission.TorrentBase64);
         var torrent = new SalmonTorrent(bytes, submission.Target);
         torrent.Match(submission);
@@ -87,13 +79,27 @@ public sealed class SalmonJobService(TrackerDirectQueue queue, SalmonMediaHandof
                 if (prior.Revision != revision) throw new InvalidOperationException("Preparation ID already belongs to a different payload revision.");
                 return new { prior.Id, prior.Revision };
             }
+            SalmonPreparationContext? sourceContext = null;
             if (submission.SourceEvidence.Kind == "tracker-download")
             {
                 if (submission.ReleaseMetadata is null) throw new InvalidDataException("New tracker-source jobs require revision-bound release identity metadata.");
-                var sourceContext = new SalmonPreparationContext(submission.Source, SalmonPayload.Title(submission),
+                sourceContext = new SalmonPreparationContext(submission.Source, SalmonPayload.Title(submission),
                     SalmonPayload.Artists(submission, mainOnly: true), SalmonPayload.ReleaseType(submission),
                     SalmonPayload.UploadMode(submission), submission.GroupId, submission.IdentityVersion,
                     submission.OpportunityKey, SourceTorrentHash: submission.SourceTorrentHash);
+                await RefreshTrackerSourceInventoryAsync(submission.OpportunityKey, submission.SourceTorrentHash, sourceContext, ct);
+            }
+            if (!await IdentityCurrentAsync(submission, ct))
+                throw new InvalidOperationException("Release identity or source proof changed; prepare again after Recheck.");
+            if (submission.DeezerDownload is not null)
+            {
+                var source = submission.DeezerDownload;
+                var manifest = _opportunities is null ? null : await _opportunities.GetManifestAsync(source.AlbumId, source.ManifestRevision, ct);
+                if (manifest is null || !ValidateDeezerMapping(submission, manifest))
+                    throw new InvalidOperationException("Deezer source manifest is no longer current and qualified.");
+            }
+            if (sourceContext is not null)
+            {
                 var identity = await ResolveOpportunityAsync(submission.OpportunityKey, submission.IdentityVersion,
                     null, null, submission.SourceTorrentHash, sourceContext, ct);
                 if (identity.Key != submission.OpportunityKey || identity.Version != submission.IdentityVersion)
@@ -464,6 +470,26 @@ public sealed class SalmonJobService(TrackerDirectQueue queue, SalmonMediaHandof
             || context.SourceTorrentHash is not null && (!Regex.IsMatch(context.SourceTorrentHash, "^[a-fA-F0-9]{40}$")
                 || context.DeezerAlbumId is not null))
             throw new InvalidDataException("Invalid guarded preparation context.");
+    }
+
+    private async Task RefreshTrackerSourceInventoryAsync(string? opportunityKey, string? sourceHash,
+        SalmonPreparationContext context, CancellationToken ct)
+    {
+        if (sourceHash is null) return;
+        if (_opportunities is null) throw new InvalidOperationException("Current release identity is unavailable.");
+        var rows = await _opportunities.ListAsync(ct);
+        var candidates = rows.Where(row => row.IdentityStatus == "resolved" && !row.IdentityChanged
+            && row.ReconciliationError is null && row.LidarrAlbumId is not null && OpportunityNamesMatch(row, context)
+            && (opportunityKey is null || row.Key == opportunityKey)).ToList();
+        if (opportunityKey is null && candidates.Count > 1)
+        {
+            var hashMatches = candidates.Where(row => row.Sources.Any(source =>
+                string.Equals(source.Hash, sourceHash, StringComparison.OrdinalIgnoreCase))).ToList();
+            if (hashMatches.Count > 0) candidates = hashMatches;
+        }
+        if (candidates.Count != 1)
+            throw new InvalidOperationException("Tracker source has no unique resolved saved-release association.");
+        await _opportunities.RefreshSourcesAsync(candidates[0].Key, ct);
     }
 
     private async Task<PreparationIdentity> ResolveOpportunityAsync(string? opportunityKey, long? expectedVersion,

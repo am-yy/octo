@@ -118,6 +118,8 @@ builder.Services.AddHostedService<LastFmRadioRefreshWorker>();
 
 // Soulseek permanent copies and native Deezer playback/downloads.
 builder.Services.AddSingleton<SoulseekClient>();
+// YouTube Music radio answers through the yt-dlp shim; without YouTube:ShimUrl it never asks.
+builder.Services.AddSingleton<Octo.Services.YouTube.YouTubeMusicClient>();
 builder.Services.AddSingleton<DeezerResolver>();
 builder.Services.AddHttpClient(DeezerResolver.ApiClientName, c =>
 {
@@ -309,6 +311,7 @@ builder.Services.AddHttpClient<LastFmService>();
 builder.Services.AddSingleton<LastFmService>();
 // Radio's suggestion sources, asked together and blended (multi-source radio).
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.LastFmRadioSource>();
+builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.YouTubeMusicRadioSource>();
 builder.Services.AddSingleton<Octo.Services.Radio.RadioSourceSet>();
 builder.Services.AddScoped<Octo.Services.Radio.SongRadioService>();
 

@@ -81,7 +81,9 @@ public sealed class MusicBrainzClient
                 || !recording.TryGetProperty("releases", out var releases)) continue;
             foreach (var release in releases.EnumerateArray())
             {
-                if (!release.TryGetProperty("release-group", out var group)
+                // status:official only filters recordings; their promo and bootleg releases still come back.
+                if (!release.TryGetProperty("status", out var status) || status.GetString() != "Official"
+                    || !release.TryGetProperty("release-group", out var group)
                     || !group.TryGetProperty("primary-type", out var type) || type.GetString() != "Album") continue;
                 var secondary = group.TryGetProperty("secondary-types", out var s) && s.ValueKind == JsonValueKind.Array
                     ? s.EnumerateArray().Select(x => x.GetString()).ToList() : [];
@@ -92,7 +94,7 @@ public sealed class MusicBrainzClient
                 var date = release.TryGetProperty("date", out var d) && !string.IsNullOrEmpty(d.GetString())
                     ? d.GetString() : null;
                 if (rank < groupRank || groupId is null
-                    || (date is not null && (groupDate is null || string.CompareOrdinal(date, groupDate) < 0)))
+                    || (date is not null && (groupDate is null || EarlierDate(date, groupDate))))
                 {
                     groupId = group.GetProperty("id").GetString();
                     groupDate = date;
@@ -102,6 +104,10 @@ public sealed class MusicBrainzClient
         }
         return groupId;
     }
+
+    /// <summary>Compares only the precision both dates share, so a bare "2003" never beats "2003-06-09".</summary>
+    private static bool EarlierDate(string date, string than) =>
+        string.CompareOrdinal(date, 0, than, 0, Math.Min(date.Length, than.Length)) < 0;
 
     /// <summary>The "isrcs" list of a recording lookup, each one normalised; invalid ones dropped.</summary>
     internal static IReadOnlyList<string> ParseIsrcs(JsonElement root) =>

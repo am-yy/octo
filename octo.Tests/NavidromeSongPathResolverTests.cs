@@ -151,4 +151,17 @@ public class NavidromeSongPathResolverTests : IDisposable
         Assert.False(NavidromeSongPathResolver.IsInside(Path.Combine(sibling, "Song.flac"), _root));
         Assert.False(NavidromeSongPathResolver.IsInside(_root, _root));
     }
+
+    [Theory]
+    [InlineData("""{"path":"a.flac","duration":301.37}""", 301)]
+    [InlineData("""{"path":"a.flac","duration":247.5}""", 248)]
+    [InlineData("""{"path":"a.flac","duration":330}""", 330)]
+    [InlineData("""{"path":"a.flac"}""", null)]
+    public void ASongsLengthIsReadWhetherNavidromeSendsAFractionOrWholeSeconds(string body, int? seconds)
+    {
+        // Navidrome's /api/song sends 301.37; Subsonic's getSong sends 301.
+        using var json = System.Text.Json.JsonDocument.Parse(body);
+
+        Assert.Equal(seconds, NavidromeSongPathResolver.FromJson(json.RootElement, "nd-1", PathSource.NativeApi, "libraryPath")!.Duration);
+    }
 }

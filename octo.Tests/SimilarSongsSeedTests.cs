@@ -497,7 +497,7 @@ public sealed class SimilarSongsSeedTests
                     It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int?>()))
                 .ReturnsAsync((string artist, string title, int _, int? _) =>
                     [new Song { Id = $"ext-{artist}-{title}", Artist = artist, Title = title, IsLocal = false }]);
-            _metadata.Setup(service => service.PrewarmYouTubeIdsAsync(
+            _metadata.Setup(service => service.PrewarmDeezerIdsAsync(
                     It.IsAny<IEnumerable<Song>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
         }

@@ -63,6 +63,14 @@ public sealed class LastFmRadioTrackResolver
         return hits.Count > 0 ? hits[0] : null;
     }
 
+    /// <summary>The main artist and the title without brackets or guests: Navidrome wants every
+    /// word it is given, so "(feat. X)" or "(Radio Edit)" would hide a library copy.</summary>
+    internal static string LibraryQuery(string artist, string title)
+    {
+        var core = Octo.Services.Common.SongIdentity.ParseTitle(title, artist).Core;
+        return $"{Octo.Services.Common.SongIdentity.PrimaryArtist(artist)} {(core.Length == 0 ? title : core)}".Trim();
+    }
+
     public async Task<Song?> TryFindLocalMatchAsync(string artist, string title,
         IReadOnlyDictionary<string, string> authenticatedParameters)
     {
@@ -72,7 +80,7 @@ public sealed class LastFmRadioTrackResolver
             // Navidrome wants every word it is given, so a joined credit ("Kordhell, Scarlxrd")
             // or a video title ("... (Official Video)") would find nothing: the main artist and the
             // core title find the candidates, and IsSameRecording still decides the version.
-            parameters["query"] = Octo.Services.Common.TopSongsService.LibraryQuery(new Song { Artist = artist, Title = title });
+            parameters["query"] = LibraryQuery(artist, title);
             parameters["songCount"] = "5";
             parameters["albumCount"] = "0";
             parameters["artistCount"] = "0";

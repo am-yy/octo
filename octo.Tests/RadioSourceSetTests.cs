@@ -60,22 +60,18 @@ public sealed class RadioSourceSetTests
     [Fact]
     public async Task ASlowSource_IsLeftOutOfOneRadio_TheOthersStillAnswer()
     {
-        var saved = RadioSourceSet.SourceTimeout;
-        RadioSourceSet.SourceTimeout = TimeSpan.FromMilliseconds(100);
-        try
+        var slow = new FakeSource(RadioProvider.YouTubeMusic, async ct =>
         {
-            var slow = new FakeSource(RadioProvider.YouTubeMusic, async ct =>
-            {
-                await Task.Delay(Timeout.Infinite, ct);
-                return RadioAnswer.Nothing(RadioProvider.YouTubeMusic);
-            });
-            var quick = new FakeSource(RadioProvider.LastFm, _ => Task.FromResult(
-                new RadioAnswer(RadioProvider.LastFm, RadioMatch.Song, [new("Portishead", "Roads", 1)], [])));
-            var answers = await Set(new RadioSourceSettings(), slow, quick).AskAllAsync(Seed, 10, new Dictionary<string, string>(), CancellationToken.None);
-            Assert.Equal(RadioMatch.None, answers.Single(answer => answer.Provider == RadioProvider.YouTubeMusic).Match);
-            Assert.Single(answers.Single(answer => answer.Provider == RadioProvider.LastFm).Tracks);
-        }
-        finally { RadioSourceSet.SourceTimeout = saved; }
+            await Task.Delay(Timeout.Infinite, ct);
+            return RadioAnswer.Nothing(RadioProvider.YouTubeMusic);
+        });
+        var quick = new FakeSource(RadioProvider.LastFm, _ => Task.FromResult(
+            new RadioAnswer(RadioProvider.LastFm, RadioMatch.Song, [new("Portishead", "Roads", 1)], [])));
+        var set = Set(new RadioSourceSettings(), slow, quick);
+        set.SourceTimeout = TimeSpan.FromMilliseconds(100);
+        var answers = await set.AskAllAsync(Seed, 10, new Dictionary<string, string>(), CancellationToken.None);
+        Assert.Equal(RadioMatch.None, answers.Single(answer => answer.Provider == RadioProvider.YouTubeMusic).Match);
+        Assert.Single(answers.Single(answer => answer.Provider == RadioProvider.LastFm).Tracks);
     }
 
     [Fact]

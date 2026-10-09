@@ -752,7 +752,8 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// Deezer has no such album, it has the album but no tracks for it, or it did not answer
     /// this time. Only the last may come right on its own a moment later.
     /// </summary>
-    public async Task<AlbumLookup> LookUpAlbumDetailAsync(string deezerId, CancellationToken ct = default)
+    public async Task<AlbumLookup> LookUpAlbumDetailAsync(string deezerId, CancellationToken ct = default,
+        bool background = false)
     {
         if (string.IsNullOrWhiteSpace(deezerId)) return new AlbumLookup(null, AlbumAnswer.NoSuchAlbum);
         var cacheKey = $"ad|{deezerId}";
@@ -773,7 +774,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             // album that genuinely has no tracks.
             int? nbTracks = null;
 
-            using (var r = await GetJsonAsync($"{Base}/album/{deezerId}", ct))
+            using (var r = await GetJsonAsync($"{Base}/album/{deezerId}", ct, background))
             {
                 if (r.Transient) return unavailable;
                 if (r.Doc is not null)
@@ -805,7 +806,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             }
 
             var tracks = new List<AlbumTrack>();
-            using (var tr = await GetJsonAsync($"{Base}/album/{deezerId}/tracks?limit=300", ct))
+            using (var tr = await GetJsonAsync($"{Base}/album/{deezerId}/tracks?limit=300", ct, background))
             {
                 // The album call can succeed while the tracklist call is throttled. That
                 // built a perfectly valid AlbumDetail carrying title, year and genre with

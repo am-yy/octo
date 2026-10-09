@@ -142,7 +142,7 @@ public class ForYouListsTests
     }
 
     private static DeezerMetadataService.AlbumTrack Track(int position, int? rank, string title = "") =>
-        new(title.Length > 0 ? title : $"Track {position}", "Artist", 200, position, 1, null, rank);
+        new(title.Length > 0 ? title : $"Track {position}", "Artist", 200, position, 1, null, Rank: rank);
 
     [Fact]
     public void PickTracks_AnAlbumGivesItsBestByRank_InAlbumOrder_ASingleItsFirst()

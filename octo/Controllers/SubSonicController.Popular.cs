@@ -40,7 +40,7 @@ public partial class SubsonicController
                     ? JsonSerializer.SerializeToNode(_responseBuilder.ConvertSongToJson(synced))!.AsObject()
                     : entry).ToList();
         _radioQueueStore.Register(outsideIds);
-        _ = _metadataService.PrewarmYouTubeIdsAsync(outside, topN: 8);
+        _ = _metadataService.PrewarmDeezerIdsAsync(outside, topN: 8);
         return _responseBuilder.CreatePopularPlaylistResponse(format, popular.Playlist(username), entries);
     }
 

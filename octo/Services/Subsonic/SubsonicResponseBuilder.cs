@@ -806,7 +806,10 @@ public partial class SubsonicResponseBuilder
             ["albumArtists"] = albumArtistList,
             ["displayAlbumArtist"] = song.Artist ?? "",
             ["contributors"] = Array.Empty<object>(),
-            ["explicitStatus"] = "",
+            // OpenSubsonic's word for the catalog's flag ("explicit", "clean" or ""), so a client
+            // can mark an outside song before it is added. A library song that reaches here
+            // carries what Navidrome said of it, or nothing.
+            ["explicitStatus"] = ExplicitStatus.ForClients(song.ExplicitContentLyrics),
             // OpenSubsonic's isrc is a list. An album track Deezer described carries its code,
             // and a library song keeps the ones Navidrome gave it.
             ["isrc"] = song.IsrcsForClients().ToArray(),

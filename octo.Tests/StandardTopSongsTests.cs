@@ -84,7 +84,8 @@ public sealed class StandardTopSongsTests
         Assert.Equal("House", omt.Elements().Single(element => element.Name.LocalName == "genres").Attribute("name")!.Value);
         Assert.Equal("-7.5", omt.Elements().Single(element => element.Name.LocalName == "replayGain").Attribute("trackGain")!.Value);
         Assert.Equal("true", songs[0].Attribute("isExternal")!.Value);
-        Assert.Equal("audio/mp4", songs[0].Attribute("contentType")!.Value);
+        // Outside songs here are Deezer FLAC, not upstream's YouTube M4A.
+        Assert.Equal("audio/flac", songs[0].Attribute("contentType")!.Value);
     }
 
     [Fact]

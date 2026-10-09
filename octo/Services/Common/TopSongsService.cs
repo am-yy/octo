@@ -250,7 +250,7 @@ public sealed class TopSongsService : IDisposable
         // as search does for its own first screen. Never awaited.
         var all = songs.Select(top => top.Song).ToList();
         _ = _metadata.PrewarmCoverArtAsync(all, topN: 20);
-        _ = _metadata.PrewarmYouTubeIdsAsync(all, topN: 5);
+        _ = _metadata.PrewarmDeezerIdsAsync(all, topN: 5);
         return songs;
     }
 

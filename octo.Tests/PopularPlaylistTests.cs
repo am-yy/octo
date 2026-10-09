@@ -130,7 +130,8 @@ public sealed class PopularPlaylistTests
         Assert.Equal("House", omt.Elements().Single(element => element.Name.LocalName == "genres").Attribute("name")!.Value);
         Assert.Equal("GBDUW0000059", omt.Elements().Single(element => element.Name.LocalName == "isrc").Value);
         Assert.Equal("true", entries[0].Attribute("isExternal")!.Value);
-        Assert.Equal("m4a", entries[0].Attribute("suffix")!.Value);
+        // Outside songs here are Deezer FLAC, not upstream's YouTube M4A.
+        Assert.Equal("flac", entries[0].Attribute("suffix")!.Value);
     }
 
     [Fact]

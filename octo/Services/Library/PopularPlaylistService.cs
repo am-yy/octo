@@ -161,7 +161,6 @@ public sealed class PopularPlaylistService
                 Title = song.Title,
                 Album = song.Album,
                 Duration = song.Duration,
-                ExplicitContent = song.ExplicitContentLyrics,
             });
             _registry.RememberLength(id, song.Duration, LengthSource.Deezer);
         }

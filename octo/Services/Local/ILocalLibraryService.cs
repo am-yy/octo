@@ -67,7 +67,11 @@ public interface ILocalLibraryService
     Task<bool> ForgetMappingAsync(string localPath);
 
     Task<bool> TriggerLibraryScanAsync(bool force = false);
-    
+
+    /// <summary>Every artist name in the Navidrome library, read as the admin; empty when Octo
+    /// cannot read it.</summary>
+    Task<IReadOnlyList<string>> GetLibraryArtistNamesAsync(CancellationToken ct = default);
+
     /// <summary>
     /// Gets the current scan status
     /// </summary>

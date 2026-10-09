@@ -488,6 +488,16 @@ say how many of each to build, and 0 builds none. The defaults are what Octo has
 produced. All four take effect without a restart, and switching one off removes those
 stations from clients on the next request.
 
+Discovery Mix is artists the listener does not know yet. Octo walks Last.fm's similar artists
+out from their ten strongest artists, so an artist several favourites point to leads, then
+takes one more step from the best new names at half weight. Anyone they have played, anyone
+in the Navidrome library, and any artist with a one-star song is left out. Each of the 30
+best new artists gives up to three of its top songs, and at most two of an artist's songs
+make the station. When that finds fewer than five songs, Discovery Mix falls back to the
+charts of the listener's top tags. Elsewhere, known artists keep 30% of their weight among a
+station's suggestions (Your Mix's familiar share is unaffected), and an artist radio's
+neighbours lean toward artists the listener has not heard.
+
 Other Radio defaults use
 `LASTFM_ENABLE_PERSONALIZED_STATIONS`, `LASTFM_ENABLE_DISCOVERY_STATIONS`,
 `LASTFM_HISTORY_RETENTION_DAYS`, `LASTFM_DISCOVERY_PERCENT`,

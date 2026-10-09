@@ -70,6 +70,26 @@ public sealed class LastFmRadioRecommendationService
     /// <summary>Weight kept by an artist with a song the listener rated one star.</summary>
     internal const double DislikedArtistWeight = 0.5;
 
+    /// <summary>Weight kept by an artist the listener already plays or owns, among a station's
+    /// suggestions. The familiar share of Your Mix is the place for them; the rest is for finding.</summary>
+    internal const double KnownArtistWeight = 0.3;
+
+    /// <summary>
+    /// Discovery Mix walks Last.fm's similar-artist graph out from the listener's
+    /// <see cref="FrontierSeeds"/> strongest artists, <see cref="FrontierNeighbours"/> neighbours
+    /// each, then one more step from the <see cref="SecondHopSeeds"/> best new artists at
+    /// <see cref="SecondHopWeight"/>. The <see cref="FrontierArtists"/> best new artists give
+    /// <see cref="FrontierTracksEach"/> top songs each, and at most
+    /// <see cref="FrontierArtistCap"/> of an artist's songs make the station.
+    /// </summary>
+    internal const int FrontierSeeds = 10;
+    internal const int FrontierNeighbours = 30;
+    internal const int SecondHopSeeds = 5;
+    internal const double SecondHopWeight = 0.5;
+    internal const int FrontierArtists = 30;
+    internal const int FrontierTracksEach = 3;
+    internal const int FrontierArtistCap = 2;
+
     internal static double SourceWeight(LastFmRadioPlay play) => play.Source switch
     {
         "internet-radio" => RadioPlayWeight,
@@ -99,18 +119,23 @@ public sealed class LastFmRadioRecommendationService
     private readonly ILogger<LastFmRadioRecommendationService> _logger;
 
     /// <param name="sources">Every radio source; null keeps stations on Last.fm alone.</param>
+    /// <param name="library">Where the library's artists are read, so owning an artist counts as
+    /// knowing it; null knows only the listener's plays.</param>
     public LastFmRadioRecommendationService(LastFmService lastFm, LastFmRadioStateStore state,
         IOptionsMonitor<LastFmSettings> settings,
-        ILogger<LastFmRadioRecommendationService> logger, RadioSourceSet? sources = null)
+        ILogger<LastFmRadioRecommendationService> logger, RadioSourceSet? sources = null,
+        Octo.Services.Local.ILocalLibraryService? library = null)
     {
         _lastFm = lastFm;
         _state = state;
         _settings = settings;
         _logger = logger;
         _sources = sources;
+        _library = library;
     }
 
     private readonly RadioSourceSet? _sources;
+    private readonly Octo.Services.Local.ILocalLibraryService? _library;
     private static readonly IReadOnlyDictionary<string, string> EmptyAuth = new Dictionary<string, string>();
     /// <summary>Seeds asked at once when several sources answer: the sources' own gates still pace them.</summary>
     internal const int SeedsAtOnce = 3;
@@ -149,6 +174,7 @@ public sealed class LastFmRadioRecommendationService
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(TimeSpan.FromSeconds(25));
         var ct = budget.Token;
+        var known = await KnownArtistsAsync(plays, ct);
         foreach (var artist in artistScores.Take(5).Select(pair => pair.Key))
         {
             try
@@ -166,7 +192,7 @@ public sealed class LastFmRadioRecommendationService
             var mixKey = learned ? "your-mix" : "starter";
             if (settings.EnableYourMix)
             {
-                var mixCandidates = await TracksFromSeeds(username, trackSeeds.Take(6), 12, ct);
+                var mixCandidates = Discount(await TracksFromSeeds(username, trackSeeds.Take(6), 12, ct), known);
                 var familiar = plays.Select(ToCandidate).ToList();
                 // The familiar share of the mix is a quota the walk enforces, so both halves
                 // are drawn over their whole pools rather than the top of each list.
@@ -188,20 +214,29 @@ public sealed class LastFmRadioRecommendationService
             {
                 var topTags = tags.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key)
                     .Select(pair => pair.Key).Take(3).ToList();
-                if (settings.EnableDiscoveryMix && topTags.Count > 0)
+                if (settings.EnableDiscoveryMix)
                 {
-                    var discovery = await TracksFromTags(username, topTags, candidateTarget, ct);
+                    // New artists first; the tag charts only when the graph found too few.
+                    var (discovery, frontierSeeds) = await TracksFromFrontier(artistScores, known, disliked, ct);
+                    IReadOnlyList<string> discoverySeeds = frontierSeeds;
+                    var discoveryCap = FrontierArtistCap;
+                    if (discovery.Count < 5 && topTags.Count > 0)
+                    {
+                        discovery = Discount(await TracksFromTags(username, topTags, candidateTarget, ct), known);
+                        discoverySeeds = topTags;
+                        discoveryCap = ArtistCap(settings, LastFmRadioStationKind.Discovery);
+                    }
                     if (discovery.Count >= 5)
                         stations.Add(Create(username, "discovery", "Discovery Mix",
-                            LastFmRadioStationKind.Discovery, true, topTags,
+                            LastFmRadioStationKind.Discovery, true, discoverySeeds,
                             Shape(discovery, plays, settings, unavailable, random, Previous("discovery"),
-                                ArtistCap(settings, LastFmRadioStationKind.Discovery), excludeRecent: true,
+                                discoveryCap, excludeRecent: true,
                                 banned: banned, disliked: disliked)));
                 }
 
                 foreach (var artist in artistScores.Take(settings.EffectiveArtistStationCount).Select(pair => pair.Key))
                 {
-                    var candidates = await TracksFromArtist(username, artist, candidateTarget, ct);
+                    var candidates = await TracksFromArtist(username, artist, candidateTarget, known, ct);
                     var stationKey = "artist-" + Key(artist);
                     if (candidates.Count >= 5)
                         stations.Add(Create(username, stationKey, $"{artist} Radio",
@@ -341,7 +376,7 @@ public sealed class LastFmRadioRecommendationService
     /// <summary>The seed artist's own top tracks lead; similar artists' top tracks ride at
     /// <see cref="NeighbourArtistAffinity"/> so the station stays about who it is named for.</summary>
     private async Task<List<Candidate>> TracksFromArtist(string? username, string artist,
-        int candidateTarget, CancellationToken ct)
+        int candidateTarget, IReadOnlySet<string> known, CancellationToken ct)
     {
         var result = new List<Candidate>();
         // The build's budget running out keeps what was found so far: the artist's own top
@@ -350,7 +385,12 @@ public sealed class LastFmRadioRecommendationService
         {
             result.AddRange(Ranked(await _lastFm.GetArtistTopTracksAsync(artist,
                 Math.Min(50, candidateTarget), ct), "artist:" + artist));
-            foreach (var similar in (await _lastFm.GetSimilarArtistsAsync(artist, 6, ct)).Take(5))
+            // Neighbours the listener does not know yet go first: a station of a small artist
+            // whose five closest neighbours are all in the library would find nothing new.
+            var neighbours = (await _lastFm.GetSimilarArtistsAsync(artist, 15, ct))
+                .OrderByDescending(similar => similar.Match * (known.Contains(ArtistKey(similar.Name)) ? KnownArtistWeight : 1d))
+                .Take(5);
+            foreach (var similar in neighbours)
                 result.AddRange(Ranked(await _lastFm.GetArtistTopTracksAsync(similar.Name,
                     Math.Min(20, Math.Max(6, candidateTarget / 5)), ct), "artist:" + similar.Name,
                     NeighbourArtistAffinity));
@@ -368,6 +408,82 @@ public sealed class LastFmRadioRecommendationService
         catch (OperationCanceledException) { }
         return result;
     }
+
+    /// <summary>
+    /// Songs by artists the listener does not know yet, found through the ones they play. Each
+    /// neighbour of a strong artist scores that artist's weight times how similar Last.fm says
+    /// they are, so an artist several favourites point to leads. One more step out from the best
+    /// new artists counts at <see cref="SecondHopWeight"/>. Known and disliked artists never
+    /// score. Returns the songs and the artists the walk started from.
+    /// </summary>
+    private async Task<(List<Candidate> Tracks, List<string> Seeds)> TracksFromFrontier(
+        IReadOnlyDictionary<string, double> artistScores, IReadOnlySet<string> known,
+        IReadOnlySet<string> disliked, CancellationToken ct)
+    {
+        var seeds = artistScores.Take(FrontierSeeds).ToList();
+        var result = new List<Candidate>();
+        if (seeds.Count == 0) return (result, []);
+        var scores = new Dictionary<string, (string Name, double Score)>(StringComparer.OrdinalIgnoreCase);
+        // The build's budget running out keeps what was scored so far.
+        try
+        {
+            var strongest = Math.Max(seeds[0].Value, 1e-9);
+            Score(await NeighboursAsync(seeds.Select(seed => (seed.Key, seed.Value / strongest))));
+            var hop = scores.Values.OrderByDescending(entry => entry.Score).Take(SecondHopSeeds).ToList();
+            if (hop.Count > 0)
+            {
+                var best = Math.Max(hop[0].Score, 1e-9);
+                Score(await NeighboursAsync(hop.Select(entry => (entry.Name, SecondHopWeight * entry.Score / best))));
+            }
+
+            var picked = scores.Values.OrderByDescending(entry => entry.Score).Take(FrontierArtists).ToList();
+            if (picked.Count == 0) return (result, seeds.Select(seed => seed.Key).ToList());
+            var top = Math.Max(picked[0].Score, 1e-9);
+            var lists = await Task.WhenAll(picked.Select(async entry =>
+                Ranked(await _lastFm.GetArtistTopTracksAsync(entry.Name, FrontierTracksEach, ct),
+                    "frontier:" + entry.Name, entry.Score / top)));
+            result.AddRange(lists.SelectMany(list => list));
+        }
+        catch (OperationCanceledException) { }
+        return (result, seeds.Select(seed => seed.Key).ToList());
+
+        async Task<(LastFmService.SimilarArtist[] Similar, double Weight)[]> NeighboursAsync(
+            IEnumerable<(string Artist, double Weight)> from) =>
+            await Task.WhenAll(from.Select(async item =>
+                ((await _lastFm.GetSimilarArtistsAsync(item.Artist, FrontierNeighbours, ct)).ToArray(), item.Weight)));
+
+        void Score(IEnumerable<(LastFmService.SimilarArtist[] Similar, double Weight)> answers)
+        {
+            foreach (var (similar, weight) in answers)
+            foreach (var artist in similar)
+            {
+                var key = ArtistKey(artist.Name);
+                if (key.Length == 0 || known.Contains(key) || disliked.Contains(key)) continue;
+                var current = scores.GetValueOrDefault(key, (Name: artist.Name, Score: 0d));
+                scores[key] = (current.Name, current.Score + weight * Math.Max(0.05, artist.Match));
+            }
+        }
+    }
+
+    /// <summary>The artists this listener already knows: everyone they have played, and everyone
+    /// in the library when Octo can read it. Spelled by <see cref="ArtistKey"/>.</summary>
+    private async Task<IReadOnlySet<string>> KnownArtistsAsync(IEnumerable<LastFmRadioPlay> plays, CancellationToken ct)
+    {
+        var known = plays.Select(play => ArtistKey(play.Artist)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (_library is null) return known;
+        try
+        {
+            foreach (var name in await _library.GetLibraryArtistNamesAsync(ct) ?? []) known.Add(ArtistKey(name));
+        }
+        catch (OperationCanceledException) { }
+        return known;
+    }
+
+    /// <summary>Suggestions by artists the listener knows keep <see cref="KnownArtistWeight"/>.</summary>
+    private static List<Candidate> Discount(IEnumerable<Candidate> candidates, IReadOnlySet<string> known) =>
+        candidates.Select(item => known.Contains(ArtistKey(item.Track.Artist))
+            ? item with { Weight = item.Weight * KnownArtistWeight }
+            : item).ToList();
 
     /// <summary>
     /// Selects the station's tracks from its weighted candidates. Filler and songs rated one

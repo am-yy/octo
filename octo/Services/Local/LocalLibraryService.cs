@@ -122,6 +122,31 @@ public class LocalLibraryService : ILocalLibraryService
     public Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct = default) =>
         FindImportedSongAsync(source, ct, "FLAC");
 
+    public async Task<IReadOnlyList<string>> GetLibraryArtistNamesAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var jwt = await _navIdentity.EnsureAdminJwtAsync(ct);
+            if (string.IsNullOrEmpty(jwt) || string.IsNullOrWhiteSpace(_subsonicSettings.Url)) return [];
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"{_subsonicSettings.Url.TrimEnd('/')}/api/artist?_end=0");
+            request.Headers.TryAddWithoutValidation("X-Nd-Authorization", $"Bearer {jwt}");
+            using var response = await _httpClient.SendAsync(request, ct);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) _navIdentity.InvalidateAdminJwt(jwt);
+            if (!response.IsSuccessStatusCode) return [];
+            using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+            return document.RootElement.EnumerateArray()
+                .Select(row => row.TryGetProperty("name", out var name) ? name.GetString() : null)
+                .OfType<string>().Where(name => name.Length > 0).ToList();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
+                                       or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            _logger.LogDebug("Could not list library artists: {Reason}", ex.Message);
+            return [];
+        }
+    }
+
     public async Task<Song?> FindImportedSongAsync(Song source, CancellationToken ct, string sourceQuality)
     {
         var suffix = sourceQuality switch

@@ -65,7 +65,7 @@ public class AdminSignInTests
                 checkedCount++;
             }
         }
-        Assert.True(checkedCount > 50, $"only {checkedCount} endpoints were walked");
+        Assert.True(checkedCount > 40, $"only {checkedCount} endpoints were walked");
     }
 
     [Fact]

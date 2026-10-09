@@ -9,7 +9,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Octo.Controllers;
 using Octo.Models.Settings;
-using Octo.Services.Imports;
 
 namespace Octo.Tests;
 
@@ -32,10 +31,9 @@ public sealed class AdminSecretTests
         [typeof(NotificationSettings)] = "Notifications",
         [typeof(MetadataSettings)] = "Metadata",
         [typeof(ServerSettings)] = "Server",
-        [typeof(UpdateSettings)] = "Updates",
+        [typeof(DeezerSettings)] = "Deezer",
         [typeof(ListenBrainzSettings)] = "ListenBrainz",
         [typeof(GeneratedPlaylistSettings)] = "GeneratedPlaylists",
-        [typeof(ImportSettings)] = "Imports",
     };
 
     /// <summary>What a credential is called. A webhook address carries its own token.</summary>

@@ -2179,6 +2179,8 @@ public class AdminController : ControllerBase
         ("ListenBrainz", "Token", "ListenBrainz token"),
         ("Deezer", "Arl", "Deezer Arl"),
         ("Deezer", "ArlFallback", "Deezer ArlFallback"),
+        // Environment only and left out of the admin API; listed so it is never one in clear.
+        ("Lidarr", "WebhookSecret", "Lidarr webhook secret"),
     ];
 
     /// <summary>Credentials that are sent to an address the settings also hold.</summary>

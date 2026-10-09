@@ -18,8 +18,9 @@ public sealed record CoverArt(int Side, int Background, int Orientation, IReadOn
 /// </summary>
 internal static class CoverPainter
 {
-    /// <summary>Eight steps of edge smoothing: as smooth as sixteen to the eye at these sizes, in half the time.</summary>
-    private static readonly DrawingOptions Drawing = new() { GraphicsOptions = new GraphicsOptions { Antialias = true, AntialiasSubpixelDepth = 8 } };
+    /// <summary>Smoothed edges. ImageSharp.Drawing 3 rasterizes coverage exactly, so there is no
+    /// subpixel depth to choose any more.</summary>
+    private static readonly DrawingOptions Drawing = new() { GraphicsOptions = new GraphicsOptions { Antialias = true } };
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, bool, float), float> Feet = new();
 
@@ -69,7 +70,7 @@ internal static class CoverPainter
             if (width <= 0 || height <= 0) return;
             var layer = new Image<Rgba32>(width, height);
             var local = new RichTextOptions(options) { Origin = new PointF(options.Origin.X - left, options.Origin.Y - top) };
-            layer.Mutate(ctx => ctx.DrawText(Drawing, local, text, Brushes.Solid(ink), null));
+            layer.Mutate(ctx => ctx.Paint(Drawing, canvas => canvas.DrawText(local, text, Brushes.Solid(ink), null)));
             sheets[i] = (layer, new Point(left, top));
         });
         image.Mutate(ctx =>

@@ -249,7 +249,7 @@ public sealed class LastFmRadioRecommendationService
                 foreach (var tag in tags.OrderByDescending(pair => pair.Value).Select(pair => pair.Key)
                              .Take(settings.EffectiveGenreStationCount))
                 {
-                    var candidates = await TracksFromTags(username, [tag], candidateTarget, ct);
+                    var candidates = Discount(await TracksFromTags(username, [tag], candidateTarget, ct), known);
                     var stationKey = "genre-" + Key(tag);
                     if (candidates.Select(item => item.Track.Artist).Distinct(StringComparer.OrdinalIgnoreCase).Count() >= 4)
                         stations.Add(Create(username, stationKey, Title(tag) + " Radio",

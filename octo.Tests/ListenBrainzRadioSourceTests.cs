@@ -69,6 +69,25 @@ public sealed class ListenBrainzRadioSourceTests
         Assert.Contains(labs.Requests, request => request.RequestUri!.Query.Contains("session_based_days_9000"));
     }
 
+    [Theory]
+    [InlineData(null, "medium")]
+    [InlineData("hard", "hard")]
+    [InlineData(" Easy ", "easy")]
+    [InlineData("deep", "medium")]
+    public async Task LbRadio_AsksInTheConfiguredMode(string? mode, string sent)
+    {
+        var labs = new Labs(Live);
+        var client = new ListenBrainzRadioClient(new ReviewFixtures.OneClientFactory(labs),
+            TestOptions.Monitor(new ListenBrainzSettings { Token = "token" }), NullLogger<ListenBrainzRadioClient>.Instance);
+        var settings = new RadioSourceSettings();
+        if (mode is not null) settings.ListenBrainzRadioMode = mode;
+
+        await new ListenBrainzRadioSource(client, TestOptions.Monitor(settings)).TagAsync("phonk", 10, default);
+
+        var radio = Assert.Single(labs.Requests, request => request.RequestUri!.AbsolutePath == "/1/explore/lb-radio");
+        Assert.Contains("&mode=" + sent, radio.RequestUri!.Query);
+    }
+
     [Fact]
     public async Task ASongWithItsRecordingTagged_NeedsNoLookup()
     {

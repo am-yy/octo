@@ -65,16 +65,17 @@ public sealed class ListenBrainzRadioClient(IHttpClientFactory http, IOptionsMon
         return tracks.Take(count).ToList();
     }
 
-    /// <summary>LB Radio for a prompt ("artist:(Kordhell)", "tag:(phonk)"); nothing without a token.</summary>
-    public async Task<IReadOnlyList<ListenBrainzTrack>> LbRadioAsync(string prompt, int count, CancellationToken ct)
+    /// <summary>LB Radio for a prompt ("artist:(Kordhell)", "tag:(phonk)") in a mode (easy, medium
+    /// or hard); nothing without a token.</summary>
+    public async Task<IReadOnlyList<ListenBrainzTrack>> LbRadioAsync(string prompt, string mode, int count, CancellationToken ct)
     {
         var token = listenBrainz.CurrentValue.Token;
         if (string.IsNullOrWhiteSpace(token)) return [];
-        var key = $"lbradio|{prompt}";
+        var key = $"lbradio|{mode}|{prompt}";
         if (_cache.TryGetValue(key, out IReadOnlyList<ListenBrainzTrack>? cached) && cached is not null)
             return cached.Take(count).ToList();
         using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"{ApiUrl}/1/explore/lb-radio?prompt={Uri.EscapeDataString(prompt)}&mode=easy");
+            $"{ApiUrl}/1/explore/lb-radio?prompt={Uri.EscapeDataString(prompt)}&mode={Uri.EscapeDataString(mode)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Token", token.Trim());
         using var doc = await SendAsync(request, ct);
         if (doc is null) return [];

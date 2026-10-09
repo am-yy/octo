@@ -495,8 +495,10 @@ in the Navidrome library, and any artist with a one-star song is left out. Each 
 best new artists gives up to three of its top songs, and at most two of an artist's songs
 make the station. When that finds fewer than five songs, Discovery Mix falls back to the
 charts of the listener's top tags. Elsewhere, known artists keep 30% of their weight among a
-station's suggestions (Your Mix's familiar share is unaffected), and an artist radio's
-neighbours lean toward artists the listener has not heard.
+station's suggestions in Your Mix and genre radio (Your Mix's familiar share is unaffected),
+and an artist radio's neighbours lean toward artists the listener has not heard. With a
+ListenBrainz token, LB Radio joins artist and genre stations in `RADIO_LISTENBRAINZ_MODE`
+(`easy`, `medium` by default, or `hard`; the further modes reach less played songs).
 
 Other Radio defaults use
 `LASTFM_ENABLE_PERSONALIZED_STATIONS`, `LASTFM_ENABLE_DISCOVERY_STATIONS`,

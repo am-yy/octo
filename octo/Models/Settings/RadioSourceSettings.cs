@@ -28,6 +28,10 @@ public class RadioSourceSettings
     public string ListenBrainzAlgorithm { get; set; } =
         "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30";
 
+    /// <summary>How far LB Radio reaches for artist and genre stations: easy keeps to the best
+    /// known songs, medium and hard go further into less played ones. RADIO_LISTENBRAINZ_MODE.</summary>
+    public string ListenBrainzRadioMode { get; set; } = "medium";
+
     /// <summary>How much each source counts in the blend before learning, 0 to 3. 0 leaves a
     /// source out of the blend. Dashboard only. Reasoned starting points: YouTube Music has the
     /// most listening data and knows uploads; Last.fm is strong for songs it knows; ListenBrainz
@@ -43,6 +47,13 @@ public class RadioSourceSettings
     public bool LearnFromListening { get; set; } = true;
 
     public int EffectiveSonicPauseSeconds => Math.Clamp(SonicPauseSeconds, 0, 600);
+
+    /// <summary>The mode LB Radio is asked with; anything but easy, medium or hard is medium.</summary>
+    public string EffectiveListenBrainzRadioMode =>
+        (ListenBrainzRadioMode ?? "").Trim().ToLowerInvariant() switch
+        {
+            "easy" => "easy", "hard" => "hard", _ => "medium",
+        };
 
     public static double EffectiveWeight(double weight) =>
         double.IsFinite(weight) ? Math.Clamp(weight, 0, 3) : 1;

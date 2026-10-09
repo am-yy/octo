@@ -61,14 +61,43 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
         Assert.Contains("indie", discovery.Seeds);
     }
 
-    private async Task<IReadOnlyList<LastFmRadioStation>> Build(HttpMessageHandler handler, ILocalLibraryService? library)
+    [Fact]
+    public async Task GenreRadio_LeansOnArtistsTheListenerDoesNotKnow()
+    {
+        // The tag chart alternates ten library artists with new ones. The same builds with a
+        // library Octo cannot read, where those ten are strangers, are the comparison.
+        var owned = Enumerable.Range(0, 10).Select(index => $"Owned {index}").ToArray();
+        var chart = Enumerable.Range(0, 40).Select(index => index % 2 == 0 ? owned[index / 2 % 10] : $"New {index}").ToArray();
+        async Task<int> Taken(bool libraryKnown)
+        {
+            var library = new Mock<ILocalLibraryService>();
+            library.Setup(l => l.GetLibraryArtistNamesAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(libraryKnown ? owned : []);
+            var total = 0;
+            for (var seed = 0; seed < 20; seed++)
+            {
+                var genre = Assert.Single(await Build(new GraphHandler(new(StringComparer.OrdinalIgnoreCase), chart),
+                    library.Object, trackCount: 10, seed: seed), station => station.Kind == LastFmRadioStationKind.Genre);
+                total += genre.Tracks.Count(track => owned.Contains(track.Artist));
+            }
+            return total;
+        }
+
+        var known = await Taken(libraryKnown: true);
+        var strangers = await Taken(libraryKnown: false);
+        Assert.True(known < strangers * 0.7, $"known {known}, strangers {strangers}");
+    }
+
+    private async Task<IReadOnlyList<LastFmRadioStation>> Build(HttpMessageHandler handler, ILocalLibraryService? library,
+        int trackCount = 50, int seed = 7)
     {
         Directory.CreateDirectory(_directory);
         var settings = TestOptions.Monitor(new LastFmSettings
         {
             ApiKey = "test-key", EnablePersonalizedStations = true, EnableDiscoveryStations = false, MinimumPlays = 3,
+            RadioTrackCount = trackCount,
         });
-        var state = new LastFmRadioStateStore(Path.Combine(_directory, "state.json"), settings,
+        var state = new LastFmRadioStateStore(Path.Combine(_directory, Guid.NewGuid() + ".json"), settings,
             new ExternalIdRegistry(), new Mock<ILogger<LastFmRadioStateStore>>().Object);
         for (var index = 0; index < 4; index++)
             foreach (var artist in new[] { "Seed A", "Seed B" })
@@ -80,11 +109,15 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
         var lastFm = new LastFmService(new HttpClient(handler), settings,
             Options.Create(new MetadataSettings { Language = "en" }), new Mock<ILogger<LastFmService>>().Object);
         var service = new LastFmRadioRecommendationService(lastFm, state, settings,
-            new Mock<ILogger<LastFmRadioRecommendationService>>().Object, library: library);
+            new Mock<ILogger<LastFmRadioRecommendationService>>().Object, library: library)
+        {
+            Randomizer = () => new Random(seed),
+        };
         return await service.BuildAsync("alice");
     }
 
-    private sealed class GraphHandler(Dictionary<string, (string Name, double Match)[]> graph) : HttpMessageHandler
+    private sealed class GraphHandler(Dictionary<string, (string Name, double Match)[]> graph, string[]? chart = null)
+        : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -96,9 +129,9 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
                     .Select(item => new { name = item.Name, match = item.Match }).ToArray() } },
                 "artist.gettoptracks" => new { toptracks = new { track = Enumerable.Range(0, 3)
                     .Select(index => new { name = $"{artist}-top-{index}", artist = new { name = artist } }).ToArray() } },
-                "tag.gettoptracks" => new { tracks = new { track = Enumerable.Range(0, 20)
+                "tag.gettoptracks" => new { tracks = new { track = Enumerable.Range(0, chart?.Length ?? 20)
                     .Select(index => new { name = $"{query["tag"]}-{index}", duration = 180000,
-                        artist = new { name = $"{query["tag"]} Artist {index}" } }).ToArray() } },
+                        artist = new { name = chart?[index] ?? $"{query["tag"]} Artist {index}" } }).ToArray() } },
                 _ => new { },
             };
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)

@@ -21,7 +21,8 @@ public sealed class ListenBrainzRadioSource(ListenBrainzRadioClient client, IOpt
         if (seed.IsArtist)
         {
             var mbid = seed.LibrarySong?.MusicBrainzArtistIds?.FirstOrDefault();
-            var radio = await client.LbRadioAsync($"artist:({mbid ?? seed.Artist})", count, ct);
+            var radio = await client.LbRadioAsync($"artist:({mbid ?? seed.Artist})",
+                settings.CurrentValue.EffectiveListenBrainzRadioMode, count, ct);
             return new(Provider, radio.Count > 0 ? RadioMatch.ArtistsTrusted : RadioMatch.None, Tracks(radio), []);
         }
         var recording = seed.LibrarySong?.MusicBrainzRecordingId is { Length: > 0 } tagged ? tagged
@@ -33,7 +34,7 @@ public sealed class ListenBrainzRadioSource(ListenBrainzRadioClient client, IOpt
 
     public async Task<RadioAnswer> TagAsync(string tag, int count, CancellationToken ct)
     {
-        var radio = await client.LbRadioAsync($"tag:({tag})", count, ct);
+        var radio = await client.LbRadioAsync($"tag:({tag})", settings.CurrentValue.EffectiveListenBrainzRadioMode, count, ct);
         return new(Provider, radio.Count > 0 ? RadioMatch.Genre : RadioMatch.None, Tracks(radio), []);
     }
 

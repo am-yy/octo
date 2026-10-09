@@ -821,6 +821,14 @@
               <div class="set-info"><div class="set-info-t">ListenBrainz</div><div class="set-info-d">Songs people play alongside it, from ListenBrainz's open listening data. With a ListenBrainz token, its radio also fills artist and genre stations.</div></div>
               <label class="switch"><input type="checkbox" name="RadioSources.ListenBrainz" /><span class="sw-track"></span><span class="sw-thumb"></span></label>
             </div>
+            <div class="set-row stack">
+              <div class="set-info"><div class="set-info-t">How far LB Radio reaches</div><div class="set-info-d">For artist and genre stations, with a ListenBrainz token. Easy keeps to the best known songs; medium and hard go further into less played ones. Default: medium.</div></div>
+              <select class="set-input" name="RadioSources.ListenBrainzRadioMode">
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
             <div class="set-row">
               <div class="set-info"><div class="set-info-t">Sounds alike</div><div class="set-info-d">Library songs that sound like it. Octo reads every song once to learn how it sounds, one song at a time and only while nothing is downloading.</div></div>
               <label class="switch"><input type="checkbox" name="RadioSources.SoundsAlike" /><span class="sw-track"></span><span class="sw-thumb"></span></label>

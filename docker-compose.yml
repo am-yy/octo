@@ -118,6 +118,7 @@ services:
       # Radio's other sources (multi-source radio). Weights live on the dashboard's Radio page.
       RadioSources__YouTubeMusic: ${RADIO_YOUTUBE_MUSIC:-true}
       RadioSources__ListenBrainz: ${RADIO_LISTENBRAINZ:-true}
+      RadioSources__ListenBrainzRadioMode: ${RADIO_LISTENBRAINZ_MODE:-medium}
       RadioSources__SoundsAlike: ${RADIO_SOUNDS_ALIKE:-true}
       RadioSources__SonicUrl: ${RADIO_SONIC_URL:-http://octo-sonic:8080}
       RadioSources__SonicPauseSeconds: ${RADIO_SONIC_PAUSE_SECONDS:-2}

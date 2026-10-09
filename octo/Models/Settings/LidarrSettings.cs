@@ -21,4 +21,8 @@ public sealed class LidarrSettings
     public bool MonitorRequestedAlbums { get; set; } = true;
     public LidarrCompletionMode CompletionMode { get; set; } = LidarrCompletionMode.Accepted;
     public int ImportTimeoutSeconds { get; set; } = 1800;
+    /// <summary>Basic auth password Lidarr's Connect webhook sends to /api/lidarr/webhook.
+    /// Empty turns the webhook off. Set it in the environment (LIDARR__WEBHOOKSECRET), not
+    /// settings.json: the admin API leaves it out, so a Raw config save would drop it.</summary>
+    public string? WebhookSecret { get; set; }
 }

@@ -509,6 +509,8 @@ When track metadata is missing, Octo waits for matching active metadata refreshe
 
 `LIDARR_COMPLETION_MODE=Accepted` (default) returns control after Lidarr accepts the album search. `Imported` makes completion/failure notifications reflect the actual import, bounded by `LIDARR_IMPORT_TIMEOUT_SECONDS` (default 1800). Neither mode blocks playback or later hearts; imported files are reconciled into download history and trigger a Navidrome scan in the background.
 
+Optionally set `LIDARR_WEBHOOK_SECRET` and add a Webhook under Lidarr's **Settings → Connect** with URL `http://octo:8080/api/lidarr/webhook` (Octo's address as Lidarr reaches it), the **On Release Import** and **On Upgrade** triggers, any username and that secret as password. Each import then asks Navidrome to scan and checks saved hearts and playlists every 5 seconds for 2 minutes, so they switch to the library copy almost at once instead of on the next minute's check. This also covers albums imported after the timeout above or an Octo restart. Without the secret the endpoint answers 404.
+
 ### Playback and acquisition
 
 Tracks already in your library play through Navidrome. Missing external results play from a growing shared Deezer source; disabled caching uses temporary staging with the same validation; heart the song or album to run the configured permanent acquisition priority.

@@ -94,6 +94,7 @@ services:
       Lidarr__MetadataProfileId: ${LIDARR_METADATA_PROFILE_ID:-0}
       Lidarr__CompletionMode: ${LIDARR_COMPLETION_MODE:-Accepted}
       Lidarr__ImportTimeoutSeconds: ${LIDARR_IMPORT_TIMEOUT_SECONDS:-1800}
+      Lidarr__WebhookSecret: ${LIDARR_WEBHOOK_SECRET:-}
 
       # ----- Last.fm radio (core Octo feature; no separate Radio service) -----
       LastFm__ApiKey: ${LASTFM_API_KEY:-}

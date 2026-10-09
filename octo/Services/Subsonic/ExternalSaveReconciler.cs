@@ -11,6 +11,24 @@ public sealed class ExternalSaveReconciler(
     ILocalLibraryService library,
     ILogger<ExternalSaveReconciler> logger) : BackgroundService
 {
+    internal static readonly TimeSpan BurstInterval = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan BurstLength = TimeSpan.FromMinutes(2);
+    private readonly SemaphoreSlim _wake = new(0, 1);
+    private long _burstUntilTicks;
+
+    internal bool Bursting => DateTime.UtcNow.Ticks < Interlocked.Read(ref _burstUntilTicks);
+
+    /// <summary>
+    /// Lidarr just imported: check now, then every few seconds while Navidrome scans the files.
+    /// ponytail: a fixed two-minute window, not Navidrome's scan status, which needs admin auth;
+    /// a scan that outlasts it is still found by the minute poll.
+    /// </summary>
+    public void Wake()
+    {
+        Interlocked.Exchange(ref _burstUntilTicks, (DateTime.UtcNow + BurstLength).Ticks);
+        try { _wake.Release(); } catch (SemaphoreFullException) { }
+    }
+
     public async Task<int> ReconcileImportedAsync(CancellationToken cancellationToken = default)
     {
         var replaced = 0;
@@ -48,7 +66,7 @@ public sealed class ExternalSaveReconciler(
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) { logger.LogWarning("External save scan will retry: {Reason}", ex.Message); }
 
-            try { await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken); }
+            try { await _wake.WaitAsync(Bursting ? BurstInterval : TimeSpan.FromMinutes(1), stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
         }
     }

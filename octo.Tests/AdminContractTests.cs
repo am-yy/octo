@@ -38,6 +38,8 @@ public class AdminContractTests
     /// <summary>Settings deliberately absent from the admin API, each with its reason.</summary>
     private static readonly HashSet<string> Excluded = new(StringComparer.Ordinal)
     {
+        // Environment only (LIDARR__WEBHOOKSECRET): the dashboard never reads or writes it.
+        "Lidarr.WebhookSecret",
     };
 
     private static IEnumerable<string> SettableProperties(Type type) =>

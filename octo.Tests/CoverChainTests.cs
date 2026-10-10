@@ -28,8 +28,8 @@ public class CoverChainTests
         if (centre is { } colour)
         {
             var side = Math.Min(width, height);
-            image.Mutate(ctx => ctx.Paint(canvas => canvas.Fill(Brushes.Solid(Color.FromPixel(colour)),
-                new Rectangle((width - side) / 2, (height - side) / 2, side, side))));
+            image.Mutate(ctx => ctx.Fill(Color.FromPixel(colour),
+                new RectangleF((width - side) / 2f, (height - side) / 2f, side, side)));
         }
         using var stream = new MemoryStream();
         image.SaveAsJpeg(stream);

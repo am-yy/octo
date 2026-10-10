@@ -34,7 +34,7 @@ public class CoverArtService
     private static readonly TimeSpan MusicHit = TimeSpan.FromHours(12);
     private static readonly TimeSpan MusicGrey = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MusicMiss = TimeSpan.FromMinutes(1);
-    private static readonly JpegEncoder Jpeg = new() { Quality = 92, ColorType = JpegColorType.YCbCrRatio444 };
+    private static readonly JpegEncoder Jpeg = new() { Quality = 92, ColorType = JpegEncodingColor.YCbCrRatio444 };
 
     /// <param name="coversDirectory">Pictures that replace a generated cover, named after the
     /// playlist (/app/config/covers).</param>

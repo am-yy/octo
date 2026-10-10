@@ -43,7 +43,7 @@ internal static class CoverFonts
         try
         {
             foreach (var name in FallbackNames)
-                if (SystemFonts.TryGetByCulture(name, CultureInfo.InvariantCulture, out var family) && !found.Contains(family))
+                if (SystemFonts.TryGet(name, CultureInfo.InvariantCulture, out var family) && !found.Contains(family))
                     found.Add(family);
         }
         catch (Exception)
@@ -67,7 +67,7 @@ internal static class CoverFonts
 
     /// <summary>Whether the font draws the character itself, not its empty box.</summary>
     public static bool Has(Font font, CodePoint cp) =>
-        font.TryGetGlyphId(cp, out var glyphId) && glyphId != 0;
+        font.TryGetGlyphs(cp, ColorFontSupport.None, out var glyphs) && glyphs.Any(g => g.GlyphMetrics.GlyphId != 0);
 
     /// <summary>
     /// The font to set <paramref name="text"/> in: Inter, unless it holds letters Inter does not
@@ -107,7 +107,7 @@ internal static class CoverFonts
         }
         if (best is not { } chosen) return (interFamily, FontStyle.Regular, Fallbacks);
 
-        var bold = weight == CoverBook.Default.Layout.Title.Weight && chosen.GetAvailableStyles().ToArray().Contains(FontStyle.Bold);
+        var bold = weight == CoverBook.Default.Layout.Title.Weight && chosen.GetAvailableStyles().Contains(FontStyle.Bold);
         var rest = new List<FontFamily> { interFamily };
         rest.AddRange(Fallbacks.Where(f => !f.Equals(chosen)));
         return (chosen, bold ? FontStyle.Bold : FontStyle.Regular, rest);

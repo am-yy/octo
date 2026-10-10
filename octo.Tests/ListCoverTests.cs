@@ -420,7 +420,7 @@ public class ListCoverTests : IDisposable
     {
         using var image = new Image<Rgb24>(120, 120, Color.ParseHex(hex).ToPixel<Rgb24>());
         if (second is not null)
-            image.Mutate(ctx => ctx.Paint(canvas => canvas.Fill(Brushes.Solid(Color.ParseHex(second)), new Rectangle(0, 80, 120, 40))));
+            image.Mutate(ctx => ctx.Fill(Color.ParseHex(second), new SixLabors.ImageSharp.Drawing.RectangularPolygon(0, 80, 120, 40)));
         using var ms = new MemoryStream();
         image.SaveAsPng(ms);
         return ms.ToArray();
@@ -766,7 +766,7 @@ public class ListCoverTests : IDisposable
             var art = service.Compose(spec, 600) with { Background = index, Orientation = 0 };
             using var painted = CoverPainter.Paint(CoverBook.Default, art, new CoverTypesetter(), drawWords: false);
             using var ms = new MemoryStream();
-            painted.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 92, ColorType = SixLabors.ImageSharp.Formats.Jpeg.JpegColorType.YCbCrRatio444 });
+            painted.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 92, ColorType = SixLabors.ImageSharp.Formats.Jpeg.JpegEncodingColor.YCbCrRatio444 });
             using var decoded = Image.Load<Rgb24>(ms.ToArray());
             foreach (var words in art.Words)
             {

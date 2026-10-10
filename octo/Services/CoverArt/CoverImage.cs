@@ -1,5 +1,10 @@
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Bmp;
+using SixLabors.ImageSharp.Formats.Gif;
 using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
 
 namespace Octo.Services.CoverArt;
@@ -11,11 +16,25 @@ internal static class CoverImage
     private const double SquareTolerance = 0.03;
     private const int MinSide = 150;
 
+    /// <summary>
+    /// How every cover from outside is read: JPEG, PNG, WebP, GIF and BMP, and never TIFF. Covers
+    /// come from the web and from music files, including Cover Art Archive uploads, and ImageSharp
+    /// 3's BigTIFF reader can spin for a long time on 24 crafted bytes (GHSA-wmxv-xphr-5c9g). No
+    /// cover source serves TIFF, so a TIFF reads as unusable like any other unreadable picture.
+    /// The ICC profile advisory of the same release (GHSA-gwg2-r3hj-4w44) is only reached through
+    /// IccProfile.Entries, which Octo never reads.
+    /// </summary>
+    internal static readonly DecoderOptions Decoding = new()
+    {
+        Configuration = new Configuration(new JpegConfigurationModule(), new PngConfigurationModule(),
+            new WebpConfigurationModule(), new GifConfigurationModule(), new BmpConfigurationModule()),
+    };
+
     public static (int Width, int Height)? Measure(byte[] bytes)
     {
         try
         {
-            var info = Image.Identify(bytes);
+            var info = Image.Identify(Decoding, bytes);
             return (info.Width, info.Height);
         }
         catch
@@ -46,7 +65,7 @@ internal static class CoverImage
     {
         try
         {
-            using var image = Image.Load(bytes);
+            using var image = Image.Load(Decoding, bytes);
             var side = Math.Min(image.Width, image.Height);
             var x = (image.Width - side) / 2;
             var y = (image.Height - side) / 2;
@@ -66,8 +85,8 @@ internal static class CoverImage
     {
         try
         {
-            if (Image.DetectFormat(bytes).Name.Equals("JPEG", StringComparison.OrdinalIgnoreCase)) return bytes;
-            using var image = Image.Load(bytes);
+            if (Image.DetectFormat(Decoding, bytes).Name.Equals("JPEG", StringComparison.OrdinalIgnoreCase)) return bytes;
+            using var image = Image.Load(Decoding, bytes);
             using var output = new MemoryStream();
             image.Save(output, new JpegEncoder { Quality = 90 });
             return output.ToArray();
@@ -89,7 +108,7 @@ internal static class CoverImage
         try
         {
             if (Measure(bytes) is not { } size || Math.Max(size.Width, size.Height) <= maxSide) return bytes;
-            using var image = Image.Load(bytes);
+            using var image = Image.Load(Decoding, bytes);
             image.Mutate(ctx => ctx.Resize(new ResizeOptions
             {
                 Size = new Size(maxSide, maxSide),
@@ -118,7 +137,7 @@ internal static class CoverImage
         if (bytes is not { Length: > 0 }) return null;
         try
         {
-            using var image = Image.Load<SixLabors.ImageSharp.PixelFormats.L8>(bytes);
+            using var image = Image.Load<SixLabors.ImageSharp.PixelFormats.L8>(Decoding, bytes);
             image.Mutate(ctx => ctx.Resize(9, 8));
             ulong hash = 0;
             var bit = 0;
@@ -187,7 +206,7 @@ internal static class CoverImage
     {
         try
         {
-            return Image.DetectFormat(bytes).DefaultMimeType;
+            return Image.DetectFormat(Decoding, bytes).DefaultMimeType;
         }
         catch
         {

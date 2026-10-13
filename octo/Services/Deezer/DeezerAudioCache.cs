@@ -372,6 +372,14 @@ public sealed class DeezerAudioCache : BackgroundService
             DeezerId = song.DeezerId, Artist = song.Artist, Title = song.Title,
             Album = song.Album, Duration = song.Duration,
         }).ToList();
+        try
+        {
+            await _resolver.PrefetchAsync(selected
+                .Select(song => TryTrackId(song, out var id) ? id : null).OfType<string>()
+                .Where(id => !IsValidSource(TrackPath(id, SourceQuality), SourceQuality)),
+                SourceQuality, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         await Task.WhenAll(selected.Select(async song =>
         {
             try { await EnsureAsync(song, DeezerCachePriority.Speculative, cancellationToken); }
@@ -576,7 +584,13 @@ public sealed class DeezerAudioCache : BackgroundService
         try
         {
             await foreach (var trackId in _pinQueue.Reader.ReadAllAsync(ct))
+            {
+                // Resolve this and the other queued pins in one Deezer round trip, as the desktop client
+                // batches; later pins then find their media cached. Nothing is dequeued, so workers stay parallel.
+                await _resolver.PrefetchAsync(_queuedPins.Keys.Prepend(trackId).Distinct().Where(id => HasPin(id)
+                    && !IsValidSource(TrackPath(id, SourceQuality), SourceQuality)), SourceQuality, ct);
                 await FillPinnedAsync(trackId, ct);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }

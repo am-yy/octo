@@ -134,12 +134,12 @@ builder.Services.AddSingleton<DeezerResolver>();
 builder.Services.AddHttpClient(DeezerResolver.ApiClientName, c =>
 {
     c.Timeout = TimeSpan.FromSeconds(10);
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+    DeezerResolver.ApplyClientHeaders(c);
 }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
 builder.Services.AddHttpClient(DeezerResolver.StreamClientName, c =>
 {
     c.Timeout = Timeout.InfiniteTimeSpan;
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+    DeezerResolver.ApplyClientHeaders(c);
 }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false });
 builder.Services.AddSingleton(sp => new ExternalIdRegistry(
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-ids.json"),

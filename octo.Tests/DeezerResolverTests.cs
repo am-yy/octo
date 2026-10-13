@@ -140,6 +140,100 @@ public sealed class DeezerResolverTests
     }
 
     [Fact]
+    public async Task ExpiredLicenseLogsInOnceMoreThenSucceeds()
+    {
+        using var fixture = new Fixture();
+        var first = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+        first.stream.Dispose(); first.owner.Dispose();
+
+        fixture.LicenseErrorOnce = true;
+        var second = (await fixture.Resolver.OpenStreamAsync("43"))!.Value;
+        second.stream.Dispose(); second.owner.Dispose();
+
+        Assert.Equal(["arl=primary", "arl=primary"], fixture.AuthCookies);
+        Assert.Equal(3, fixture.MediaBodies.Count);
+    }
+
+    [Theory]
+    [InlineData("https://media-eu.deezer.com/", "media-eu.deezer.com")]
+    [InlineData("https://media.evil.test", "media.deezer.com")]
+    [InlineData("http://media.deezer.com", "media.deezer.com")]
+    [InlineData(null, "media.deezer.com")]
+    public async Task LicenseTokenGoesOnlyToAdvertisedDeezerMediaService(string? advertised, string expected)
+    {
+        using var fixture = new Fixture { MediaService = advertised };
+        var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+        opened.stream.Dispose(); opened.owner.Dispose();
+        Assert.Equal(expected, fixture.MediaHosts.Single());
+    }
+
+    [Fact]
+    public async Task PrefetchResolvesManyTracksInOneRoundTrip()
+    {
+        using var fixture = new Fixture();
+        await fixture.Resolver.PrefetchAsync(["42", "43", "44"], "FLAC");
+        foreach (var id in new[] { "42", "43", "44" })
+        {
+            var established = (await fixture.Resolver.EstablishSourceAsync(id, "FLAC"))!.Value;
+            established.opened.stream.Dispose(); established.opened.owner.Dispose();
+            Assert.Contains($"track=token-{id}", established.info.Media!.Url);
+        }
+        Assert.Equal(["42,43,44"], fixture.PageBatches);
+        Assert.Contains("token-44", Assert.Single(fixture.MediaBodies));
+        Assert.All(fixture.Requests.Where(url => url.Contains("gw-light")), url => Assert.Contains("&cid=", url));
+    }
+
+    [Fact]
+    public async Task FailedSourceFallsThroughToNextWithoutResolvingAgain()
+    {
+        using var fixture = new Fixture { TwoSources = true, RejectSourceA = true };
+        var established = (await fixture.Resolver.EstablishSourceAsync("42", "FLAC"))!.Value;
+        established.opened.stream.Dispose(); established.opened.owner.Dispose();
+        Assert.Contains("source=b", established.info.Media!.Url);
+        Assert.Single(fixture.MediaBodies);
+        Assert.Equal(["GET", "GET"], fixture.CdnMethods);
+    }
+
+    [Fact]
+    public async Task MediaIsReusedUntilDeezerExpiry()
+    {
+        using var fixture = new Fixture { MediaExpiry = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds() };
+        for (var i = 0; i < 2; i++)
+        {
+            var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+            opened.stream.Dispose(); opened.owner.Dispose();
+        }
+        Assert.Single(fixture.MediaBodies);
+
+        // Inside the renewal margin: never cached, so every open asks again.
+        fixture.MediaExpiry = DateTimeOffset.UtcNow.AddSeconds(30).ToUnixTimeSeconds();
+        for (var i = 0; i < 2; i++)
+        {
+            var opened = (await fixture.Resolver.OpenStreamAsync("43"))!.Value;
+            opened.stream.Dispose(); opened.owner.Dispose();
+        }
+        Assert.Equal(3, fixture.MediaBodies.Count);
+    }
+
+    [Fact]
+    public async Task RangeOpenRenewsAnExpiredDescriptorUrl()
+    {
+        using var fixture = new Fixture { Payload = Enumerable.Range(0, 5000).Select(i => (byte)(i % 251)).ToArray() };
+        var info = (await fixture.Resolver.ProbeSourceAsync("42", "FLAC"))!;
+        fixture.RejectFirstUrl = true;
+
+        var opened = (await fixture.Resolver.OpenSourceRangeAsync(info, 2301))!.Value;
+        using (opened.owner)
+        await using (opened.stream)
+        {
+            using var output = new MemoryStream();
+            await opened.stream.CopyToAsync(output);
+            Assert.Equal(fixture.Payload[2301..], output.ToArray());
+        }
+        Assert.Equal(2, fixture.MediaBodies.Count);
+    }
+
+    [Fact]
     public async Task RegionalFallbackTrackUsesItsOwnSessionBoundToken()
     {
         using var fixture = new Fixture { FallbackTrack = true, RegionalFallback = true };
@@ -290,22 +384,7 @@ public sealed class DeezerResolverTests
         using (established.Value.opened.owner)
         await using (established.Value.opened.stream)
             Assert.Equal(contentType, established.Value.opened.contentType);
-        Assert.Equal(["HEAD", "GET", "HEAD", "GET"], fixture.CdnMethods);
-        Assert.Equal(2, fixture.MediaBodies.Count);
-    }
-
-    [Fact]
-    public async Task EstablishmentRetriesWhenValidatorChangesBetweenHeadAndGet()
-    {
-        using var fixture = new Fixture { ChangeFirstUrlValidator = true };
-
-        var established = await fixture.Resolver.EstablishSourceAsync("42", "FLAC");
-
-        Assert.NotNull(established);
-        using (established.Value.opened.owner)
-        await using (established.Value.opened.stream) { }
-        Assert.Equal("\"v2\"", established.Value.info.ETag);
-        Assert.Equal(["HEAD", "GET", "HEAD", "GET"], fixture.CdnMethods);
+        Assert.Equal(["GET", "GET"], fixture.CdnMethods);
         Assert.Equal(2, fixture.MediaBodies.Count);
     }
 
@@ -318,22 +397,22 @@ public sealed class DeezerResolverTests
 
         Assert.Null(established);
         Assert.Equal(2, fixture.MediaBodies.Count);
-        Assert.Equal(["HEAD", "HEAD"], fixture.CdnMethods);
+        Assert.Equal(["GET", "GET"], fixture.CdnMethods);
         Assert.Single(fixture.AuthCookies);
     }
 
     [Fact]
     public async Task EstablishmentCancellationStopsRetries()
     {
-        using var fixture = new Fixture { BlockCdnHead = true };
+        using var fixture = new Fixture { BlockCdn = true };
         using var cancellation = new CancellationTokenSource();
         var task = fixture.Resolver.EstablishSourceAsync("42", "FLAC", cancellation.Token);
 
-        await fixture.CdnHeadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.CdnStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
-        Assert.Equal(["HEAD"], fixture.CdnMethods);
+        Assert.Equal(["GET"], fixture.CdnMethods);
         Assert.Single(fixture.MediaBodies);
     }
 
@@ -436,12 +515,17 @@ public sealed class DeezerResolverTests
         public bool InitialSngIdSubstitution { get; init; }
         public bool WrongSngIdSubstitutionVersion { get; init; }
         public bool MissingOriginalTrackDetail { get; init; }
-        public bool RejectFirstUrl { get; init; }
+        public bool RejectFirstUrl { get; set; }
         public bool RejectPrimaryCdn { get; init; }
         public bool RejectFirstGet { get; init; }
         public bool RejectAllCdn { get; init; }
-        public bool ChangeFirstUrlValidator { get; init; }
-        public bool BlockCdnHead { get; init; }
+        public bool BlockCdn { get; init; }
+        public bool TwoSources { get; init; }
+        public bool RejectSourceA { get; init; }
+        public bool LicenseErrorOnce { get; set; }
+        public string? MediaService { get; init; }
+        public long? SessionExpiry { get; init; }
+        public long? MediaExpiry { get; set; }
         public int AdvertisedExtraBytes { get; init; }
         public string[] AvailableFormats { get; set; } = ["MP3_128", "MP3_320", "FLAC"];
         public List<string> AuthCookies { get; } = [];
@@ -450,9 +534,11 @@ public sealed class DeezerResolverTests
         public List<string> OriginalIdentityIds { get; } = [];
         public List<string> MediaBodies { get; } = [];
         public List<string> MediaCookies { get; } = [];
+        public List<string> MediaHosts { get; } = [];
+        public List<string> PageBatches { get; } = [];
         public List<string?> CdnRanges { get; } = [];
         public List<string> CdnMethods { get; } = [];
-        public TaskCompletionSource CdnHeadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CdnStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly DeezerMetadataService _catalog;
         public Fixture()
         {
@@ -473,38 +559,50 @@ public sealed class DeezerResolverTests
                 if (FailLogin) return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 if (RejectPrimary && cookie == "arl=primary") return Json(new { results = new { USER = new { USER_ID = 0 } } });
                 var account = cookie[4..];
-                var response = Json(new { results = new { checkForm = account + "-api", USER = new { USER_ID = 1, OPTIONS = new { license_token = account + "-license" } } } });
+                var response = Json(new { results = new { checkForm = account + "-api", URL_MEDIA = MediaService,
+                    USER = new { USER_ID = 1, OPTIONS = new { license_token = account + "-license", expiration_timestamp = SessionExpiry } } } });
                 response.Headers.Add("Set-Cookie", $"sid={account}-session; Path=/; HttpOnly");
                 return response;
             }
-            if (url.Contains("deezer.pageTrack"))
+            if (url.Contains("song.getListData"))
             {
                 PageCookies.Add(cookie);
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
-                var id = body.RootElement.GetProperty("SNG_ID").GetString()!;
-                PageIds.Add(id);
+                var ids = body.RootElement.GetProperty("sng_ids").EnumerateArray().Select(id => id.GetString()!).ToArray();
+                PageIds.AddRange(ids);
+                PageBatches.Add(string.Join(",", ids));
                 if (SessionErrorOnce)
                 {
                     SessionErrorOnce = false;
                     return Json(new { results = new { }, error = new { VALID_TOKEN_REQUIRED = "Invalid CSRF token" } });
                 }
-                var wrongVersion = WrongFallbackVersion && id == "43"
-                    || WrongSngIdSubstitutionVersion && id == "42";
-                var title = RegionalFallback && id == "43" ? "Sóng" : "Song";
-                var actualId = InitialSngIdSubstitution && id == "42" ? "43" : id;
-                return Json(new { results = new { DATA = new { SNG_ID = actualId, TRACK_TOKEN = "token-" + actualId, SNG_TITLE = title, VERSION = wrongVersion ? "Live" : null, ART_NAME = "Artist", FALLBACK = new { SNG_ID = NoFallbackId ? "0" : "43" } } }, error = Array.Empty<object>() });
+                return Json(new { results = new { data = ids.Select(id =>
+                {
+                    var wrongVersion = WrongFallbackVersion && id == "43"
+                        || WrongSngIdSubstitutionVersion && id == "42";
+                    var title = RegionalFallback && id == "43" ? "Sóng" : "Song";
+                    var actualId = InitialSngIdSubstitution && id == "42" ? "43" : id;
+                    return new { SNG_ID = actualId, TRACK_TOKEN = "token-" + actualId, SNG_TITLE = title, VERSION = wrongVersion ? "Live" : null, ART_NAME = "Artist", FALLBACK = new { SNG_ID = NoFallbackId ? "0" : "43" } };
+                }).ToArray(), count = ids.Length }, error = Array.Empty<object>() });
             }
-            if (request.RequestUri.Host == "media.deezer.com")
+            if (request.RequestUri.AbsolutePath == "/v1/get_url")
             {
                 MediaCookies.Add(cookie);
+                MediaHosts.Add(request.RequestUri.Host);
                 var body = await request.Content!.ReadAsStringAsync(ct);
                 MediaBodies.Add(body);
-                if (FallbackTrack && body.Contains("token-42")) return Json(new { data = new[] { new { media = Array.Empty<object>() } } });
+                if (LicenseErrorOnce)
+                {
+                    LicenseErrorOnce = false;
+                    return Json(new { errors = new[] { new { code = 1001, message = "License token has expired" } } });
+                }
                 using var doc = JsonDocument.Parse(body);
                 var account = doc.RootElement.GetProperty("license_token").GetString()!.Split('-')[0];
+                var tokens = doc.RootElement.GetProperty("track_tokens").EnumerateArray().Select(token => token.GetString()!);
+                string[] sources = TwoSources ? ["a", "b"] : ["a"];
                 // Deliberately reversed preference order: resolver must choose requested quality.
-                return Json(new { data = new[] { new { media = AvailableFormats
-                    .Select(format => new { format, sources = new[] { new { url = $"https://cdn.deezer.test/{format}?account={account}&version={MediaBodies.Count}" } } }).ToArray() } } });
+                return Json(new { data = tokens.Select(token => new { media = FallbackTrack && token == "token-42" ? [] : AvailableFormats
+                    .Select(format => new { format, exp = MediaExpiry, sources = sources.Select(source => new { url = $"https://cdn.deezer.test/{format}?account={account}&version={MediaBodies.Count}&source={source}&track={token}" }).ToArray() }).ToArray() }).ToArray() });
             }
             if (request.RequestUri.Host == "api.deezer.com" && request.RequestUri.AbsolutePath == "/track/42")
             {
@@ -523,14 +621,12 @@ public sealed class DeezerResolverTests
             Assert.Equal("cdn.deezer.test", request.RequestUri.Host);
             Assert.Empty(cookie); // Account secrets never travel to media sources.
             CdnMethods.Add(request.Method.Method);
-            if (request.Method == HttpMethod.Head)
-            {
-                CdnHeadStarted.TrySetResult();
-                if (BlockCdnHead) await Task.Delay(Timeout.Infinite, ct);
-            }
+            CdnStarted.TrySetResult();
+            if (BlockCdn) await Task.Delay(Timeout.Infinite, ct);
             CdnRanges.Add(request.Headers.Range?.ToString());
             var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
             if (RejectAllCdn || RejectFirstUrl && query["version"] == "1"
+                || RejectSourceA && query["source"] == "a"
                 || RejectPrimaryCdn && query["account"] == "primary"
                 || RejectFirstGet && request.Method == HttpMethod.Get && query["version"] == "1")
                 return new HttpResponseMessage(HttpStatusCode.Forbidden);
@@ -539,11 +635,6 @@ public sealed class DeezerResolverTests
                 { Content = new ByteArrayContent(Payload[start..]) };
             result.Content.Headers.ContentLength = Payload.Length - start + AdvertisedExtraBytes;
             if (start > 0) result.Content.Headers.ContentRange = new ContentRangeHeaderValue(start, Payload.Length - 1, Payload.Length);
-            if (ChangeFirstUrlValidator)
-            {
-                var tag = query["version"] == "1" && request.Method == HttpMethod.Head ? "\"v1\"" : "\"v2\"";
-                result.Headers.ETag = new EntityTagHeaderValue(tag);
-            }
             return result;
         }
         private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK)

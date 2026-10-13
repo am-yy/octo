@@ -433,13 +433,14 @@ public sealed class ProgressiveDeliveryIntegrationTests
             var uri = request.RequestUri!;
             if (uri.Query.Contains("deezer.getUserData"))
                 return Task.FromResult(Json(new { results = new { checkForm = "api", USER = new { USER_ID = 7, OPTIONS = new { license_token = "license" } } } }));
-            if (uri.Query.Contains("deezer.pageTrack"))
-                return Task.FromResult(Json(new { results = new { DATA = new { SNG_ID = TrackId, TRACK_TOKEN = "token" } } }));
+            if (uri.Query.Contains("song.getListData"))
+                return Task.FromResult(Json(new { results = new { data = new[] { new { SNG_ID = TrackId, TRACK_TOKEN = "token" } } } }));
             if (uri.Host == "media.deezer.com")
                 return Task.FromResult(Json(new { data = new[] { new { media = new[] { new { format = _quality, sources = new[] { new { url = "https://cdn.test/source" } } } } } } }));
             Assert.Equal("cdn.test", uri.Host);
-            if (request.Method == HttpMethod.Head)
+            if (request.Headers.Range?.Ranges.Single().To == 2047)
             {
+                // Source probe: validators only.
                 var number = Interlocked.Increment(ref HeadProbes);
                 var validator = ChangeValidatorAfterFirstHead && number == 1 ? "probe-v1" : "source-v2";
                 var head = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };

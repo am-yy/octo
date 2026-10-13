@@ -20,15 +20,23 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
 {
     public const string ApiClientName = "deezer-media-api";
     public const string StreamClientName = "deezer-media-stream";
-    private static readonly TimeSpan SessionLifetime = TimeSpan.FromHours(1);
+    /// <summary>Most tracks one song.getListData or get_url call resolves.</summary>
+    public const int MaxBatch = 25;
+    // ponytail: mirrors the Deezer desktop release this flow was read from (7.1.340); bump with the client.
+    public const string UserAgent = "Deezer/7.1.340 (Electron; osx/15.1.0; Desktop; en)";
+    public const string Origin = "https://www.deezer.com";
+    private const string DefaultMediaService = "https://media.deezer.com";
+    private static readonly TimeSpan FallbackSessionLifetime = TimeSpan.FromHours(1);
+    private static readonly TimeSpan FallbackMediaLifetime = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan ExpiryMargin = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MissLifetime = TimeSpan.FromHours(6);
     private static readonly TimeSpan MaxLoginBackoff = TimeSpan.FromHours(1);
-    private readonly MemoryCache _mediaCache = new(new MemoryCacheOptions { SizeLimit = 128 });
+    // Room for batched resolves: entries are a few URLs each.
+    private readonly MemoryCache _mediaCache = new(new MemoryCacheOptions { SizeLimit = 1024 });
     // Unbounded on purpose: a size-limited cache drops new entries when full, and a dropped miss is a retry storm.
     private readonly MemoryCache _misses = new(new MemoryCacheOptions());
     // Session state below is only touched under _mediaGate.
-    // ponytail: fixed session lifetime; upgrade path is OPTIONS.expiration_timestamp from getUserData.
-    private (string Arl, Session Session, DateTime ExpiresUtc)? _session;
+    private (string Arl, Session Session)? _session;
     private string? _rejectedArl;
     private (string Arl, DateTime UntilUtc, TimeSpan Backoff)? _loginCooldown;
     // ponytail: serial media resolution bounds gateway bursts; add per-account gates if contention grows.
@@ -40,8 +48,17 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     public string DownloadQuality => Settings.Quality;
     public string CacheQuality => NormalizeStrictQuality(Settings.CacheQuality);
 
-    private sealed record Session(string Cookie, string ApiToken, string LicenseToken);
-    private sealed record Media(string TrackId, string Format, string Url, string Account = "");
+    private sealed record Session(string Cookie, string ApiToken, string LicenseToken, string MediaService,
+        DateTime ExpiresUtc);
+    private sealed record Media(string TrackId, string Format, string[] Urls, DateTime ExpiresUtc,
+        string Account = "");
+
+    /// <summary>Requests look like the Deezer desktop client, which sets these on every Deezer request.</summary>
+    public static void ApplyClientHeaders(HttpClient client)
+    {
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
+        client.DefaultRequestHeaders.Add("Origin", Origin);
+    }
 
     /// <summary>Reuses the cached session; never logs in again while the ARL is rejected or cooling down.</summary>
     public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
@@ -65,7 +82,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     {
         if (arl == _rejectedArl)
             throw new ArlRejectedException("Deezer rejected the configured ARL. Set a new one.");
-        if (!forceFresh && _session is { } cached && cached.Arl == arl && DateTime.UtcNow < cached.ExpiresUtc)
+        if (!forceFresh && _session is { } cached && cached.Arl == arl && DateTime.UtcNow < cached.Session.ExpiresUtc)
             return (cached.Session, false);
         if (_loginCooldown is { } cooldown && cooldown.Arl == arl && DateTime.UtcNow < cooldown.UntilUtc)
             throw new InvalidOperationException("Deezer login is cooling down after a failure.");
@@ -73,7 +90,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         try
         {
             var session = await AuthenticateAsync(arl, ct);
-            _session = (arl, session, DateTime.UtcNow + SessionLifetime);
+            _session = (arl, session);
             _loginCooldown = null;
             logger.LogInformation("Deezer session established");
             return (session, true);
@@ -122,7 +139,118 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             var sid = cookies.Select(value => value.Split(';')[0]).FirstOrDefault(value => value.StartsWith("sid=", StringComparison.Ordinal));
             if (sid is not null) cookie += $"; {sid}";
         }
-        return new Session(cookie, apiToken, license);
+        // The license token goes only to a Deezer media service.
+        var mediaService = Text(results, "URL_MEDIA") is { } advertised
+            && Uri.TryCreate(advertised, UriKind.Absolute, out var media) && media.Scheme == Uri.UriSchemeHttps
+            && media.Host.EndsWith(".deezer.com", StringComparison.OrdinalIgnoreCase)
+                ? advertised.TrimEnd('/') : DefaultMediaService;
+        // Keep the session until the license expires, as the desktop client does.
+        var expires = Expiry(options, "expiration_timestamp") is { } until && until > DateTime.UtcNow
+            ? until : DateTime.UtcNow + FallbackSessionLifetime;
+        return new Session(cookie, apiToken, license, mediaService, expires);
+    }
+
+    /// <summary>A Unix-seconds field less the expiry margin, or null when absent. May already be past.</summary>
+    private static DateTime? Expiry(JsonElement element, string name) =>
+        Text(element, name) is { } text && long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+        && seconds < 253402300799 ? DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime - ExpiryMargin : null;
+
+    /// <summary>Caller holds _mediaGate. A stale cached session gets one fresh login, then the request repeats.</summary>
+    private async Task<(JsonDocument Doc, Session Session, bool Fresh)> WithSessionAsync(string arl,
+        Session session, bool fresh, Func<Session, Task<JsonDocument>> send, Func<JsonElement, bool> stale,
+        CancellationToken ct)
+    {
+        var doc = await send(session);
+        if (fresh || !stale(doc.RootElement)) return (doc, session, fresh);
+        doc.Dispose();
+        (session, _) = await GetSessionAsync(arl, ct, forceFresh: true);
+        return (await send(session), session, true);
+    }
+
+    private Task<JsonDocument> GetListDataAsync(Session session, IReadOnlyList<string> ids, CancellationToken ct) =>
+        PostAsync(Gateway("song.getListData", session.ApiToken), new { sng_ids = ids }, session.Cookie, ct);
+
+    private Task<JsonDocument> GetUrlAsync(Session session, IReadOnlyList<string> trackTokens, string quality,
+        string? strictFormat, CancellationToken ct) =>
+        PostAsync($"{session.MediaService}/v1/get_url", new
+        {
+            license_token = session.LicenseToken,
+            media = new[] { new { type = "FULL", formats = Formats(quality, strictFormat)
+                .Select(format => new { cipher = "BF_CBC_STRIPE", format }).ToArray() } },
+            track_tokens = trackTokens,
+        }, cookie: null, ct: ct);
+
+    /// <summary>Rows follow request order; when Deezer drops unavailable rows, match by SNG_ID instead.</summary>
+    private static Dictionary<string, JsonElement> SongRows(JsonElement root, IReadOnlyList<string> ids)
+    {
+        var rows = new Dictionary<string, JsonElement>();
+        if (!root.TryGetProperty("results", out var results) || !results.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array) return rows;
+        var list = data.EnumerateArray().Where(row => row.ValueKind == JsonValueKind.Object).ToList();
+        if (list.Count == ids.Count)
+            for (var i = 0; i < list.Count; i++) rows[ids[i]] = list[i];
+        else
+            foreach (var row in list)
+                if (Text(row, "SNG_ID") is { } id) rows.TryAdd(id, row);
+        return rows;
+    }
+
+    private static string MediaKey(string arl, string trackId, string quality, string? strictFormat) =>
+        strictFormat is not null ? $"{arl}\0{trackId}\0{quality}\0strict-{strictFormat}" : $"{arl}\0{trackId}\0{quality}";
+
+    private void Remember(string key, Media media)
+    {
+        if (media.ExpiresUtc > DateTime.UtcNow)
+            _mediaCache.Set(key, media, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpiration = media.ExpiresUtc });
+    }
+
+    /// <summary>
+    /// Resolves many strict-quality tracks with one song.getListData and one get_url, as the desktop client batches.
+    /// Best effort: tracks without a direct source are left to the per-track path.
+    /// </summary>
+    public async Task PrefetchAsync(IEnumerable<string> trackIds, string quality, CancellationToken ct = default)
+    {
+        if (Arl(Settings) is not { } arl) return;
+        var selected = NormalizeStrictQuality(quality);
+        var pending = trackIds.Where(ValidTrackId).Distinct()
+            .Where(id => !_mediaCache.TryGetValue(MediaKey(arl, id, selected, selected), out _)
+                && !_misses.TryGetValue(MediaKey(arl, id, selected, selected), out _))
+            .ToList();
+        // One track gains nothing from batching and would ask twice if it needs a substitute.
+        if (pending.Count < 2) return;
+        await _mediaGate.WaitAsync(ct);
+        try
+        {
+            // Another worker's batch may have resolved these while this one waited.
+            pending.RemoveAll(id => _mediaCache.TryGetValue(MediaKey(arl, id, selected, selected), out _));
+            if (pending.Count < 2) return;
+            var (session, fresh) = await GetSessionAsync(arl, ct);
+            foreach (var chunk in pending.Chunk(MaxBatch))
+            {
+                JsonDocument rowsDoc;
+                (rowsDoc, session, fresh) = await WithSessionAsync(arl, session, fresh,
+                    s => GetListDataAsync(s, chunk, ct), IsSessionError, ct);
+                using var rows = rowsDoc;
+                if (HasError(rows.RootElement)) return;
+                var direct = SongRows(rows.RootElement, chunk)
+                    .Where(row => Text(row.Value, "SNG_ID") == row.Key)
+                    .Select(row => (Id: row.Key, Token: Text(row.Value, "TRACK_TOKEN")))
+                    .Where(row => row.Token is { Length: > 0 })
+                    .ToList();
+                if (direct.Count == 0) continue;
+                JsonDocument mediaDoc;
+                (mediaDoc, session, fresh) = await WithSessionAsync(arl, session, fresh,
+                    s => GetUrlAsync(s, direct.Select(row => row.Token!).ToArray(), selected, selected, ct),
+                    IsLicenseError, ct);
+                using var media = mediaDoc;
+                for (var i = 0; i < direct.Count; i++)
+                    if (SelectMedia(media.RootElement, i, direct[i].Id, selected, selected) is { } found)
+                        Remember(MediaKey(arl, direct[i].Id, selected, selected), found with { Account = arl });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { logger.LogDebug("Deezer batch resolve failed: {Detail}", Describe(ex)); }
+        finally { _mediaGate.Release(); }
     }
 
     private async Task<Media> ResolveMediaAsync(string trackId, string quality, CancellationToken ct,
@@ -130,9 +258,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     {
         if (!ValidTrackId(trackId)) throw new ArgumentException("Invalid Deezer track ID.", nameof(trackId));
         var arl = Arl(Settings) ?? throw new InvalidOperationException("Deezer ARL is not set.");
-        var key = strictFormat is not null
-            ? $"{arl}\0{trackId}\0{quality}\0strict-{strictFormat}"
-            : $"{arl}\0{trackId}\0{quality}";
+        var key = MediaKey(arl, trackId, quality, strictFormat);
         if (_mediaCache.TryGetValue(key, out Media? cached)) return cached!;
         if (_misses.TryGetValue(key, out _))
             throw new InvalidOperationException("Deezer recently had no full-track media for this track.");
@@ -150,24 +276,17 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                 (string Artist, string Title)? originalIdentity = null;
                 for (var attempt = 0; attempt < 3 && visited.Add(candidate); attempt++)
                 {
-                    using var page = await PostAsync(Gateway("deezer.pageTrack", session.ApiToken),
-                        new { SNG_ID = candidate }, session.Cookie, ct);
-                    if (HasError(page.RootElement))
+                    JsonDocument rowsDoc;
+                    (rowsDoc, session, fresh) = await WithSessionAsync(arl, session, fresh,
+                        s => GetListDataAsync(s, [candidate], ct), IsSessionError, ct);
+                    using var rows = rowsDoc;
+                    if (HasError(rows.RootElement))
                     {
-                        if (!fresh && IsSessionError(page.RootElement))
-                        {
-                            // Stale session: one fresh login, then retry this candidate.
-                            (session, fresh) = await GetSessionAsync(arl, ct, forceFresh: true);
-                            visited.Remove(candidate);
-                            attempt--;
-                            continue;
-                        }
-                        logger.LogWarning("Deezer pageTrack error for track {TrackId}: {Error}",
-                            candidate, ErrorText(page.RootElement));
+                        logger.LogWarning("Deezer song.getListData error for track {TrackId}: {Error}",
+                            candidate, ErrorText(rows.RootElement));
                         break;
                     }
-                    if (!page.RootElement.TryGetProperty("results", out var results)
-                        || !results.TryGetProperty("DATA", out var data)) break;
+                    if (!SongRows(rows.RootElement, [candidate]).TryGetValue(candidate, out var data)) break;
                     var actualId = Text(data, "SNG_ID") ?? candidate;
                     if (!ValidTrackId(actualId)) break;
 
@@ -190,21 +309,17 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
 
                     if (Text(data, "TRACK_TOKEN") is { Length: > 0 } trackToken)
                     {
-                        using var media = await PostAsync("https://media.deezer.com/v1/get_url", new
-                        {
-                            license_token = session.LicenseToken,
-                            media = new[] { new { type = "FULL", formats = Formats(quality, strictFormat)
-                                .Select(format => new { cipher = "BF_CBC_STRIPE", format }).ToArray() } },
-                            track_tokens = new[] { trackToken },
-                        }, cookie: null, ct: ct);
-                        if (SelectMedia(media.RootElement, actualId, quality, strictFormat) is { } found)
+                        JsonDocument mediaDoc;
+                        (mediaDoc, session, fresh) = await WithSessionAsync(arl, session, fresh,
+                            s => GetUrlAsync(s, [trackToken], quality, strictFormat, ct), IsLicenseError, ct);
+                        using var media = mediaDoc;
+                        if (SelectMedia(media.RootElement, 0, actualId, quality, strictFormat) is { } found)
                         {
                             found = found with { Account = arl };
                             logger.LogDebug(
                                 "Deezer source selected requested {RequestedId}, candidate {CandidateId}, actual {ActualId}, reason {Reason}, format {Format}",
                                 trackId, candidate, actualId, substitutionReason, found.Format);
-                            _mediaCache.Set(key, found, new MemoryCacheEntryOptions
-                                { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) });
+                            Remember(key, found);
                             return found;
                         }
                         if (MediaErrorText(media.RootElement) is { } mediaError)
@@ -285,21 +400,52 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     };
     }
 
-    private static Media? SelectMedia(JsonElement root, string trackId, string quality,
+    /// <summary>Picks the best format for the index-th track token; keeps every https source, in Deezer's order.</summary>
+    private static Media? SelectMedia(JsonElement root, int index, string trackId, string quality,
         string? strictFormat = null)
     {
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array
-            || data.GetArrayLength() == 0 || !data[0].TryGetProperty("media", out var media)
+            || data.GetArrayLength() <= index || !data[index].TryGetProperty("media", out var media)
             || media.ValueKind != JsonValueKind.Array) return null;
         foreach (var format in Formats(quality, strictFormat))
             foreach (var item in media.EnumerateArray())
-                if (Text(item, "format") == format
-                    && item.TryGetProperty("sources", out var sources) && sources.ValueKind == JsonValueKind.Array)
-                    foreach (var source in sources.EnumerateArray())
-                        if (Text(source, "url") is { } url && Uri.TryCreate(url, UriKind.Absolute, out var uri)
-                            && uri.Scheme == Uri.UriSchemeHttps)
-                            return new Media(trackId, format, url);
+            {
+                if (Text(item, "format") != format || !item.TryGetProperty("sources", out var sources)
+                    || sources.ValueKind != JsonValueKind.Array) continue;
+                var urls = sources.EnumerateArray()
+                    .Select(source => Text(source, "url"))
+                    .Where(url => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+                    .Select(url => url!)
+                    .ToArray();
+                // Keep the URL until Deezer says it expires, as the desktop client does.
+                if (urls.Length > 0)
+                    return new Media(trackId, format, urls,
+                        Expiry(item, "exp") ?? DateTime.UtcNow + FallbackMediaLifetime);
+            }
         return null;
+    }
+
+    /// <summary>Tries each CDN source in Deezer's order, as the desktop client does, before the caller re-resolves.</summary>
+    private async Task<(HttpResponseMessage Response, string Url)> GetFromSourcesAsync(IEnumerable<string> urls,
+        (long From, long? To)? range, CancellationToken ct)
+    {
+        Exception? last = null;
+        foreach (var url in urls)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (range is { } r) request.Headers.Range = new RangeHeaderValue(r.From, r.To);
+            HttpResponseMessage? response = null;
+            try
+            {
+                response = await httpFactory.CreateClient(StreamClientName)
+                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                response.EnsureSuccessStatusCode();
+                return (response, url);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { response?.Dispose(); throw; }
+            catch (Exception ex) { response?.Dispose(); last = ex; }
+        }
+        throw last ?? new IOException("Deezer returned no media sources.");
     }
 
     public async Task<(Stream stream, string contentType, long? contentLength, int statusCode,
@@ -324,10 +470,9 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             try
             {
                 media = await ResolveMediaAsync(trackId, quality, ct, strictFormat);
-                var http = httpFactory.CreateClient(StreamClientName);
                 // Read headers first to learn total size, including for suffix ranges.
-                response = await http.GetAsync(media.Url, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
+                string url;
+                (response, url) = await GetFromSourcesAsync(media.Urls, null, ct);
                 var total = response.Content.Headers.ContentLength;
                 long start = 0, skip = 0;
                 long? length = total;
@@ -353,11 +498,8 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                     if (aligned > 0)
                     {
                         response.Dispose(); response = null;
-                        using var request = new HttpRequestMessage(HttpMethod.Get, media.Url);
                         // Fetch to EOF so the final encrypted stripe is never truncated.
-                        request.Headers.Range = new RangeHeaderValue(aligned, null);
-                        response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-                        response.EnsureSuccessStatusCode();
+                        (response, _) = await GetFromSourcesAsync([url], (aligned, null), ct);
                         if (response.StatusCode == HttpStatusCode.PartialContent)
                         {
                             if (response.Content.Headers.ContentRange?.From != aligned)
@@ -396,14 +538,15 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             try
             {
                 media = await ResolveMediaAsync(trackId, selected, ct, selected);
-                using var request = new HttpRequestMessage(HttpMethod.Head, media.Url);
-                using var response = await httpFactory.CreateClient(StreamClientName)
-                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
-                if (response.StatusCode != HttpStatusCode.OK)
-                    throw new IOException("Deezer CDN returned an unexpected status for source probe.");
-                return SourceInfo(media, selected, response.Content.Headers.ContentLength,
-                    response.Headers.ETag, response.Content.Headers.LastModified);
+                // The desktop client never sends HEAD; one ranged stripe carries the same validators.
+                var (response, url) = await GetFromSourcesAsync(media.Urls, (0, 2047), ct);
+                using (response)
+                {
+                    var length = response.StatusCode == HttpStatusCode.PartialContent
+                        ? response.Content.Headers.ContentRange?.Length : response.Content.Headers.ContentLength;
+                    return SourceInfo(media, url, selected, length,
+                        response.Headers.ETag, response.Content.Headers.LastModified);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -435,37 +578,19 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
             try
             {
                 media = await ResolveMediaAsync(trackId, selected, ct, selected);
-                using (var request = new HttpRequestMessage(HttpMethod.Head, media.Url))
-                using (var head = await httpFactory.CreateClient(StreamClientName)
-                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct))
-                {
-                    head.EnsureSuccessStatusCode();
-                    if (head.StatusCode != HttpStatusCode.OK)
-                        throw new IOException("Deezer CDN returned an unexpected status for source probe.");
-                    var probe = SourceInfo(media, selected, head.Content.Headers.ContentLength,
-                        head.Headers.ETag, head.Content.Headers.LastModified);
-                    var descriptor = probe.Media!;
-
-                    using var get = new HttpRequestMessage(HttpMethod.Get, media.Url);
-                    ApplyRepresentationCondition(get, descriptor);
-                    response = await httpFactory.CreateClient(StreamClientName)
-                        .SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct);
-                    response.EnsureSuccessStatusCode();
-                    if (response.StatusCode != HttpStatusCode.OK)
-                        throw new IOException("Deezer CDN returned an unexpected partial source.");
-                    ValidateRepresentation(response, descriptor, partial: false);
-
-                    var length = response.Content.Headers.ContentLength ?? probe.ExpectedLength;
-                    var etag = response.Headers.ETag is { IsWeak: false }
-                        ? response.Headers.ETag : head.Headers.ETag;
-                    var modified = response.Content.Headers.LastModified ?? head.Content.Headers.LastModified;
-                    var actual = SourceInfo(media, selected, length, etag, modified);
-                    var stream = await response.Content.ReadAsStreamAsync(ct);
-                    var owner = response;
-                    response = null;
-                    return (actual, (new DeezerDecryptedStream(stream, media.TrackId),
-                        ContentType(media.Format), length, (int)owner.StatusCode, null, owner));
-                }
+                // One GET, no HEAD: the descriptor comes from the response that carries the bytes.
+                string url;
+                (response, url) = await GetFromSourcesAsync(media.Urls, null, ct);
+                if (response.StatusCode != HttpStatusCode.OK)
+                    throw new IOException("Deezer CDN returned an unexpected partial source.");
+                var length = response.Content.Headers.ContentLength;
+                var info = SourceInfo(media, url, selected, length,
+                    response.Headers.ETag, response.Content.Headers.LastModified);
+                var stream = await response.Content.ReadAsStreamAsync(ct);
+                var owner = response;
+                response = null;
+                return (info, (new DeezerDecryptedStream(stream, media.TrackId),
+                    ContentType(media.Format), length, (int)owner.StatusCode, null, owner));
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -498,14 +623,18 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         }
 
         var aligned = offset / 2048 * 2048;
-        using var request = new HttpRequestMessage(HttpMethod.Get, media.Url);
-        request.Headers.Range = new RangeHeaderValue(aligned, null);
-        ApplyRepresentationCondition(request, media);
-        var response = await httpFactory.CreateClient(StreamClientName)
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        HttpResponseMessage response;
+        try { (response, _) = await GetFromSourcesAsync([media.Url], (aligned, null), ct); }
+        catch (HttpRequestException)
+        {
+            // The URL may have expired: renew it once, as the desktop client does.
+            // ValidateRepresentation below still requires the same bytes.
+            _mediaCache.Remove(MediaKey(media.Account, media.TrackId, media.Quality, media.Quality));
+            var renewed = await ResolveMediaAsync(media.TrackId, media.Quality, ct, media.Quality);
+            (response, _) = await GetFromSourcesAsync(renewed.Urls, (aligned, null), ct);
+        }
         try
         {
-            response.EnsureSuccessStatusCode();
             ValidateRepresentation(response, media, partial: response.StatusCode == HttpStatusCode.PartialContent);
             var start = 0L;
             var stripe = 0L;
@@ -541,42 +670,29 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
 
     internal static string ContentType(string format) => format == "FLAC" ? "audio/flac" : "audio/mpeg";
 
-    private static string SourceFingerprint(Media media, string quality, long? length,
+    private static string SourceFingerprint(Media media, string url, string quality, long? length,
         string? strongETag, DateTimeOffset? modifiedUtc)
     {
-        var uri = new Uri(media.Url);
+        var uri = new Uri(url);
         var representation = strongETag ?? modifiedUtc?.ToUniversalTime().ToString("O") ?? "";
         var identity = $"{media.TrackId}\0{quality}\0{media.Format}\0{uri.GetLeftPart(UriPartial.Path)}\0{representation}\0{length?.ToString(CultureInfo.InvariantCulture) ?? ""}";
         var bytes = System.Text.Encoding.UTF8.GetBytes(identity);
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
-    private static DeezerSourceInfo SourceInfo(Media media, string quality, long? length,
+    private static DeezerSourceInfo SourceInfo(Media media, string url, string quality, long? length,
         EntityTagHeaderValue? entityTag, DateTimeOffset? modifiedUtc)
     {
         var etag = entityTag is { IsWeak: false } strong ? strong.Tag : null;
-        var fingerprint = SourceFingerprint(media, quality, length, etag, modifiedUtc);
-        var descriptor = new DeezerMediaSource(media.TrackId, quality, media.Format, media.Url,
+        var fingerprint = SourceFingerprint(media, url, quality, length, etag, modifiedUtc);
+        var descriptor = new DeezerMediaSource(media.TrackId, quality, media.Format, url,
             media.Account, fingerprint, length, etag, modifiedUtc);
         return new DeezerSourceInfo(ContentType(media.Format), length, fingerprint,
             modifiedUtc, media: descriptor, etag: etag);
     }
 
-    private void InvalidateMedia(Media media, string trackId, string quality, string? strictFormat)
-    {
-        var key = strictFormat is not null
-            ? $"{media.Account}\0{trackId}\0{quality}\0strict-{strictFormat}"
-            : $"{media.Account}\0{trackId}\0{quality}";
-        _mediaCache.Remove(key);
-    }
-
-    private static void ApplyRepresentationCondition(HttpRequestMessage request, DeezerMediaSource source)
-    {
-        if (source.StrongETag is { Length: > 0 } etag)
-            request.Headers.IfMatch.Add(new EntityTagHeaderValue(etag));
-        else if (source.ModifiedUtc is { } modified)
-            request.Headers.IfUnmodifiedSince = modified;
-    }
+    private void InvalidateMedia(Media media, string trackId, string quality, string? strictFormat) =>
+        _mediaCache.Remove(MediaKey(media.Account, trackId, quality, strictFormat));
 
     private static void ValidateRepresentation(HttpResponseMessage response,
         DeezerMediaSource source, bool partial)
@@ -639,7 +755,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         return request;
     }
     private static string Gateway(string method, string token) =>
-        $"https://www.deezer.com/ajax/gw-light.php?method={method}&input=3&api_version=1.0&api_token={Uri.EscapeDataString(token)}";
+        $"https://www.deezer.com/ajax/gw-light.php?method={method}&input=3&api_version=1.0&api_token={Uri.EscapeDataString(token)}&cid={Random.Shared.Next(1_000_000_000)}";
     private static string? Text(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.String or JsonValueKind.Number
             ? value.ToString() : null;
@@ -657,6 +773,12 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         && error.EnumerateObject().Any(entry => entry.Name is "VALID_TOKEN_REQUIRED" or "NEED_API_AUTH_REQUIRED"
             || entry.Value.ValueKind == JsonValueKind.String
                && entry.Value.GetString()!.Contains("CSRF", StringComparison.OrdinalIgnoreCase));
+
+    // get_url codes 1000-1002: invalid, expired or unauthorized license token.
+    private static bool IsLicenseError(JsonElement root) =>
+        root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array
+        && errors.EnumerateArray().Any(error => error.ValueKind == JsonValueKind.Object
+            && error.TryGetProperty("code", out var code) && code.TryGetInt32(out var value) && value is >= 1000 and <= 1002);
 
     // Deezer's error payloads carry codes and messages, never the caller's tokens.
     private static string ErrorText(JsonElement root) =>

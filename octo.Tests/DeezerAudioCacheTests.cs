@@ -452,27 +452,28 @@ public sealed class DeezerAudioCacheTests
                 response.Headers.Add("Set-Cookie", "sid=session; Path=/; HttpOnly");
                 return response;
             }
-            if (url.Contains("deezer.pageTrack"))
+            if (url.Contains("song.getListData"))
             {
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
-                var id = body.RootElement.GetProperty("SNG_ID").GetString()!;
-                return Json(new { results = new { DATA = new { SNG_ID = id, TRACK_TOKEN = "track-token-" + id } } });
+                var ids = body.RootElement.GetProperty("sng_ids").EnumerateArray().Select(id => id.GetString()!).ToArray();
+                return Json(new { results = new { data = ids.Select(id => new { SNG_ID = id, TRACK_TOKEN = "track-token-" + id }).ToArray() } });
             }
             if (request.RequestUri.Host == "media.deezer.com")
             {
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
                 RequestedFormats = body.RootElement.GetProperty("media")[0].GetProperty("formats")
                     .EnumerateArray().Select(item => item.GetProperty("format").GetString()!).ToArray();
-                var token = body.RootElement.GetProperty("track_tokens")[0].GetString()!;
-                var id = token["track-token-".Length..];
                 var format = RequestedFormats.Single();
                 var extension = format == "FLAC" ? "flac" : "mp3";
-                return Json(new { data = new[] { new { media = new[] { new { format,
-                    sources = new[] { new { url = $"https://cdn.deezer.test/{id}.{extension}" } } } } } } });
+                return Json(new { data = body.RootElement.GetProperty("track_tokens").EnumerateArray()
+                    .Select(token => token.GetString()!["track-token-".Length..])
+                    .Select(id => new { media = new[] { new { format,
+                        sources = new[] { new { url = $"https://cdn.deezer.test/{id}.{extension}" } } } } }).ToArray() });
             }
             Assert.Equal("cdn.deezer.test", request.RequestUri.Host);
-            if (request.Method == HttpMethod.Head)
+            if (request.Headers.Range?.Ranges.Single().To == 2047)
             {
+                // Source probe: validators only, no cache fill.
                 var head = new HttpResponseMessage(HttpStatusCode.OK)
                     { Content = new ByteArrayContent([]) };
                 head.Content.Headers.ContentLength = Payload.Length + AdvertisedExtraBytes;

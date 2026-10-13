@@ -940,7 +940,7 @@ internal sealed class RadioUpstreamHandler : HttpMessageHandler
         {
             if (query["method"] == "deezer.getUserData")
                 return Result("""{"results":{"checkForm":"fixture-api","USER":{"USER_ID":1,"OPTIONS":{"license_token":"fixture-license"}}}}""");
-            return Result("""{"results":{"DATA":{"SNG_ID":"42","TRACK_TOKEN":"fixture-track"}},"error":[]}""");
+            return Result("""{"results":{"data":[{"SNG_ID":"42","TRACK_TOKEN":"fixture-track"}]},"error":[]}""");
         }
         if (request.RequestUri.Host.Equals("media.deezer.com", StringComparison.OrdinalIgnoreCase))
             return Result("""{"data":[{"media":[{"format":"MP3_320","sources":[{"url":"https://cdn.deezer.test/audio"}]}]}]}""");

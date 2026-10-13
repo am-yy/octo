@@ -799,7 +799,6 @@ public class AdminController : ControllerBase
             ["Deezer"] = new Dictionary<string, object>
             {
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
-                ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
                 ["CacheQuality"] = _config["Deezer:CacheQuality"] ?? "FLAC",
                 ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
@@ -1092,7 +1091,7 @@ public class AdminController : ControllerBase
 
         if (Child(patch, "Deezer") is JsonObject deezerSecrets)
         {
-            foreach (var name in new[] { "Arl", "ArlFallback" })
+            foreach (var name in new[] { "Arl" })
             {
                 if (KeyOf(deezerSecrets, name) is not { } key
                     || deezerSecrets[key] is not JsonValue value
@@ -1635,7 +1634,6 @@ public class AdminController : ControllerBase
             ["Deezer"] = new JsonObject
             {
                 ["Arl"] = MaskSecret(_config["Deezer:Arl"]),
-                ["ArlFallback"] = MaskSecret(_config["Deezer:ArlFallback"]),
                 ["Quality"] = _config["Deezer:Quality"] ?? "FLAC",
                 ["CacheQuality"] = _config["Deezer:CacheQuality"] ?? "FLAC",
                 ["CacheEnabled"] = _config.GetValue("Deezer:CacheEnabled", false),
@@ -1909,7 +1907,7 @@ public class AdminController : ControllerBase
             "Lidarr:RefreshArtistOnAdd",
             "Lidarr:MonitorRequestedAlbums",
             "Lidarr:CompletionMode", "Lidarr:ImportTimeoutSeconds",
-            "Deezer:Arl", "Deezer:ArlFallback", "Deezer:Quality", "Deezer:CacheQuality",
+            "Deezer:Arl", "Deezer:Quality", "Deezer:CacheQuality",
             "Deezer:CacheEnabled", "Deezer:CachePath", "Deezer:CacheMaxGiB", "Deezer:CacheRetentionDays",
             "Deezer:MaxConcurrentDownloads", "Deezer:MaxConcurrentBackgroundDownloads", "Deezer:MaxConcurrentTranscodes",
             "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
@@ -2145,8 +2143,10 @@ public class AdminController : ControllerBase
                 .GetRequiredService<Octo.Services.Deezer.DeezerResolver>();
             if (!resolver.IsConfigured)
                 return new ServiceProbe(true, "ARL is not set. Optional.", Configured: false);
+            // Uses the cached session: polling status must never log in to Deezer again.
             var ok = await resolver.IsAvailableAsync(ct);
-            return new ServiceProbe(ok, ok ? "connected" : "unreachable / ARL invalid");
+            return new ServiceProbe(ok, ok ? "connected"
+                : resolver.ArlRejected ? "ARL rejected by Deezer; set a new one" : "unreachable, retrying later");
         }
         catch (Exception ex) { return new ServiceProbe(false, ex.Message); }
     }
@@ -2199,6 +2199,7 @@ public class AdminController : ControllerBase
         ("Notifications", "DiscordWebhookUrl", "Discord webhook address"),
         ("ListenBrainz", "Token", "ListenBrainz token"),
         ("Deezer", "Arl", "Deezer Arl"),
+        // Removed setting; still masked because older settings files may hold it.
         ("Deezer", "ArlFallback", "Deezer ArlFallback"),
         // Environment only and left out of the admin API; listed so it is never one in clear.
         ("Lidarr", "WebhookSecret", "Lidarr webhook secret"),
@@ -2330,7 +2331,6 @@ public class AdminController : ControllerBase
             ["Deezer"] = new JsonObject
             {
                 ["Arl"] = _config["Deezer:Arl"],
-                ["ArlFallback"] = _config["Deezer:ArlFallback"],
             },
             ["ListenBrainz"] = new JsonObject
             {

@@ -60,16 +60,83 @@ public sealed class DeezerResolverTests
     }
 
     [Fact]
-    public async Task ExpiredPrimaryUsesFallbackAccountWithItsOwnTokens()
+    public async Task ResolvesShareOneLoginAndSessionCookie()
+    {
+        using var fixture = new Fixture();
+        foreach (var id in new[] { "42", "43", "44", "46", "47" })
+        {
+            var opened = (await fixture.Resolver.OpenStreamAsync(id))!.Value;
+            opened.stream.Dispose(); opened.owner.Dispose();
+        }
+        Assert.True(await fixture.Resolver.IsAvailableAsync());
+        Assert.Equal(["arl=primary"], fixture.AuthCookies);
+        Assert.All(fixture.PageCookies, cookie => Assert.Equal("arl=primary; sid=primary-session", cookie));
+        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
+    }
+
+    [Fact]
+    public async Task RejectedArlLatchesOffWithoutNetworkUntilArlChanges()
     {
         using var fixture = new Fixture { RejectPrimary = true };
-        fixture.Config["Deezer:ArlFallback"] = "fallback";
+        Assert.Null(await fixture.Resolver.OpenStreamAsync("42"));
+        var requests = fixture.Requests.Count;
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Null(await fixture.Resolver.OpenStreamAsync("43"));
+            Assert.Null(await fixture.Resolver.EstablishSourceAsync("44", "FLAC"));
+            Assert.False(await fixture.Resolver.IsAvailableAsync());
+        }
+
+        Assert.Equal(requests, fixture.Requests.Count);
+        Assert.True(fixture.Resolver.ArlRejected);
+        fixture.Config["Deezer:Arl"] = "changed";
+        Assert.False(fixture.Resolver.ArlRejected);
         var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
         opened.stream.Dispose(); opened.owner.Dispose();
-        Assert.Equal(["arl=primary", "arl=fallback"], fixture.AuthCookies);
-        Assert.All(fixture.PageCookies, cookie => Assert.Equal("arl=fallback; sid=fallback-session", cookie));
-        Assert.Contains("fallback-license", fixture.MediaBodies.Single());
-        Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
+        Assert.Equal(["arl=primary", "arl=changed"], fixture.AuthCookies);
+    }
+
+    [Fact]
+    public async Task FailedLoginCoolsDownWithoutRetrying()
+    {
+        using var fixture = new Fixture { FailLogin = true };
+        Assert.Null(await fixture.Resolver.OpenStreamAsync("42"));
+        Assert.Null(await fixture.Resolver.EstablishSourceAsync("43", "FLAC"));
+        Assert.False(await fixture.Resolver.IsAvailableAsync());
+        Assert.Single(fixture.AuthCookies);
+        Assert.False(fixture.Resolver.ArlRejected);
+    }
+
+    [Fact]
+    public async Task UnavailableTrackIsRememberedAndNotAskedAgain()
+    {
+        using var fixture = new Fixture { AvailableFormats = ["MP3_320"] };
+        Assert.Null(await fixture.Resolver.EstablishSourceAsync("42", "FLAC"));
+        var requests = fixture.Requests.Count;
+
+        Assert.Null(await fixture.Resolver.EstablishSourceAsync("42", "FLAC"));
+        Assert.Null(await fixture.Resolver.OpenFlacStreamAsync("42"));
+
+        Assert.Equal(requests, fixture.Requests.Count);
+        // A different quality is a different question.
+        var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+        opened.stream.Dispose(); opened.owner.Dispose();
+    }
+
+    [Fact]
+    public async Task StaleSessionLogsInOnceMoreThenSucceeds()
+    {
+        using var fixture = new Fixture();
+        var first = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
+        first.stream.Dispose(); first.owner.Dispose();
+
+        fixture.SessionErrorOnce = true;
+        var second = (await fixture.Resolver.OpenStreamAsync("43"))!.Value;
+        second.stream.Dispose(); second.owner.Dispose();
+
+        Assert.Equal(["arl=primary", "arl=primary"], fixture.AuthCookies);
+        Assert.Equal(["42", "43", "43"], fixture.PageIds);
     }
 
     [Fact]
@@ -149,7 +216,7 @@ public sealed class DeezerResolverTests
         using var fixture = new Fixture { RejectFirstUrl = true };
         var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
         opened.stream.Dispose(); opened.owner.Dispose();
-        Assert.Equal(["arl=primary", "arl=primary"], fixture.AuthCookies);
+        Assert.Equal(["arl=primary"], fixture.AuthCookies);
         Assert.Equal(2, fixture.MediaBodies.Count);
     }
 
@@ -210,47 +277,6 @@ public sealed class DeezerResolverTests
         Assert.All(fixture.MediaCookies, cookie => Assert.Empty(cookie));
     }
 
-    [Fact]
-    public async Task AccountSpecificCdnFailureUsesFallbackAccountAfterRefresh()
-    {
-        using var fixture = new Fixture { RejectPrimaryCdn = true };
-        fixture.Config["Deezer:ArlFallback"] = "fallback";
-        var opened = (await fixture.Resolver.OpenStreamAsync("42"))!.Value;
-        opened.stream.Dispose(); opened.owner.Dispose();
-        Assert.Equal(["arl=primary", "arl=primary", "arl=fallback"], fixture.AuthCookies);
-        Assert.Contains("fallback-license", fixture.MediaBodies.Last());
-    }
-
-    [Theory]
-    [InlineData("FLAC", "audio/flac")]
-    [InlineData("MP3_320", "audio/mpeg")]
-    public async Task EstablishmentRefreshesPrimaryThenUsesStrictQualityFallback(string quality, string contentType)
-    {
-        using var fixture = new Fixture { RejectPrimaryCdn = true };
-        fixture.Config["Deezer:ArlFallback"] = "fallback";
-
-        var established = await fixture.Resolver.EstablishSourceAsync("42", quality);
-
-        Assert.NotNull(established);
-        var result = established.Value;
-        using (result.opened.owner)
-        await using (result.opened.stream)
-        {
-            Assert.Equal(contentType, result.opened.contentType);
-            Assert.Equal(contentType, result.info.ContentType);
-            Assert.Equal(12, result.info.ExpectedLength);
-        }
-        Assert.Equal(["HEAD", "HEAD", "HEAD", "GET"], fixture.CdnMethods);
-        Assert.Equal(3, fixture.MediaBodies.Count);
-        Assert.Contains("fallback-license", fixture.MediaBodies.Last());
-        Assert.All(fixture.MediaBodies, body =>
-        {
-            using var document = JsonDocument.Parse(body);
-            Assert.Equal(quality, Assert.Single(document.RootElement.GetProperty("media")[0]
-                .GetProperty("formats").EnumerateArray()).GetProperty("format").GetString());
-        });
-    }
-
     [Theory]
     [InlineData("FLAC", "audio/flac")]
     [InlineData("MP3_320", "audio/mpeg")]
@@ -284,16 +310,16 @@ public sealed class DeezerResolverTests
     }
 
     [Fact]
-    public async Task EstablishmentStopsAfterThreeFailedAttempts()
+    public async Task EstablishmentStopsAfterOneRefresh()
     {
         using var fixture = new Fixture { RejectAllCdn = true };
-        fixture.Config["Deezer:ArlFallback"] = "fallback";
 
         var established = await fixture.Resolver.EstablishSourceAsync("42", "MP3_320");
 
         Assert.Null(established);
-        Assert.Equal(3, fixture.MediaBodies.Count);
-        Assert.Equal(["HEAD", "HEAD", "HEAD"], fixture.CdnMethods);
+        Assert.Equal(2, fixture.MediaBodies.Count);
+        Assert.Equal(["HEAD", "HEAD"], fixture.CdnMethods);
+        Assert.Single(fixture.AuthCookies);
     }
 
     [Fact]
@@ -400,6 +426,9 @@ public sealed class DeezerResolverTests
         public byte[] Payload { get; init; } = "0123456789ab"u8.ToArray();
         public bool IgnoreRange { get; init; }
         public bool RejectPrimary { get; init; }
+        public bool FailLogin { get; init; }
+        public bool SessionErrorOnce { get; set; }
+        public List<string> Requests { get; } = [];
         public bool FallbackTrack { get; init; }
         public bool NoFallbackId { get; init; }
         public bool RegionalFallback { get; init; }
@@ -436,10 +465,12 @@ public sealed class DeezerResolverTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var url = request.RequestUri!.ToString();
+            Requests.Add(url);
             var cookie = request.Headers.TryGetValues("Cookie", out var cookies) ? cookies.Single() : "";
             if (url.Contains("deezer.getUserData"))
             {
                 AuthCookies.Add(cookie);
+                if (FailLogin) return new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 if (RejectPrimary && cookie == "arl=primary") return Json(new { results = new { USER = new { USER_ID = 0 } } });
                 var account = cookie[4..];
                 var response = Json(new { results = new { checkForm = account + "-api", USER = new { USER_ID = 1, OPTIONS = new { license_token = account + "-license" } } } });
@@ -452,6 +483,11 @@ public sealed class DeezerResolverTests
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
                 var id = body.RootElement.GetProperty("SNG_ID").GetString()!;
                 PageIds.Add(id);
+                if (SessionErrorOnce)
+                {
+                    SessionErrorOnce = false;
+                    return Json(new { results = new { }, error = new { VALID_TOKEN_REQUIRED = "Invalid CSRF token" } });
+                }
                 var wrongVersion = WrongFallbackVersion && id == "43"
                     || WrongSngIdSubstitutionVersion && id == "42";
                 var title = RegionalFallback && id == "43" ? "Sóng" : "Song";

@@ -226,7 +226,6 @@ bold "─── Deezer (streams and direct downloads) ────────�
 echo "  ARL is your private Deezer browser session token. Keep it secret."
 echo "  Leave blank to disable Deezer; Soulseek and local playback still work."
 DEEZER_ARL=$(ask_secret "Deezer ARL" "$(existing DEEZER_ARL)")
-DEEZER_ARL_FALLBACK=$(ask_secret "Fallback Deezer ARL (optional)" "$(existing DEEZER_ARL_FALLBACK)")
 DEEZER_QUALITY_DEFAULT=$(existing DEEZER_QUALITY)
 DEEZER_QUALITY_DEFAULT=${DEEZER_QUALITY_DEFAULT:-FLAC}
 while true; do
@@ -344,7 +343,6 @@ SLSKD_SOULSEEK_PASSWORD="$SLSKD_SOULSEEK_PASSWORD"
 
 # === Deezer ===
 DEEZER_ARL="$DEEZER_ARL"
-DEEZER_ARL_FALLBACK="$DEEZER_ARL_FALLBACK"
 DEEZER_QUALITY=$DEEZER_QUALITY
 DEEZER_CACHE_ENABLED=${DEEZER_CACHE_ENABLED:-false}
 DEEZER_CACHE_QUALITY=${DEEZER_CACHE_QUALITY:-FLAC}

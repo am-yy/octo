@@ -681,7 +681,7 @@ every minute after restart; ambiguous or lossy matches remain virtual. Old exter
 playback aliases. Navidrome writes use the caller's authorized session and retry on later sessions.
 Direct Navidrome displays only imported entries. Store no caller credentials on disk.
 
-Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. An optional `DEEZER_ARL_FALLBACK` gives Octo another session to try if the primary expires or is rate-limited. Both ARLs are masked when read back. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. ARL and permanent download quality changes apply without restarting Octo; cache quality and concurrency changes require restart.
+Set `DEEZER_ARL` in `.env` or enter it under **Streams & hearts** in the admin UI. The ARL is masked when read back. Octo keeps one Deezer session per ARL; if Deezer rejects the ARL, Deezer stays off until you save a new one, so a dead ARL is never retried. `DEEZER_QUALITY` chooses permanent download quality: `FLAC` by default, then MP3 fallback, or `MP3_320` / `MP3_128`. ARL and permanent download quality changes apply without restarting Octo; cache quality and concurrency changes require restart.
 
 Set `WAIT_FOR_LOSSLESS_ON_PLAY=true` if you would rather the first play wait for the lossless file. It is off by default because a Soulseek fetch routinely takes minutes and most clients time out long before that, which looks like the play failing. Restart after changing it. External catalog format follows `CacheQuality` independently of permanent acquisition.
 

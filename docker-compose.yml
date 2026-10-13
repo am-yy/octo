@@ -48,7 +48,6 @@ services:
 
       # ----- Deezer account and acquisition quality -----
       Deezer__Arl: ${DEEZER_ARL:-}
-      Deezer__ArlFallback: ${DEEZER_ARL_FALLBACK:-}
       Deezer__Quality: ${DEEZER_QUALITY:-FLAC}
       Deezer__CacheEnabled: ${DEEZER_CACHE_ENABLED:-false}
       Deezer__CacheQuality: ${DEEZER_CACHE_QUALITY:-FLAC}

@@ -382,7 +382,7 @@ public sealed class DeezerAudioCacheTests
     private static DeezerSettings SettingsWithCache(DeezerSettings settings, double maxGiB = 20,
         string? cacheQuality = null) => new()
     {
-        Arl = settings.Arl, ArlFallback = settings.ArlFallback, Quality = settings.Quality,
+        Arl = settings.Arl, Quality = settings.Quality,
         CacheQuality = cacheQuality ?? settings.CacheQuality,
         MaxConcurrentDownloads = settings.MaxConcurrentDownloads,
         MaxConcurrentBackgroundDownloads = settings.MaxConcurrentBackgroundDownloads,

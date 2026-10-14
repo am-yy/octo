@@ -14,11 +14,13 @@ public partial class DeezerMetadataService
     // Exhausting a page/request budget is retryable, never cached as catalog absence.
     private const int TrackPageSize = 100;
     private const int RestSearchRequests = 3;
-    private sealed class TrackSearchBudget(CancellationToken stopping, bool background) : IDisposable
+    private sealed class TrackSearchBudget(CancellationToken stopping, bool background, int? duration = null) : IDisposable
     {
         private readonly CancellationTokenSource _deadline = MakeDeadline(stopping);
         public CancellationToken Token => _deadline.Token;
         public bool Background { get; } = background;
+        /// <summary>The wanted recording's length, when known; see <see cref="RecordingMatches"/>.</summary>
+        public int? Duration { get; } = duration;
         public int Requests { get; private set; }
         public bool Incomplete { get; set; }
         public bool Hydrated { get; set; }
@@ -43,7 +45,8 @@ public partial class DeezerMetadataService
     private DateTimeOffset _searchTokenExpires;
 
     private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackAsync(string? artist, string? title,
-        CancellationToken ct, bool background = false, IReadOnlySet<string>? excluded = null, bool readableOnly = false)
+        CancellationToken ct, bool background = false, IReadOnlySet<string>? excluded = null, bool readableOnly = false,
+        int? duration = null)
     {
         ct.ThrowIfCancellationRequested();
         _stopping.Token.ThrowIfCancellationRequested();
@@ -52,11 +55,11 @@ public partial class DeezerMetadataService
         var key = "lookup|" + JsonSerializer.Serialize(new
         {
             artist = artist?.Trim().ToLowerInvariant(), title = title?.Trim().ToLowerInvariant(),
-            background, readableOnly, excluded = excluded?.Order(StringComparer.Ordinal).ToArray()
+            background, readableOnly, excluded = excluded?.Order(StringComparer.Ordinal).ToArray(), duration
         });
         var answer = await SharedAsync(key, async () =>
         {
-            using var budget = new TrackSearchBudget(_stopping.Token, background);
+            using var budget = new TrackSearchBudget(_stopping.Token, background, duration);
             try
             {
                 var (response, hit) = await FindTrackCoreAsync(artist, title, budget, excluded, readableOnly);
@@ -97,7 +100,7 @@ public partial class DeezerMetadataService
             if (!visited.Add(url)) continue;
             var page = await DiscoveryRequestAsync(url, budget);
             if (page.Transient) return (page, null);
-            if (BestMatch(page.Doc, artist, title, excluded, readableOnly, recording: true) is JsonElement hit)
+            if (BestMatch(page.Doc, artist, title, excluded, readableOnly, recording: true, budget.Duration) is JsonElement hit)
                 return (page, hit);
             using (page)
             {
@@ -134,7 +137,7 @@ public partial class DeezerMetadataService
         }
         using var tracks = await DiscoveryRequestAsync($"{Base}/album/{Uri.EscapeDataString(albumId.ToString())}/tracks?limit=300", budget);
         if (tracks.Transient) return (new DeezerResponse { Transient = true }, null);
-        var track = BestMatch(tracks.Doc, artist, title, excluded, readableOnly, recording: true);
+        var track = BestMatch(tracks.Doc, artist, title, excluded, readableOnly, recording: true, budget.Duration);
         if (track is null || !track.Value.TryGetProperty("id", out var trackId))
         {
             budget.Incomplete |= tracks.Doc is not null && (Str(tracks.Doc.RootElement, "next") is { Length: > 0 }
@@ -174,7 +177,7 @@ public partial class DeezerMetadataService
             var t = CompareTitles(title, gotTitle);
             var a = CompareArtists(artist, gotArtist);
             if (t == FieldVerdict.Mismatch || a == FieldVerdict.Mismatch) continue;
-            if (RecordingMatches(artist, title, gotArtist, gotTitle)) continue;
+            if (RecordingMatches(artist, title, gotArtist, gotTitle, budget.Duration, Int(row, "duration"))) continue;
             if (row.TryGetProperty("id", out var id) && excluded?.Contains(id.ToString()) == true) continue;
             budget.Incomplete = true;
             if (budget.Hydrated || t != FieldVerdict.Match && a != FieldVerdict.Match
@@ -197,7 +200,7 @@ public partial class DeezerMetadataService
             var track = detail.Doc.RootElement;
             var credit = track.TryGetProperty("artist", out var a) ? Str(a, "name") : null;
             if (track.TryGetProperty("id", out var returned) && returned.ToString() == id
-                && RecordingMatches(artist, title, credit, TrackTitle(track))
+                && RecordingMatches(artist, title, credit, TrackTitle(track), budget.Duration, Int(track, "duration"))
                 && (!readableOnly || track.TryGetProperty("readable", out var readable) && readable.ValueKind == JsonValueKind.True)
                 && (expected is null || ConsistentRecording(expected.Value, track))) return (detail, track);
             budget.Incomplete = true;
@@ -342,7 +345,7 @@ public partial class DeezerMetadataService
                 });
             }
             using var normalized = JsonSerializer.SerializeToDocument(new { data = candidates });
-            if (BestMatch(normalized, artist, title, excluded, recording: true) is JsonElement match)
+            if (BestMatch(normalized, artist, title, excluded, recording: true, duration: budget.Duration) is JsonElement match)
                 return await ReadCandidateAsync(match.GetProperty("id").ToString(), artist, title, budget, readableOnly, match);
             return await HydrateIncompleteAsync(normalized, artist, title, budget, excluded, readableOnly);
         }

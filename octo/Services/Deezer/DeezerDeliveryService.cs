@@ -83,7 +83,7 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
                 return CompletedFile(localPath, Mime(localPath), song, download);
 
             var info = localPath is null ? await _cache.ProbeAsync(song, workToken) : null;
-            if (localPath is null && info is null) return new StatusCodeResult(502);
+            if (localPath is null && info is null) return NoSource(song);
             var type = localPath is null ? info!.ContentType : Mime(localPath);
             var fingerprint = localPath is null ? info!.Fingerprint : LocalFingerprint(localPath);
             if (request.Codec is null && head && info?.Path is not null)
@@ -139,7 +139,7 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
             {
                 await using var lease = await _cache.OpenProgressiveAsync(song,
                     DeezerCachePriority.Playback, workToken);
-                if (lease is null) return new StatusCodeResult(502);
+                if (lease is null) return NoSource(song);
                 await ServeRawAsync(context, lease, song, download, workToken);
                 return new EmptyResult();
             }
@@ -434,6 +434,14 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
 
     private static string DownloadName(Song song, string type) => PathHelper.SanitizeFileName(
         string.IsNullOrWhiteSpace(song.Title) ? song.Id : $"{song.Artist} - {song.Title}") + (type == "audio/mpeg" ? ".mp3" : ".flac");
+
+    /// <summary>Nothing to play: no library file and no Deezer match. Logged, because clients
+    /// only see the 502 and some (Feishin preloading the next track) stop playback on it.</summary>
+    private IActionResult NoSource(Song song)
+    {
+        _logger.LogWarning("No playable source for '{Artist} - {Title}' ({Id})", song.Artist, song.Title, song.Id);
+        return new StatusCodeResult(502);
+    }
 
     private static IActionResult CompletedFile(string path, string type, Song song, bool download) => new PhysicalFileResult(Path.GetFullPath(path), type)
     {

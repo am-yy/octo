@@ -232,6 +232,35 @@ public sealed class DeezerTrackSearchTests
         Assert.Single(rig.Calls, call => call.Host == "pipe.deezer.com");
     }
 
+    [Theory]
+    [InlineData(210, "819477")] // same length: Last.fm's "Hot Tubs" is Deezer's "Hottubs"
+    [InlineData(212, "819477")]
+    [InlineData(null, null)]    // no length: word breaks still decide, as for "The Sun Days"
+    [InlineData(250, null)]     // different length: a different act or recording
+    public async Task ArtistWithDifferentWordBreaksMatchesOnlyWithSameLength(int? duration, string? expected)
+    {
+        var row = new
+        {
+            id = 819477,
+            title = "Broadway",
+            duration = 210,
+            readable = true,
+            artist = new { id = 71034, name = "Foxboro Hottubs" },
+            album = new { id = 7, title = "Stop Drop And Roll!!!" },
+        };
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "api.deezer.com" when request.Path == "/search" => Json(RestResponse([row])),
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(EmptyWeb),
+            _ => Json(EmptyRest),
+        }));
+
+        var result = await rig.Service.EnrichTrackAsync("Foxboro Hot Tubs", "Broadway", includeYear: false, duration: duration);
+
+        Assert.Equal(expected, result?.DeezerId);
+    }
+
     [Fact]
     public async Task RestTitleVersionFieldParticipatesInRecordingIdentity()
     {

@@ -230,12 +230,15 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
 
     /// <summary>Resolve "artist + title" to the real album + artist (name, art, year).
     /// Pass includeYear=false to skip the extra album-detail call (bulk enrichment
-    /// wants duration + album fast; the year is fetched lazily by the album view).</summary>
+    /// wants duration + album fast; the year is fetched lazily by the album view).
+    /// A known <paramref name="duration"/> also accepts an artist credited with only different
+    /// word breaks, so it gets its own cache entry.</summary>
     public async Task<TrackMeta?> EnrichTrackAsync(string? artist, string? title, bool includeYear = true,
-        bool background = false, CancellationToken ct = default, string? trackId = null)
+        bool background = false, CancellationToken ct = default, string? trackId = null, int? duration = null)
     {
         if (string.IsNullOrEmpty(trackId) && string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
-        var key = TrackKey(artist, title, trackId);
+        if (!string.IsNullOrEmpty(trackId) || duration is not > 0) duration = null;
+        var key = TrackKey(artist, title, trackId) + (duration is null ? "" : $"|d{duration}");
         if (TryGetCached<TrackMeta?>(key, out var cached)) return cached;
 
         TrackMeta? meta = null;
@@ -246,7 +249,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         try
         {
             var (r, found) = string.IsNullOrEmpty(trackId)
-                ? await FindTrackAsync(artist, title, ct, background)
+                ? await FindTrackAsync(artist, title, ct, background, duration: duration)
                 : await FindTrackByIdAsync(trackId, ct, background);
             using var response = r;
             if (r?.Transient == true) return null;
@@ -266,7 +269,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                     artName = Str(art, "name");
                     artImg = Str(art, "picture_xl") ?? Str(art, "picture_medium");
                 }
-                int? duration = t.TryGetProperty("duration", out var du) && du.ValueKind == JsonValueKind.Number
+                int? length = t.TryGetProperty("duration", out var du) && du.ValueKind == JsonValueKind.Number
                     ? du.GetInt32() : null;
                 int? year = null;
                 if (includeYear && albId > 0)
@@ -278,7 +281,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                     year = y;
                     yearUnresolved = yearTransient;
                 }
-                meta = new TrackMeta(albTitle, cover, year, duration, artName, artImg, t.TryGetProperty("id", out var tid) ? tid.ToString() : null);
+                meta = new TrackMeta(albTitle, cover, year, length, artName, artImg, t.TryGetProperty("id", out var tid) ? tid.ToString() : null);
             }
         }
         catch (Exception ex)
@@ -1114,10 +1117,23 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         return agrees ? FieldVerdict.Match : FieldVerdict.Mismatch;
     }
 
+    /// <summary>Same letters, different word breaks ("Foxboro Hot Tubs" / "Foxboro Hottubs").
+    /// <see cref="CompareArtists"/> rejects this on purpose ("The Sun Days" is not "The
+    /// Sundays"), so it only counts alongside a matching length; see <see cref="RecordingMatches"/>.</summary>
+    private static bool SameArtistLetters(string? want, string? got) =>
+        SongIdentity.ParseArtists(want).Names.Any(left => SongIdentity.LooseKey(left) is { Length: > 0 } key
+            && SongIdentity.ParseArtists(got).Names.Any(right => SongIdentity.LooseKey(right) == key));
+
+    private static bool SameLength(int? expected, int? candidate) =>
+        expected is > 0 && candidate is > 0
+        && Math.Abs(expected.Value - candidate.Value) <= SongIdentity.LengthToleranceSeconds;
+
     internal static bool RecordingMatches(string? expectedArtist, string? expectedTitle,
-        string? candidateArtist, string? candidateTitle) =>
+        string? candidateArtist, string? candidateTitle, int? expectedDuration = null, int? candidateDuration = null) =>
         (!string.IsNullOrWhiteSpace(expectedArtist)
-            ? CompareArtists(expectedArtist, candidateArtist) == FieldVerdict.Match : true)
+            ? CompareArtists(expectedArtist, candidateArtist) == FieldVerdict.Match
+                || SameLength(expectedDuration, candidateDuration) && SameArtistLetters(expectedArtist, candidateArtist)
+            : true)
         && (!string.IsNullOrWhiteSpace(expectedTitle)
             ? CompareTitles(expectedTitle, candidateTitle) == FieldVerdict.Match : true)
         && (!string.IsNullOrWhiteSpace(expectedArtist) || !string.IsNullOrWhiteSpace(expectedTitle));
@@ -1138,7 +1154,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// nothing at all from matching everything.
     /// </summary>
     private static JsonElement? BestMatch(JsonDocument? doc, string? artist, string? title,
-        IReadOnlySet<string>? excluded = null, bool readableOnly = false, bool recording = false)
+        IReadOnlySet<string>? excluded = null, bool readableOnly = false, bool recording = false, int? duration = null)
     {
         if (doc is null) return null;
         if (doc.RootElement.ValueKind != JsonValueKind.Object
@@ -1153,7 +1169,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             var candidateArtist = hit.TryGetProperty("artist", out var credit) ? Str(credit, "name") : null;
             if (recording)
             {
-                if (RecordingMatches(artist, title, candidateArtist, TrackTitle(hit))) return hit;
+                if (RecordingMatches(artist, title, candidateArtist, TrackTitle(hit), duration, Int(hit, "duration"))) return hit;
                 continue;
             }
             var titleVerdict = CompareTitles(title, Str(hit, "title"));

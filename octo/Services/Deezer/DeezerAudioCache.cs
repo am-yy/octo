@@ -929,7 +929,10 @@ public sealed class DeezerAudioCache : BackgroundService
         }
 
         if (string.IsNullOrWhiteSpace(song.Artist) && string.IsNullOrWhiteSpace(song.Title)) return null;
-        var hit = await _catalog.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct);
+        // The length lets a credit with different word breaks still match (Last.fm's
+        // "Foxboro Hot Tubs" is Deezer's "Foxboro Hottubs").
+        var duration = song.Duration ?? (routing is null ? null : SongLength.Shown(routing).Seconds);
+        var hit = await _catalog.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct, duration: duration);
         if (!ValidTrackId(hit?.DeezerId)) return null;
         song.DeezerId = hit!.DeezerId;
         _ids.RememberDeezerTrack(externalId, hit.DeezerId, hit.AlbumTitle, hit.Duration);

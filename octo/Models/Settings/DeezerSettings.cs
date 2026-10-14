@@ -16,6 +16,13 @@ public sealed class DeezerSettings
     /// <summary>Maximum simultaneous background cache fills. Restart required.</summary>
     public int MaxConcurrentBackgroundDownloads { get; set; } = 2;
 
+    /// <summary>
+    /// Seconds a background cache fill waits after the last download ended; fills also wait while
+    /// anything downloads for playback. Paces background work like one listener. 0 turns pacing
+    /// off. Restart required.
+    /// </summary>
+    public int BackgroundGapSeconds { get; set; } = 30;
+
     /// <summary>Maximum simultaneous client transcodes. Restart required.</summary>
     public int MaxConcurrentTranscodes { get; set; } = 4;
 

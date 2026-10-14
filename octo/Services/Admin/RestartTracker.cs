@@ -26,6 +26,7 @@ public sealed class RestartTracker
         "Deezer:CacheQuality",              // selected source format in cache and delivery
         "Deezer:MaxConcurrentDownloads",    // DeezerAudioCache transfer gate
         "Deezer:MaxConcurrentBackgroundDownloads", // DeezerAudioCache transfer gate
+        "Deezer:BackgroundGapSeconds",             // DeezerAudioCache background pacing
         "Deezer:MaxConcurrentTranscodes",   // DeezerDeliveryService encoder gate
         "Soulseek:BaseUrl",                 // SoulseekClient and SoulseekDownloadService take IOptions
         "Soulseek:Enabled",

@@ -233,7 +233,7 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                 using var rows = rowsDoc;
                 if (HasError(rows.RootElement)) return;
                 var direct = SongRows(rows.RootElement, chunk)
-                    .Where(row => Text(row.Value, "SNG_ID") == row.Key)
+                    .Where(row => Text(row.Value, "SNG_ID") == row.Key && Offers(row.Value, selected, selected))
                     .Select(row => (Id: row.Key, Token: Text(row.Value, "TRACK_TOKEN")))
                     .Where(row => row.Token is { Length: > 0 })
                     .ToList();
@@ -307,7 +307,8 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
                             trackId, candidate, actualId, substitutionReason, identityMatches);
                     if (!identityMatches) break;
 
-                    if (Text(data, "TRACK_TOKEN") is { Length: > 0 } trackToken)
+                    if (Text(data, "TRACK_TOKEN") is { Length: > 0 } trackToken
+                        && Offers(data, quality, strictFormat))
                     {
                         JsonDocument mediaDoc;
                         (mediaDoc, session, fresh) = await WithSessionAsync(arl, session, fresh,
@@ -388,6 +389,15 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         expected is { } original && candidate is { } resolved
         && DeezerMetadataService.RecordingMatches(original.Artist, original.Title,
             resolved.Artist, resolved.Title);
+
+    /// <summary>
+    /// Whether song.getListData lists a file for any format the request would ask for. Asking
+    /// get_url for a format the track lacks earns error 2002, which the desktop client never
+    /// provokes; Deezer may count it against the ARL. A row without the size field is assumed to have it.
+    /// </summary>
+    internal static bool Offers(JsonElement row, string? quality, string? strictFormat = null) =>
+        Formats(quality, strictFormat).Any(format => Text(row, $"FILESIZE_{format}") is not { Length: > 0 } size
+            || long.TryParse(size, NumberStyles.None, CultureInfo.InvariantCulture, out var bytes) && bytes > 0);
 
     internal static string[] Formats(string? quality, string? strictFormat = null)
     {

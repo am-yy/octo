@@ -88,6 +88,11 @@ public sealed class DeezerAudioCache : BackgroundService
     private readonly ConcurrentDictionary<string, DateTime> _pinAttempts = new(StringComparer.Ordinal);
     private readonly Channel<string> _pinQueue;
     private readonly int _admissionLimit;
+    // Background downloads wait for nothing to be downloading for playback and for this long
+    // after the last download ended, so Deezer sees one listener's pace rather than a bulk fill.
+    private readonly TimeSpan _backgroundGap;
+    private int _foregroundTransfers;
+    private long _backgroundNotBefore;
     private readonly int _backgroundAdmissionLimit;
     private readonly int _pinWorkerCount;
     private readonly object _jobsLock = new();
@@ -123,6 +128,7 @@ public sealed class DeezerAudioCache : BackgroundService
         _backgroundTransfers = new PriorityTransferGate(_pinWorkerCount);
         _admissionLimit = 4 * maxDownloads;
         _backgroundAdmissionLimit = _admissionLimit - maxDownloads;
+        _backgroundGap = TimeSpan.FromSeconds(Math.Max(0, options.CurrentValue.BackgroundGapSeconds));
         _pinQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(_admissionLimit)
             { SingleReader = _pinWorkerCount == 1, FullMode = BoundedChannelFullMode.Wait });
         _hostStopping = lifetime?.ApplicationStopping.Register(BeginStopping) ?? default;
@@ -814,10 +820,12 @@ public sealed class DeezerAudioCache : BackgroundService
             if (priority < DeezerCachePriority.Playback)
             {
                 background = await _backgroundTransfers.AcquireAsync(key, priority, ct);
+                await WaitForBackgroundTurnAsync(null, ct);
+                background = Paced(background);
                 var all = await _transfers.AcquireAsync(key, priority, ct);
                 return new CompositeLease(background, all);
             }
-            return await _transfers.AcquireAsync(key, priority, ct);
+            return Foreground(await _transfers.AcquireAsync(key, priority, ct));
         }
         catch
         {
@@ -833,7 +841,7 @@ public sealed class DeezerAudioCache : BackgroundService
             if (job.Priority >= DeezerCachePriority.Playback)
             {
                 if (_transfers.IsSaturated) TryPreemptBackground();
-                return await _transfers.AcquireAsync(job.Key, job.Priority, ct);
+                return Foreground(await _transfers.AcquireAsync(job.Key, job.Priority, ct));
             }
 
             using var backgroundWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -846,12 +854,13 @@ public sealed class DeezerAudioCache : BackgroundService
             }
 
             var background = await backgroundTask;
-            if (job.Priority >= DeezerCachePriority.Playback)
+            if (!await WaitForBackgroundTurnAsync(job, ct))
             {
                 background.Dispose();
                 _backgroundTransfers.Forget(job.Key);
                 continue;
             }
+            background = Paced(background);
 
             try
             {
@@ -881,6 +890,61 @@ public sealed class DeezerAudioCache : BackgroundService
                 throw;
             }
         }
+    }
+
+    /// <summary>
+    /// Claims the one background turn: nothing downloading for playback, the gap since the last
+    /// download over, and no other background download holding it. False, without a claim, when
+    /// the job was promoted to playback while it waited.
+    /// </summary>
+    private async Task<bool> WaitForBackgroundTurnAsync(SourceJob? job, CancellationToken ct)
+    {
+        if (_backgroundGap <= TimeSpan.Zero) return job is null || job.Priority < DeezerCachePriority.Playback;
+        // ponytail: polls once a second for the turn; a signal would start sooner, but background
+        // can wait. A promotion to playback wakes it at once.
+        while (true)
+        {
+            if (job?.Priority >= DeezerCachePriority.Playback) return false;
+            var notBefore = Interlocked.Read(ref _backgroundNotBefore);
+            if (Volatile.Read(ref _foregroundTransfers) == 0 && DateTime.UtcNow.Ticks >= notBefore
+                && Interlocked.CompareExchange(ref _backgroundNotBefore, long.MaxValue, notBefore) == notBefore)
+                return true;
+            var tick = Task.Delay(TimeSpan.FromSeconds(1), ct);
+            await (job is null ? tick : Task.WhenAny(tick, job.PriorityChanged));
+            ct.ThrowIfCancellationRequested();
+        }
+    }
+
+    /// <summary>
+    /// Starts the gap. Only the background download holding the turn may end its claim; a
+    /// playback download only pushes the gap later.
+    /// </summary>
+    private void StartGap(bool ownsTurn)
+    {
+        var next = (DateTime.UtcNow + _backgroundGap).Ticks;
+        while (true)
+        {
+            var current = Interlocked.Read(ref _backgroundNotBefore);
+            if (!ownsTurn && current >= next) return;
+            if (Interlocked.CompareExchange(ref _backgroundNotBefore, next, current) == current) return;
+        }
+    }
+
+    /// <summary>A background lease holding the turn; its release starts the gap before the next.</summary>
+    private IDisposable Paced(IDisposable lease) => _backgroundGap <= TimeSpan.Zero ? lease
+        : new ActionLease(() => { lease.Dispose(); StartGap(ownsTurn: true); });
+
+    /// <summary>A playback lease that holds background downloads off while it is held.</summary>
+    private IDisposable Foreground(IDisposable lease)
+    {
+        if (_backgroundGap <= TimeSpan.Zero) return lease;
+        Interlocked.Increment(ref _foregroundTransfers);
+        return new ActionLease(() =>
+        {
+            lease.Dispose();
+            StartGap(ownsTurn: false);
+            Interlocked.Decrement(ref _foregroundTransfers);
+        });
     }
 
     private static async Task<bool> WaitForBackgroundPriorityAsync(Task<IDisposable> pending, SourceJob job)

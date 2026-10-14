@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Diagnostics;
@@ -251,6 +252,43 @@ public sealed class DeezerAudioCacheTests
     }
 
     [Fact]
+    public async Task TrackWithoutTheFormatIsNeverAskedForIt()
+    {
+        using var fixture = new Fixture();
+        fixture.NoFlac.Add("50");
+
+        Assert.Null(await fixture.Cache.ProbeAsync(Song("50")));
+        Assert.NotNull(await fixture.Cache.ProbeAsync(Song("51")));
+        Assert.Equal(["51"], fixture.MediaRequestIds);
+    }
+
+    [Fact]
+    public async Task BackgroundFillsWaitForPlaybackAndThenGoOneGapApart()
+    {
+        using var fixture = new Fixture(backgroundGapSeconds: 2) { HoldCdn = true };
+        var playback = fixture.Cache.EnsureAsync(Song("45"));
+        await fixture.Started("45").Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var prewarm = fixture.Cache.PrewarmAsync([Song("42"), Song("43")], topN: 2);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.False(fixture.Started("42").Task.IsCompleted);
+        Assert.False(fixture.Started("43").Task.IsCompleted);
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        fixture.ReleaseCdn.Release(12);
+        await playback.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = await Task.WhenAny(fixture.Started("42").Task, fixture.Started("43").Task)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        var firstAt = clock.Elapsed;
+        await Task.WhenAll(fixture.Started("42").Task, fixture.Started("43").Task).WaitAsync(TimeSpan.FromSeconds(10));
+        var secondAt = clock.Elapsed;
+        await prewarm.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(firstAt >= TimeSpan.FromSeconds(1.5), $"first background fill began {firstAt} after playback");
+        Assert.True(secondAt - firstAt >= TimeSpan.FromSeconds(1.5), $"fills began {secondAt - firstAt} apart");
+    }
+
+    [Fact]
     public async Task QueuedSpeculativeFillPromotesToForegroundCapacity()
     {
         using var fixture = new Fixture { HoldCdn = true };
@@ -386,6 +424,7 @@ public sealed class DeezerAudioCacheTests
         CacheQuality = cacheQuality ?? settings.CacheQuality,
         MaxConcurrentDownloads = settings.MaxConcurrentDownloads,
         MaxConcurrentBackgroundDownloads = settings.MaxConcurrentBackgroundDownloads,
+        BackgroundGapSeconds = settings.BackgroundGapSeconds,
         MaxConcurrentTranscodes = settings.MaxConcurrentTranscodes,
         CacheEnabled = settings.CacheEnabled, CachePath = settings.CachePath,
         CacheMaxGiB = maxGiB, CacheRetentionDays = settings.CacheRetentionDays,
@@ -393,6 +432,9 @@ public sealed class DeezerAudioCacheTests
 
     internal sealed class Fixture : HttpMessageHandler, IHttpClientFactory, IDisposable
     {
+        /// <summary>Tracks song.getListData lists with no FLAC file.</summary>
+        public HashSet<string> NoFlac { get; } = [];
+        public ConcurrentQueue<string> MediaRequestIds { get; } = new();
         private static readonly byte[] Audio = MinimalFlacSample();
         private readonly DeezerMetadataService _catalog;
         private readonly ExternalIdRegistry _ids;
@@ -420,7 +462,7 @@ public sealed class DeezerAudioCacheTests
         public string[] RequestedFormats = [];
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource> _startedById = new();
 
-        public Fixture(string cacheQuality = "FLAC", byte[]? payload = null)
+        public Fixture(string cacheQuality = "FLAC", byte[]? payload = null, int backgroundGapSeconds = 0)
         {
             Payload = payload ?? Audio;
             Directory.CreateDirectory(Root);
@@ -435,6 +477,7 @@ public sealed class DeezerAudioCacheTests
             {
                 Arl = "primary", CacheEnabled = true, CachePath = Root,
                 CacheQuality = cacheQuality, CacheMaxGiB = 20, CacheRetentionDays = 7,
+                BackgroundGapSeconds = backgroundGapSeconds,
             });
             Cache = new DeezerAudioCache(Resolver, _catalog, _ids, Settings,
                 NullLogger<DeezerAudioCache>.Instance);
@@ -456,11 +499,14 @@ public sealed class DeezerAudioCacheTests
             {
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
                 var ids = body.RootElement.GetProperty("sng_ids").EnumerateArray().Select(id => id.GetString()!).ToArray();
-                return Json(new { results = new { data = ids.Select(id => new { SNG_ID = id, TRACK_TOKEN = "track-token-" + id }).ToArray() } });
+                return Json(new { results = new { data = ids.Select(id => new { SNG_ID = id, TRACK_TOKEN = "track-token-" + id,
+                    FILESIZE_FLAC = NoFlac.Contains(id) ? "0" : "1000", FILESIZE_MP3_320 = "1000" }).ToArray() } });
             }
             if (request.RequestUri.Host == "media.deezer.com")
             {
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                foreach (var token in body.RootElement.GetProperty("track_tokens").EnumerateArray())
+                    MediaRequestIds.Enqueue(token.GetString()!["track-token-".Length..]);
                 RequestedFormats = body.RootElement.GetProperty("media")[0].GetProperty("formats")
                     .EnumerateArray().Select(item => item.GetProperty("format").GetString()!).ToArray();
                 var format = RequestedFormats.Single();

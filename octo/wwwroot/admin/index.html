@@ -455,6 +455,10 @@
               <input class="set-input" name="Deezer.MaxConcurrentBackgroundDownloads" type="number" min="0" max="32" data-restart="true" />
             </div>
             <div class="set-row">
+              <div class="set-info"><div class="set-info-t">Background fill gap</div><div class="set-info-d">Seconds a background fill waits after the last Deezer download, one fill at a time and never while playback downloads, so Deezer sees one listener's pace. 0 turns pacing off. Takes effect after restart.</div></div>
+              <input class="set-input" name="Deezer.BackgroundGapSeconds" type="number" min="0" max="3600" data-restart="true" />
+            </div>
+            <div class="set-row">
               <div class="set-info"><div class="set-info-t">Concurrent transcodes</div><div class="set-info-d">Maximum simultaneous MP3 and Opus encoders. Takes effect after restart.</div></div>
               <input class="set-input" name="Deezer.MaxConcurrentTranscodes" type="number" min="1" max="32" data-restart="true" />
             </div>

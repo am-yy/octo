@@ -807,6 +807,7 @@ public class AdminController : ControllerBase
                 ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
                 ["MaxConcurrentDownloads"] = _config.GetValue("Deezer:MaxConcurrentDownloads", 4),
                 ["MaxConcurrentBackgroundDownloads"] = _config.GetValue("Deezer:MaxConcurrentBackgroundDownloads", 2),
+                ["BackgroundGapSeconds"] = _config.GetValue("Deezer:BackgroundGapSeconds", 30),
                 ["MaxConcurrentTranscodes"] = _config.GetValue("Deezer:MaxConcurrentTranscodes", 4),
             },
             // Radio's other sources and their weights (multi-source radio).
@@ -1196,12 +1197,15 @@ public class AdminController : ControllerBase
         var downloads = Read(deezer, "MaxConcurrentDownloads", 4, out var downloadsValid);
         var background = Read(deezer, "MaxConcurrentBackgroundDownloads", 2, out var backgroundValid);
         var transcodes = Read(deezer, "MaxConcurrentTranscodes", 4, out var transcodesValid);
+        var gap = Read(deezer, "BackgroundGapSeconds", 30, out var gapValid);
         if (!downloadsValid || downloads is < 1 or > 32)
             return "Deezer MaxConcurrentDownloads must be an integer from 1 to 32.";
         if (!backgroundValid || background < 0 || background > downloads)
             return "Deezer MaxConcurrentBackgroundDownloads must be from 0 to MaxConcurrentDownloads.";
         if (!transcodesValid || transcodes is < 1 or > 32)
             return "Deezer MaxConcurrentTranscodes must be an integer from 1 to 32.";
+        if (!gapValid || gap is < 0 or > 3600)
+            return "Deezer BackgroundGapSeconds must be an integer from 0 to 3600.";
         return null;
     }
 
@@ -1642,6 +1646,7 @@ public class AdminController : ControllerBase
                 ["CacheRetentionDays"] = _config.GetValue("Deezer:CacheRetentionDays", 7),
                 ["MaxConcurrentDownloads"] = _config.GetValue("Deezer:MaxConcurrentDownloads", 4),
                 ["MaxConcurrentBackgroundDownloads"] = _config.GetValue("Deezer:MaxConcurrentBackgroundDownloads", 2),
+                ["BackgroundGapSeconds"] = _config.GetValue("Deezer:BackgroundGapSeconds", 30),
                 ["MaxConcurrentTranscodes"] = _config.GetValue("Deezer:MaxConcurrentTranscodes", 4),
             },
             ["RadioSources"] = new JsonObject
@@ -1910,6 +1915,7 @@ public class AdminController : ControllerBase
             "Deezer:Arl", "Deezer:Quality", "Deezer:CacheQuality",
             "Deezer:CacheEnabled", "Deezer:CachePath", "Deezer:CacheMaxGiB", "Deezer:CacheRetentionDays",
             "Deezer:MaxConcurrentDownloads", "Deezer:MaxConcurrentBackgroundDownloads", "Deezer:MaxConcurrentTranscodes",
+            "Deezer:BackgroundGapSeconds",
             "LastFm:ApiKey", "LastFm:ApiSecret", "LastFm:ScrobbleExternalPlays",
             "LastFm:EnableRadio", "LastFm:RadioTrackCount",
             "LastFm:RadioCacheDurationHours", "LastFm:StarterPublishTimeoutSeconds",

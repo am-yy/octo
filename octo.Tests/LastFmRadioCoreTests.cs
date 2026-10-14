@@ -420,7 +420,7 @@ public class LastFmRadioTrackResolverTests
         var handler = new DelegateHandler(_ =>
             "{\"subsonic-response\":{\"status\":\"ok\",\"searchResult3\":{\"song\":[]}}}");
         var expected = new Song { Id = "external-1", Artist = "A", Title = "T", IsLocal = false };
-        var metadata = new Mock<IMusicMetadataService>();
+        var metadata = new Mock<IMusicMetadataService> { CallBase = true };
         metadata.Setup(service => service.SearchSongsByArtistTitleAsync("A", "T", 1, 180))
             .ReturnsAsync([expected]);
         var song = await Resolver(handler, metadata.Object).ResolveAsync("A", "T", 180,
@@ -435,7 +435,7 @@ public class LastFmRadioTrackResolverTests
             "{\"subsonic-response\":{\"status\":\"ok\",\"searchResult3\":{\"song\":[]}}}");
         var registry = new ExternalIdRegistry();
         var id = registry.Register(new SoulseekRouting { Artist = "A", Title = "T", Duration = 180 });
-        var metadata = new Mock<IMusicMetadataService>();
+        var metadata = new Mock<IMusicMetadataService> { CallBase = true };
         metadata.Setup(service => service.SearchSongsByArtistTitleAsync("A", "T", 1, 180))
             .ReturnsAsync([new Song { Id = id, Artist = "A", Title = "T", IsLocal = false }]);
         var resolver = Resolver(handler, metadata.Object, registry);

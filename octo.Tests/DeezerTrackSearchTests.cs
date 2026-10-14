@@ -262,6 +262,47 @@ public sealed class DeezerTrackSearchTests
     }
 
     [Fact]
+    public async Task PlayableLeavesOutOnlySongsDeezerSurelyLacks()
+    {
+        var row = new
+        {
+            id = 819477,
+            title = "Broadway",
+            duration = 210,
+            readable = true,
+            artist = new { id = 71034, name = "Foxboro Hottubs" },
+            album = new { id = 7, title = "Stop Drop And Roll!!!" },
+        };
+        var down = false;
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            _ when down => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            "api.deezer.com" when request.Path == "/search" && Query(request.Uri, "q")!.Contains("Broadway")
+                => Json(RestResponse([row])),
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(EmptyWeb),
+            _ => Json(EmptyRest),
+        }));
+        var registry = new Octo.Services.Soulseek.ExternalIdRegistry();
+        var metadata = new Octo.Services.Soulseek.SoulseekMetadataService(registry, rig.Service,
+            new Octo.Services.CoverArt.CoverArtAggregator([], NullLogger<Octo.Services.CoverArt.CoverArtAggregator>.Instance),
+            NullLogger<Octo.Services.Soulseek.SoulseekMetadataService>.Instance);
+        async Task<Octo.Models.Domain.Song> Placeholder(string artist, string title) =>
+            (await metadata.SearchSongsByArtistTitleAsync(artist, title, 1, 210))[0];
+
+        var broadway = await Placeholder("Foxboro Hot Tubs", "Broadway");
+        var missing = await Placeholder("Nobody", "Nothing At All");
+        var kept = await metadata.PlayableAsync([broadway, missing]);
+
+        Assert.Equal([broadway.Id], kept.Select(song => song.Id));
+        Assert.Equal("819477", registry.Lookup(broadway.Id)?.DeezerId);
+
+        down = true;
+        var unknown = await Placeholder("Somebody", "Something Else");
+        Assert.Single(await metadata.PlayableAsync([unknown]));
+    }
+
+    [Fact]
     public async Task RestTitleVersionFieldParticipatesInRecordingIdentity()
     {
         var row = new

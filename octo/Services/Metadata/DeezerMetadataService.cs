@@ -237,8 +237,8 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         bool background = false, CancellationToken ct = default, string? trackId = null, int? duration = null)
     {
         if (string.IsNullOrEmpty(trackId) && string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
+        var key = EnrichKey(artist, title, trackId, duration);
         if (!string.IsNullOrEmpty(trackId) || duration is not > 0) duration = null;
-        var key = TrackKey(artist, title, trackId) + (duration is null ? "" : $"|d{duration}");
         if (TryGetCached<TrackMeta?>(key, out var cached)) return cached;
 
         TrackMeta? meta = null;
@@ -301,6 +301,17 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
             Put(TrackKey(artist, title, id), meta, PositiveTtl);
         return meta;
     }
+
+    private static string EnrichKey(string? artist, string? title, string? trackId, int? duration) =>
+        TrackKey(artist, title, trackId)
+        + (!string.IsNullOrEmpty(trackId) || duration is not > 0 ? "" : $"|d{duration}");
+
+    /// <summary>
+    /// True only when a finished search for this song found nothing on Deezer: a throttle or an
+    /// error is never cached as a miss, so it reads as unknown here, not as missing.
+    /// </summary>
+    public bool KnownMissing(string? artist, string? title, int? duration) =>
+        TryGetCached<TrackMeta?>(EnrichKey(artist, title, null, duration), out var meta) && meta is null;
 
     /// <summary>
     /// Full track metadata for tagging a downloaded file: one track search (album,

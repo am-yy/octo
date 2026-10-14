@@ -227,7 +227,7 @@ public sealed class TopSongsService : IDisposable
     /// </summary>
     private async Task<List<TopSong>> BuildSongsAsync(List<PlannedRow> rows, CancellationToken ct)
     {
-        var songs = new List<TopSong>(rows.Count);
+        var picked = new List<(PlannedRow Row, Song Song)>(rows.Count);
         var bare = new List<Song>();
         foreach (var row in rows)
         {
@@ -242,8 +242,13 @@ public sealed class TopSongsService : IDisposable
                 song = hits.FirstOrDefault();
                 if (song is not null) bare.Add(song);
             }
-            if (song is not null) songs.Add(new TopSong(songs.Count + 1, song, row.Plays, row.Listeners));
+            if (song is not null) picked.Add((row, song));
         }
+        // A catalog row is a Deezer track already; a bare one with no Deezer match cannot play.
+        bare = await _metadata.PlayableAsync(bare, ct);
+        var playable = bare.ToHashSet();
+        var songs = picked.Where(pick => pick.Row.Catalog is not null || playable.Contains(pick.Song))
+            .Select((pick, i) => new TopSong(i + 1, pick.Song, pick.Row.Plays, pick.Row.Listeners)).ToList();
         if (bare.Count > 0) await _metadata.EnrichExternalSongsAsync(bare, ct);
 
         // A list is opened to be played: warm the covers it shows and the first few streams,

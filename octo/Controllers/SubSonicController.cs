@@ -311,7 +311,8 @@ public partial class SubsonicController : ControllerBase
                         }
                         catch { return null; }
                     });
-                    var resolved = (await Task.WhenAll(resolveTasks)).Where(s => s != null).Cast<Song>().ToList();
+                    var resolved = await _metadataService.PlayableAsync(
+                        (await Task.WhenAll(resolveTasks)).Where(s => s != null).Cast<Song>().ToList());
 
                     if (resolved.Count > 0)
                     {

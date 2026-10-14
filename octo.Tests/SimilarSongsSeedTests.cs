@@ -480,7 +480,7 @@ public sealed class SimilarSongsSeedTests
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "octo-similar-seed-" + Guid.NewGuid());
         public Handler Handler { get; } = new();
-        private readonly Mock<IMusicMetadataService> _metadata = new();
+        private readonly Mock<IMusicMetadataService> _metadata = new() { CallBase = true };
 
         private readonly Dictionary<string, string?> _settings;
         /// <summary>Where this host keeps its state files (Octo:StateDirectory).</summary>

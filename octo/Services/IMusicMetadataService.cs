@@ -62,6 +62,10 @@ public interface IMusicMetadataService
     Task PrewarmDeezerIdsAsync(IEnumerable<Song> songs, int topN, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    /// <summary>The songs minus those with no source to play them from. Default keeps them all.</summary>
+    Task<List<Song>> PlayableAsync(IReadOnlyList<Song> songs, CancellationToken ct = default)
+        => Task.FromResult(songs.ToList());
+
     /// <summary>
     /// Same as <see cref="PrewarmDeezerIdsAsync"/> but accepts raw song ids — the
     /// implementation looks each id up in its own routing registry to find the

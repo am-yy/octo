@@ -43,6 +43,18 @@ public partial class SubsonicController
 
         var song = saved ?? await _metadataService.GetSongAsync(provider!, externalId!);
         if (song is null) return _responseBuilder.CreateError(format, 70, "Song not found");
+        // Clients plan playback from this answer, so a song with no library copy and no Deezer
+        // match must not be promised a stream that will only answer 502.
+        if (_deezerDelivery is not null && _deezerCache is not null
+            && await FindAuthorizedImportedSourcePathAsync(song, parameters) is null
+            && await _deezerCache.ProbeAsync(song, HttpContext.RequestAborted) is null)
+            return TranscodeDecisionResponse(format, new Dictionary<string, object?>
+            {
+                ["canDirectPlay"] = false,
+                ["canTranscode"] = false,
+                ["transcodeReason"] = Array.Empty<string>(),
+                ["errorReason"] = "No playable source for this song",
+            });
         var (sourceContainer, sourceCodec, sourceBitrate) = SelectedSourceDescription();
         var capabilities = ReadTranscodeCapabilities(parameters, out var capabilityError);
         if (capabilityError is not null) return BadRequest(new { error = capabilityError });

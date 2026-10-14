@@ -274,7 +274,7 @@ internal sealed class SearchPagingWebFactory : WebApplicationFactory<Program>
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "octo-search-paging-" + Guid.NewGuid());
     private readonly bool _discovery;
     public SearchPagingUpstream Upstream { get; } = new();
-    public Mock<IMusicMetadataService> Metadata { get; } = new();
+    public Mock<IMusicMetadataService> Metadata { get; } = new() { CallBase = true };
 
     public SearchPagingWebFactory(bool discovery = true)
     {

@@ -700,7 +700,7 @@ internal sealed class RadioWebFactory : WebApplicationFactory<Program>
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "octo-radio-web-" + Guid.NewGuid());
     public RadioUpstreamHandler Handler { get; } = new();
-    public Mock<IMusicMetadataService> Metadata { get; } = new();
+    public Mock<IMusicMetadataService> Metadata { get; } = new() { CallBase = true };
     public BlockingRadioTranscoder Transcoder { get; } = new();
     public FixedTuneInSelector TuneIn { get; } = new();
     public LastFmRadioStateStore State => Services.GetRequiredService<LastFmRadioStateStore>();

@@ -359,7 +359,7 @@ internal sealed class SyncWebFactory : WebApplicationFactory<Program>
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "octo-sync-web-" + Guid.NewGuid());
     public SyncUpstreamHandler Upstream { get; }
-    public Mock<IMusicMetadataService> Metadata { get; } = new();
+    public Mock<IMusicMetadataService> Metadata { get; } = new() { CallBase = true };
     public LastFmRadioStateStore State => Services.GetRequiredService<LastFmRadioStateStore>();
     public string StationId => LastFmRadioStateStore.StationId("alice", "your-mix");
 

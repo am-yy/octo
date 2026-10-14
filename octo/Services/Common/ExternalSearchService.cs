@@ -156,6 +156,9 @@ public sealed class ExternalSearchService
             var hits = await _metadata.SearchSongsByArtistTitleAsync(artist, title, 1);
             if (hits.Count > 0) songs.Add(hits[0]);
         }
+        // The first page is matched on Deezer anyway; matching it here leaves out what cannot play.
+        // Later rows stay unchecked, since matching all 60 cold would hold a search up for seconds.
+        songs = [.. await _metadata.PlayableAsync(songs.Take(12).ToList(), ct), .. songs.Skip(12)];
         _logger.LogInformation("External search '{Q}' -> {N} placeholder songs", query, songs.Count);
 
         // Catalog enrichment also pins the recording and length used for playback.

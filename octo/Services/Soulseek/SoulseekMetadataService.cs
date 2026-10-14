@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Octo.Models.Domain;
+using Microsoft.Extensions.Options;
 using Octo.Models.Search;
+using Octo.Models.Settings;
 using Octo.Models.Subsonic;
 using Octo.Services.Common;
 using Octo.Services.CoverArt;
@@ -25,6 +27,7 @@ public class SoulseekMetadataService : IMusicMetadataService
     private readonly DeezerMetadataService _deezer;
     private readonly CoverArtAggregator _coverArt;
     private readonly LastFmService? _lastFm;
+    private readonly IOptionsMonitor<SubsonicSettings>? _subsonic;
     private readonly ILogger<SoulseekMetadataService> _logger;
 
     public SoulseekMetadataService(
@@ -32,8 +35,10 @@ public class SoulseekMetadataService : IMusicMetadataService
         DeezerMetadataService deezer,
         CoverArtAggregator coverArt,
         ILogger<SoulseekMetadataService> logger,
-        LastFmService? lastFm = null)
+        LastFmService? lastFm = null,
+        IOptionsMonitor<SubsonicSettings>? subsonic = null)
     {
+        _subsonic = subsonic;
         _idRegistry = idRegistry;
         _deezer = deezer;
         _coverArt = coverArt;
@@ -97,6 +102,46 @@ public class SoulseekMetadataService : IMusicMetadataService
                 ExternalId = externalId
             }
         });
+    }
+
+    /// <summary>
+    /// The songs minus those Deezer is known not to have. Outside of WaitForLosslessOnPlay a
+    /// placeholder plays only from Deezer, so one with no match is a 502 at play time, and Feishin
+    /// pauses the song before it when that is its preload. Each is matched the way playback
+    /// matches it, and the track id kept, so playing it needs no second search. A throttle or
+    /// error keeps the song: unknown is not missing.
+    /// </summary>
+    public async Task<List<Song>> PlayableAsync(IReadOnlyList<Song> songs, CancellationToken ct = default)
+    {
+        // ponytail: an imported library copy of a song Deezer lacks is dropped too; checking for
+        // one costs a Navidrome search per row, and a Lidarr grab Deezer cannot match is rare.
+        if (_subsonic?.CurrentValue.WaitForLosslessOnPlay == true) return songs.ToList();
+        using var sem = new SemaphoreSlim(8);
+        var keep = await Task.WhenAll(songs.Select(async song =>
+        {
+            if (song.IsLocal || !string.IsNullOrEmpty(song.DeezerId)) return true;
+            var routing = _idRegistry.Lookup(song.Id);
+            if (!string.IsNullOrEmpty(routing?.DeezerId)) return true;
+            var length = routing is null ? null : SongLength.Shown(routing).Seconds;
+            await sem.WaitAsync(ct);
+            try
+            {
+                var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct,
+                    duration: length);
+                if (long.TryParse(hit?.DeezerId, out var id) && id > 0)
+                {
+                    song.DeezerId = hit!.DeezerId;
+                    _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId, hit.AlbumTitle, hit.Duration);
+                    return true;
+                }
+                if (!_deezer.KnownMissing(song.Artist, song.Title, length)) return true;
+                _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from",
+                    song.Artist, song.Title);
+                return false;
+            }
+            finally { sem.Release(); }
+        }));
+        return songs.Where((_, i) => keep[i]).ToList();
     }
 
     // Deezer's real ceiling is ~50 requests per 5 seconds, and this runs on search3's

@@ -339,7 +339,8 @@ public sealed class SyncCatalogService
             var hit = track.Source == Octo.Services.Library.PopularPlaylistService.TrackSource
                       && track.ResolvedId is { Length: > 0 } listed
                 ? await _metadata.GetSongAsync(SoulseekMetadataService.ProviderName, listed)
-                : (await _metadata.SearchSongsByArtistTitleAsync(track.Artist, track.Title, 1, track.Duration))
+                : (await _metadata.PlayableAsync(
+                    await _metadata.SearchSongsByArtistTitleAsync(track.Artist, track.Title, 1, track.Duration)))
                     .FirstOrDefault();
             if (hit is null || hit.Id.Length == 0 || !seenIds.Add(hit.Id)) continue;
             if (settings.ExplicitFilter == ExplicitFilter.CleanOnly && hit.ExplicitContentLyrics is 1) continue;

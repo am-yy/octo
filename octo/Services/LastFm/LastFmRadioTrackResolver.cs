@@ -54,7 +54,8 @@ public sealed class LastFmRadioTrackResolver
     {
         var local = await TryFindLocalMatchAsync(artist, title, authenticatedParameters);
         if (local is not null) return local;
-        var hits = await _metadata.SearchSongsByArtistTitleAsync(artist, title, 1, duration);
+        var hits = await _metadata.PlayableAsync(
+            await _metadata.SearchSongsByArtistTitleAsync(artist, title, 1, duration), cancellationToken);
         // A source that already named the video saves the search later, and plays exactly what
         // it suggested.
         if (hits.Count > 0 && !string.IsNullOrEmpty(youTubeId)

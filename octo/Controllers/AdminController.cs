@@ -2082,6 +2082,7 @@ public class AdminController : ControllerBase
             ["slskd"] = ProbeSlskdAsync(ct),
             ["lidarr"] = ProbeLidarrAsync(ct),
             ["deezer"] = ProbeDeezerAsync(ct),
+            ["sonic"] = ProbeSonicAsync(ct),
             ["lastfm"] = ProbeLastFmAsync(ct),
         };
         await Task.WhenAll(probeTasks.Values);
@@ -2259,6 +2260,33 @@ public class AdminController : ControllerBase
     /// which the dashboard shows as off rather than as a failure.
     /// </summary>
     private record ServiceProbe(bool Ok, string Detail, bool Warning = false, bool Configured = true);
+
+    /// <summary>octo-sonic, the Sounds alike reader; off when Sounds alike is switched off.</summary>
+    private async Task<ServiceProbe> ProbeSonicAsync(CancellationToken ct)
+    {
+        var radio = _radioSourceOpts.CurrentValue;
+        if (!radio.SoundsAlike) return new ServiceProbe(true, "Sounds alike is off", Configured: false);
+        try
+        {
+            var http = _httpFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(5);
+            using var resp = await http.GetAsync($"{radio.SonicUrl.TrimEnd('/')}/health", ct);
+            if (resp.IsSuccessStatusCode) return new ServiceProbe(true, "reachable");
+            // Turned off in .env (RADIO_SOUNDS_ALIKE=false): off, like the switch, not a fault.
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            var off = false;
+            try
+            {
+                using var doc = JsonDocument.Parse(body.Length > 0 ? body : "{}");
+                off = doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("off", out var o) && o.ValueKind == JsonValueKind.True;
+            }
+            catch (JsonException) { }
+            if (off) return new ServiceProbe(true, "Sounds alike is off in .env", Configured: false);
+            return new ServiceProbe(false, (int)resp.StatusCode == 503 ? "cannot see the music folder" : $"HTTP {(int)resp.StatusCode}");
+        }
+        catch (Exception ex) { return new ServiceProbe(false, ex.Message); }
+    }
 
     /// <summary>
     /// What a saved credential reads as through the admin API: every password, key, token and

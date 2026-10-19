@@ -238,6 +238,47 @@ services:
     depends_on:
       - slskd
 
+  # Reads each song once to learn how it sounds, for Sounds alike radio. Read-only on the
+  # music; each file is read by a child process, so a damaged one costs only itself.
+  # RADIO_SOUNDS_ALIKE=false turns it off. Pulled, not built: compiling it (Rust and FFmpeg)
+  # takes minutes and more memory than a small machine has. The image is upstream's
+  # (winters27/octo), pinned to the release whose analysis this Octo reads; its source is
+  # vendored in ./sonic, and `docker compose --profile source build octo-sonic-source`
+  # builds the same image from it.
+  octo-sonic:
+    image: ghcr.io/winters27/octo-sonic:${OCTO_SONIC_TAG:-2026.10.15}
+    container_name: octo-sonic
+    restart: unless-stopped
+    # Passes docker stop's SIGTERM on and reaps the reader processes.
+    init: true
+    expose:
+      - "8080"
+    environment:
+      MUSIC_ROOT: /music
+      ANALYSE_CONCURRENCY: "1"
+      SONIC_ENABLED: ${RADIO_SOUNDS_ALIKE:-true}
+    # Docker refuses a cap above the machine's CPUs, and compose up then fails, so the
+    # default is one. bliss uses about six threads a song.
+    cpus: ${SONIC_CPUS:-1}
+    # A long file is decoded whole in memory; a limit keeps one from crowding out the rest.
+    mem_limit: 2g
+    # It only reads the music, as nobody unless SONIC_USER says otherwise (a folder only its
+    # owner can read: SONIC_USER=1000:1000).
+    user: ${SONIC_USER:-65534:65534}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ${DOWNLOAD_PATH:-./downloads}:/music:ro
+
+  octo-sonic-source:
+    image: ghcr.io/winters27/octo-sonic:${OCTO_SONIC_TAG:-2026.10.15}
+    build: ./sonic
+    profiles: ["source"]
+
   # Soulseek client (slskd). Web UI on 5030, peer port 50300.
   # State (config, db, downloads-in-progress) persisted to ./slskd-state so the
   # account survives recreate. SLSKD_DOWNLOADS_DIR below sends finished files

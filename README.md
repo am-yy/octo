@@ -389,7 +389,11 @@ with `RADIO_SONIC_PAUSE_SECONDS` between, only while nothing downloads, then kee
 and changed songs; a damaged file costs only that file. On a network mount the first pass takes
 a while, and the dashboard shows how far it is, with Pause and Start over. `SONIC_CPUS` (default
 1) caps the CPUs it may use; never set it above the machine's count, or Docker will not start it.
-The first `docker compose build` compiles it, which takes several minutes.
+Its image is pulled, not built: it is upstream's (winters27/octo) `octo-sonic`, pinned by
+`OCTO_SONIC_TAG` to the release whose analysis this Octo reads. The source is vendored in
+`sonic/`, and `docker compose --profile source build octo-sonic-source` builds the same image
+from it, which takes several minutes. It reads the music as nobody (65534:65534); set
+`SONIC_USER` for a music folder only its owner can read.
 
 `GENRE_NORMALIZE` collapses the genres downloads arrive with into a list you can browse.
 Rules are a pattern-to-genre table applied **in order, first match wins**, edited in the

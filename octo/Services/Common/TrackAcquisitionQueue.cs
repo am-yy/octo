@@ -86,6 +86,9 @@ public sealed class TrackAcquisitionQueue
     // would be too late: Feishin re-requests /rest/stream on seek, so duplicates are routine.
     private readonly ConcurrentDictionary<string, AcquisitionRequest> _inFlight = new();
 
+    /// <summary>Nothing queued or running. Background library jobs wait for this.</summary>
+    public bool IsIdle => _inFlight.IsEmpty;
+
     private readonly ILogger<TrackAcquisitionQueue> _logger;
 
     public TrackAcquisitionQueue(ILogger<TrackAcquisitionQueue> logger) => _logger = logger;

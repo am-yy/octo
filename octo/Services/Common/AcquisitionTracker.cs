@@ -472,6 +472,10 @@ public sealed class AcquisitionTracker
         }
     }
 
+    /// <summary>Told, outside the lock, the library id of a song that just arrived. A listener that
+    /// throws is logged and skipped, so it can never cost anyone a song.</summary>
+    public event Action<string>? Arrived;
+
     private void Finish(string key, int run, string? libraryId)
     {
         lock (_lock)
@@ -482,6 +486,12 @@ public sealed class AcquisitionTracker
             entry.Error = null;
             if (!string.IsNullOrWhiteSpace(libraryId)) entry.LibraryId = libraryId;
             entry.UpdatedAt = Now;
+        }
+        if (string.IsNullOrWhiteSpace(libraryId) || Arrived is not { } listeners) return;
+        foreach (var listener in listeners.GetInvocationList().Cast<Action<string>>())
+        {
+            try { listener(libraryId); }
+            catch (Exception ex) { _logger.LogWarning(ex, "An arrival listener failed for {Id}", libraryId); }
         }
     }
 

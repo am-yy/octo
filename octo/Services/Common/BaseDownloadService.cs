@@ -53,6 +53,8 @@ public abstract class BaseDownloadService : IDownloadService
     // guarded and the only unguarded reader was dead code; enabling album downloads makes
     // that pattern live, and concurrent read+write on Dictionary is undefined.
     protected readonly ConcurrentDictionary<string, DownloadInfo> ActiveDownloads = new();
+
+    public bool HasActiveDownloads => ActiveDownloads.Values.Any(info => info.Status == DownloadStatus.InProgress);
     protected readonly SemaphoreSlim DownloadLock = new(1, 1);
     
     /// <summary>

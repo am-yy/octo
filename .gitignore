@@ -87,3 +87,6 @@ slskd-state/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Rust build output of the vendored octo-sonic
+sonic/target/

@@ -67,6 +67,9 @@ public interface IDownloadService
     /// <param name="externalId">The ID on the external provider</param>
     /// <returns>The local file path if exists, null otherwise</returns>
     Task<string?> GetLocalPathIfExistsAsync(string externalProvider, string externalId);
+
+    /// <summary>A transfer is running. Sounds alike's analysis waits for none to be.</summary>
+    bool HasActiveDownloads => false;
     
     /// <summary>
     /// Checks if the service is properly configured and functional

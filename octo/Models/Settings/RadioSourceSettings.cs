@@ -42,9 +42,9 @@ public class RadioSourceSettings
     public double ListenBrainzWeight { get; set; } = 0.7;
     public double SoundsAlikeWeight { get; set; } = 0.4;
 
-    /// <summary>Let each listener's plays and skips move these weights (0.3 to 1.5).
-    /// RADIO_LEARN_FROM_LISTENING.</summary>
-    public bool LearnFromListening { get; set; } = true;
+    /// <summary>Let each listener's plays and skips move these weights (0.3 to 1.5). Off by default:
+    /// a skip is often a song the listener already knows. RADIO_LEARN_FROM_LISTENING.</summary>
+    public bool LearnFromListening { get; set; } = false;
 
     public int EffectiveSonicPauseSeconds => Math.Clamp(SonicPauseSeconds, 0, 600);
 

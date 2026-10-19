@@ -126,7 +126,7 @@ services:
       RadioSources__SoundsAlike: ${RADIO_SOUNDS_ALIKE:-true}
       RadioSources__SonicUrl: ${RADIO_SONIC_URL:-http://octo-sonic:8080}
       RadioSources__SonicPauseSeconds: ${RADIO_SONIC_PAUSE_SECONDS:-2}
-      RadioSources__LearnFromListening: ${RADIO_LEARN_FROM_LISTENING:-true}
+      RadioSources__LearnFromListening: ${RADIO_LEARN_FROM_LISTENING:-false}
 
       # ----- Popular right now: the chart of the moment as a playlist in every app -----
       # Per listener, read-only, made again every 6 hours; on whether or not the mixes are.

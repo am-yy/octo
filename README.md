@@ -378,9 +378,10 @@ furthest from those are left out, never so many that the list comes up short, an
 analysed yet stay in. All of this needs Sounds alike on.
 
 Every radio song carries `octoSuggestedBy`, the source that counted most for it, and the Octo
-apps show it in the song's info. Radio also learns from listening: a radio song played through
-counts for its source and one skipped counts against it, per listener, and each listener's
-weights lean on the sources they keep (never below 0.3 or above 1.5). The dashboard's Radio page
+apps show it in the song's info. Radio can also learn from listening, off by default because a
+skip is often a song the listener already knows: a radio song played through counts for its
+source and one skipped counts against it, per listener, and each listener's weights lean on the
+sources they keep (never below 0.3 or above 1.5). The dashboard's Radio page
 has the switches, the base weights (YouTube Music 1.0, Last.fm 0.9, ListenBrainz 0.7, Sounds
 alike 0.4), what radio has learned, and "Forget what radio learned". `RADIO_YOUTUBE_MUSIC`,
 `RADIO_LISTENBRAINZ`, `RADIO_SOUNDS_ALIKE` and `RADIO_LEARN_FROM_LISTENING` switch them in `.env`.
@@ -626,7 +627,7 @@ in the last 90 days. A heart keeps a song, as it does anywhere, and it leaves th
 in the library. One star dismisses it, and it does not come back. Songs the library already has,
 or the listener hearted, are left out. Most played comes first, 50 at most. It is made with the
 listener's own sign-in when their app lists playlists and holds still for 6 hours, like Popular
-right now. It reads the plays radio learns from, so it stays empty while radio
+right now. It reads the plays personal stations are made from, so it stays empty while radio
 (`LASTFM_ENABLE_RADIO`) or its personal stations are off. It is on by default; `KEEP_THESE=false` or
 the dashboard's Mixes page turns it off.
 

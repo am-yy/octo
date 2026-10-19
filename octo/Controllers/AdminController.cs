@@ -1013,6 +1013,8 @@ public class AdminController : ControllerBase
                 ["NotifyLosslessFallback"] = notif.NotifyLosslessFallback,
                 ["NotifyDownloadFailed"] = notif.NotifyDownloadFailed,
                 ["NotifyAlbumCompleted"] = notif.NotifyAlbumCompleted,
+                ["NotifyArlRejected"] = notif.NotifyArlRejected,
+                ["NotifyNewReleases"] = notif.NotifyNewReleases,
             },
             ["ListenBrainz"] = new Dictionary<string, object>
             {
@@ -1855,6 +1857,8 @@ public class AdminController : ControllerBase
                 ["NotifyLosslessFallback"] = notif.NotifyLosslessFallback,
                 ["NotifyDownloadFailed"] = notif.NotifyDownloadFailed,
                 ["NotifyAlbumCompleted"] = notif.NotifyAlbumCompleted,
+                ["NotifyArlRejected"] = notif.NotifyArlRejected,
+                ["NotifyNewReleases"] = notif.NotifyNewReleases,
             },
             // Present even when unset: a section missing from this document is a
             // section the next Raw Config save silently deletes.
@@ -2015,7 +2019,7 @@ public class AdminController : ControllerBase
             "Notifications:DiscordWebhookUrl",
             "Notifications:NotifyDownloadStarted", "Notifications:NotifyDownloadCompleted",
             "Notifications:NotifyLosslessFallback", "Notifications:NotifyDownloadFailed",
-            "Notifications:NotifyAlbumCompleted",
+            "Notifications:NotifyAlbumCompleted", "Notifications:NotifyArlRejected", "Notifications:NotifyNewReleases",
             "ListenBrainz:Token", "ListenBrainz:SubmitExternalPlays",
         };
         var rows = new List<object>();

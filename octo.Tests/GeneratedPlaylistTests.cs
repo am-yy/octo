@@ -499,4 +499,40 @@ public sealed class GeneratedPlaylistControllerTests
         cover.EnsureSuccessStatusCode();
         Assert.Equal("image/jpeg", cover.Content.Headers.ContentType?.MediaType);
     }
+
+    private static string ReleaseSong(string artist, string album, string title, string? cover = null)
+    {
+        var song = new JsonObject { ["artist"] = artist, ["album"] = album, ["title"] = title };
+        if (cover is not null) song["octoCatalog"] = new JsonObject { ["CoverUrl"] = cover };
+        return song.ToJsonString();
+    }
+
+    [Fact]
+    public void NewReleases_FirstListOnlyRemembers_ThenEachReleaseIsAnnouncedOnce()
+    {
+        var first = GeneratedPlaylistService.Announce(null,
+            [ReleaseSong("A", "One", "a1"), ReleaseSong("A", "One", "a2"), ReleaseSong("B", "Two", "b1")]);
+        Assert.Empty(first.Fresh);
+        Assert.Equal(2, first.Announced.Count);
+
+        var second = GeneratedPlaylistService.Announce(first.Announced,
+            [ReleaseSong("a", "one", "a1"), ReleaseSong("C", "Three", "c1", "https://example.test/c.jpg"),
+             ReleaseSong("C", "Three", "c2")]);
+        var fresh = Assert.Single(second.Fresh);
+        Assert.Equal(("C", "Three", "c1", "https://example.test/c.jpg"), (fresh.Artist, fresh.Album, fresh.Title, fresh.CoverUrl));
+
+        var third = GeneratedPlaylistService.Announce(second.Announced, [ReleaseSong("C", "Three", "c1")]);
+        Assert.Empty(third.Fresh);
+    }
+
+    [Fact]
+    public void NewReleases_RememberOnlyTheMostRecentReleases()
+    {
+        var many = Enumerable.Range(0, GeneratedPlaylistService.MaxAnnouncedReleases + 20)
+            .Select(index => ReleaseSong("A", "Album " + index, "t")).ToList();
+        var (announced, fresh) = GeneratedPlaylistService.Announce([], many);
+        Assert.Equal(many.Count, fresh.Count);
+        Assert.Equal(GeneratedPlaylistService.MaxAnnouncedReleases, announced.Count);
+        Assert.Contains(GeneratedPlaylistService.ReleaseKey("A", "Album " + (many.Count - 1)), announced);
+    }
 }

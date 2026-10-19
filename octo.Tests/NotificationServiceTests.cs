@@ -240,4 +240,41 @@ public class NotificationServiceTests
         Assert.Null(Octo.Services.Common.BaseDownloadService.BuildAlbumSummary(album, 0, 0, 0));
         Assert.NotNull(Octo.Services.Common.BaseDownloadService.BuildAlbumSummary(album, 1, 1, 0));
     }
+
+    [Fact]
+    public void ArlRejected_SaysWhyAndWhatToDo()
+    {
+        var msg = NotificationService.Render(new NotificationEvent
+        {
+            Type = NotificationEventType.ArlRejected,
+            Detail = "Deezer ARL expired or account has no full-track license.",
+        });
+        Assert.Equal("Deezer ARL rejected", msg.Title);
+        Assert.StartsWith("Deezer ARL expired", msg.Body);
+        Assert.Contains("Paste a new ARL in the dashboard.", msg.Body);
+    }
+
+    [Fact]
+    public void NewRelease_NamesTheArtistAndTheAlbum()
+    {
+        var msg = NotificationService.Render(new NotificationEvent
+        {
+            Type = NotificationEventType.NewRelease,
+            Artist = "Portishead", Album = "Fourth", Detail = "In alice's New Releases.",
+            CoverArtUrl = "https://example.test/cover.jpg",
+        });
+        Assert.Equal("New release: Portishead – Fourth", msg.Title);
+        Assert.Equal("In alice's New Releases.", msg.Body);
+        Assert.Equal("https://example.test/cover.jpg", msg.ImageUrl);
+    }
+
+    [Fact]
+    public void NewTogglesFollowTheirSettings_AndNewReleasesStartOff()
+    {
+        var defaults = new NotificationSettings();
+        Assert.True(NotificationService.IsEnabled(defaults, NotificationEventType.ArlRejected));
+        Assert.False(NotificationService.IsEnabled(defaults, NotificationEventType.NewRelease));
+        Assert.True(NotificationService.IsEnabled(new NotificationSettings { NotifyNewReleases = true },
+            NotificationEventType.NewRelease));
+    }
 }

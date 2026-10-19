@@ -57,4 +57,12 @@ public class NotificationSettings
     /// <summary>One summary per album walk (tracks fetched, how many lossless)
     /// instead of a ping per track.</summary>
     public bool NotifyAlbumCompleted { get; set; } = true;
+
+    /// <summary>Deezer rejected the ARL. On by default: otherwise the first sign is outside songs
+    /// that no longer play.</summary>
+    public bool NotifyArlRejected { get; set; } = true;
+
+    /// <summary>A new release joined a listener's New Releases. Off by default: the transports are
+    /// shared, so every listener's releases reach the same channel.</summary>
+    public bool NotifyNewReleases { get; set; } = false;
 }

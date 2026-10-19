@@ -231,10 +231,15 @@ tell you a starred track landed, or quietly settled for a lossy copy.
 - **Two transports, either works alone**: [ntfy](https://ntfy.sh/) (paste a topic URL,
   subscribe to the same topic in the ntfy app) and Discord webhooks (rich embed with
   album art). A transport is on when its URL is set.
-- **Five events, each with its own toggle** in the dashboard's Notifications tab:
+- **Seven events, each with its own toggle** in the dashboard's Notifications tab:
   download started (did it find lossless, or is it settling?), download completed,
-  lossless fallback, download failed, and one summary per album instead of a ping per
-  track.
+  lossless fallback, download failed, one summary per album instead of a ping per
+  track, Deezer rejecting the ARL (once per ARL, on by default), and new releases.
+- **New releases** (`NOTIFY_NEW_RELEASES`, off by default) sends one message per album, EP
+  or single that joins a listener's New Releases, never the same one twice. Every
+  listener's releases go to the same channel. A list is made when the listener's app next
+  lists playlists, so the message comes then, and the first list after turning it on only
+  remembers what is already there.
 - A **Send test** button verifies your URLs and tokens without waiting for a real
   download, and reports each transport's outcome separately.
 

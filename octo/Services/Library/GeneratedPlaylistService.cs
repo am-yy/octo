@@ -92,6 +92,46 @@ public sealed class GeneratedPlaylistService
         /// <summary>Album covers New Releases' cover is coloured from: outside albums Navidrome
         /// does not know, so they are fetched from the catalog's own image host.</summary>
         public List<string> ForYouCovers { get; set; } = [];
+
+        /// <summary>Releases of New Releases already announced, by <see cref="ReleaseKey"/>; null until
+        /// the first list after notifications for them existed, which only fills it.</summary>
+        public List<string>? AnnouncedReleases { get; set; }
+    }
+
+    /// <summary>Releases remembered as announced, per listener; the oldest are forgotten first.</summary>
+    internal const int MaxAnnouncedReleases = 500;
+
+    /// <summary>One release found in New Releases, to announce.</summary>
+    internal sealed record FreshRelease(string Artist, string Album, string? Title, string? CoverUrl);
+
+    internal static string ReleaseKey(string artist, string album) =>
+        artist.Trim().ToLowerInvariant() + "\u001f" + album.Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// The releases of a New Releases list not announced before, and the announced set after them.
+    /// With no set yet everything is taken as announced, so turning this on, or a listener's first
+    /// list, never sends the whole list at once.
+    /// </summary>
+    internal static (List<string> Announced, List<FreshRelease> Fresh) Announce(IReadOnlyList<string>? announced,
+        IReadOnlyList<string>? newReleases)
+    {
+        var seen = (announced ?? []).ToList();
+        var known = seen.ToHashSet(StringComparer.Ordinal);
+        var fresh = new List<FreshRelease>();
+        foreach (var entry in newReleases ?? [])
+        {
+            if (JsonNode.Parse(entry) is not JsonObject song) continue;
+            var artist = ForYouLists.Str(song, "artist");
+            var album = ForYouLists.Str(song, "album");
+            if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(album)) continue;
+            if (!known.Add(ReleaseKey(artist, album))) continue;
+            seen.Add(ReleaseKey(artist, album));
+            if (announced is null) continue;
+            var cover = song[SeedField] is JsonObject seed && seed["CoverUrl"] is JsonValue url
+                && url.TryGetValue<string>(out var text) ? text : null;
+            fresh.Add(new FreshRelease(artist, album, ForYouLists.Str(song, "title"), cover));
+        }
+        return (seen.Skip(Math.Max(0, seen.Count - MaxAnnouncedReleases)).ToList(), fresh);
     }
 
     private sealed class StateDocument
@@ -261,18 +301,30 @@ public sealed class GeneratedPlaylistService
             ? await BuildForYouAsync(scope.ServiceProvider, proxy, username, auth, settings, explicitFilter, before, ct)
             : (new Dictionary<string, List<string>>(StringComparer.Ordinal), new List<string>());
 
+        var notifications = scope.ServiceProvider.GetService<Octo.Services.Notifications.NotificationService>();
+        List<FreshRelease> fresh = [];
         lock (_lock)
         {
             var previous = _users.TryGetValue(UserKey(username), out var old) ? old.Active : [];
             var active = ApplyHysteresis(counts, previous, settings.EffectiveCreateAt, settings.EffectiveRemoveBelow,
                 settings.EffectiveMaxPlaylists);
+            var announced = old?.AnnouncedReleases;
+            if (notifications is not null && forYou.TryGetValue(ForYouLists.NewReleasesKind, out var releases))
+                (announced, fresh) = Announce(announced, releases);
             _users[UserKey(username)] = new UserMixes
             {
                 Active = active.ToList(), Counts = counts, CountsUtc = DateTime.UtcNow, Kinds = KindsOf(settings, explicitFilter),
-                ForYou = forYou, ForYouCovers = covers,
+                ForYou = forYou, ForYouCovers = covers, AnnouncedReleases = announced,
             };
             SaveLocked();
         }
+        foreach (var release in fresh)
+            notifications!.Notify(new Octo.Services.Notifications.NotificationEvent
+            {
+                Type = Octo.Services.Notifications.NotificationEventType.NewRelease,
+                Artist = release.Artist, Album = release.Album, Title = release.Title, CoverArtUrl = release.CoverUrl,
+                Detail = $"In {username}'s New Releases.",
+            });
         _logger.LogInformation("Mixes for {User}: {Count} from {Candidates} genres and decades", username,
             counts.Count(pair => pair.Value > 0), counts.Count);
         return true;

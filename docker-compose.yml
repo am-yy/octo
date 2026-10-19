@@ -225,6 +225,8 @@ services:
       Notifications__NotifyLosslessFallback: ${NOTIFY_LOSSLESS_FALLBACK:-true}
       Notifications__NotifyDownloadFailed: ${NOTIFY_DOWNLOAD_FAILED:-true}
       Notifications__NotifyAlbumCompleted: ${NOTIFY_ALBUM_COMPLETED:-true}
+      Notifications__NotifyArlRejected: ${NOTIFY_ARL_REJECTED:-true}
+      Notifications__NotifyNewReleases: ${NOTIFY_NEW_RELEASES:-false}
     volumes:
       - ${DOWNLOAD_PATH:-./downloads}:/music
       # Editable settings file — admin UI writes here, ASP.NET hot-reloads on

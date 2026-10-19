@@ -16,7 +16,8 @@ namespace Octo.Services.Deezer;
 /// failed logins and unavailable tracks are remembered, so background retries never reach Deezer.
 /// </summary>
 public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguration configuration,
-    ILogger<DeezerResolver> logger, DeezerMetadataService catalog) : IDisposable
+    ILogger<DeezerResolver> logger, DeezerMetadataService catalog,
+    Octo.Services.Notifications.NotificationService? notifications = null) : IDisposable
 {
     public const string ApiClientName = "deezer-media-api";
     public const string StreamClientName = "deezer-media-stream";
@@ -98,6 +99,12 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (ArlRejectedException ex)
         {
+            // Once per ARL: a latched ARL never reaches here again, and a new one may fail anew.
+            if (_rejectedArl != arl)
+                notifications?.Notify(new Octo.Services.Notifications.NotificationEvent
+                {
+                    Type = Octo.Services.Notifications.NotificationEventType.ArlRejected, Detail = ex.Message,
+                });
             _rejectedArl = arl;
             logger.LogError("{Reason} Deezer is disabled until the ARL changes.", ex.Message);
             throw;

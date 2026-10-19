@@ -134,6 +134,8 @@ public sealed class NotificationService
         NotificationEventType.LosslessFallback => s.NotifyLosslessFallback,
         NotificationEventType.DownloadFailed => s.NotifyDownloadFailed,
         NotificationEventType.AlbumCompleted => s.NotifyAlbumCompleted,
+        NotificationEventType.ArlRejected => s.NotifyArlRejected,
+        NotificationEventType.NewRelease => s.NotifyNewReleases,
         // The test button bypasses toggles by design: it verifies transports.
         NotificationEventType.Test => true,
         _ => false,
@@ -189,6 +191,20 @@ public sealed class NotificationService
                 evt.CoverArtUrl,
                 Description: null,
                 Fields: AlbumFields(evt)),
+
+            NotificationEventType.ArlRejected => new NotificationMessage(
+                evt.Type,
+                "Deezer ARL rejected",
+                (evt.Detail is { Length: > 0 } reason ? reason + "\n" : "")
+                    + "Deezer streams and downloads are off. Paste a new ARL in the dashboard.",
+                null),
+
+            NotificationEventType.NewRelease => new NotificationMessage(
+                evt.Type,
+                $"New release: {(string.IsNullOrEmpty(evt.Artist) ? "" : evt.Artist + " – ")}{evt.Album ?? "unknown album"}",
+                evt.Detail ?? "In New Releases.",
+                evt.CoverArtUrl,
+                Description: evt.Album),
 
             _ => new NotificationMessage(
                 evt.Type,

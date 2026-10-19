@@ -97,6 +97,37 @@ public sealed class DeezerResolverTests
         Assert.Equal(["arl=primary", "arl=changed"], fixture.AuthCookies);
     }
 
+    private sealed class AlertSink : Octo.Services.Notifications.INotificationSink
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<Octo.Services.Notifications.NotificationMessage> Sent { get; } = new();
+        public string Name => "alerts";
+        public bool IsConfigured => true;
+        public Task SendAsync(Octo.Services.Notifications.NotificationMessage message, CancellationToken ct)
+        {
+            Sent.Enqueue(message);
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task ARejectedArl_IsAnnouncedOnce_AndAnotherRejectedArlAgain()
+    {
+        var sink = new AlertSink();
+        var notifications = new Octo.Services.Notifications.NotificationService([sink],
+            TestOptions.Monitor(new NotificationSettings()), NullLogger<Octo.Services.Notifications.NotificationService>.Instance);
+        using var fixture = new Fixture(notifications) { RejectPrimary = true };
+        for (var i = 0; i < 3; i++) Assert.Null(await fixture.Resolver.OpenStreamAsync("42"));
+        fixture.Config["Deezer:Arl"] = "bad!arl";
+        Assert.False(await fixture.Resolver.IsAvailableAsync());
+        Assert.False(await fixture.Resolver.IsAvailableAsync());
+
+        // Notify is fire and forget.
+        for (var wait = 0; wait < 50 && sink.Sent.Count < 2; wait++) await Task.Delay(20);
+        await Task.Delay(100);
+        Assert.Equal(2, sink.Sent.Count);
+        Assert.All(sink.Sent, message => Assert.Equal("Deezer ARL rejected", message.Title));
+    }
+
     [Fact]
     public async Task FailedLoginCoolsDownWithoutRetrying()
     {
@@ -540,11 +571,11 @@ public sealed class DeezerResolverTests
         public List<string> CdnMethods { get; } = [];
         public TaskCompletionSource CdnStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly DeezerMetadataService _catalog;
-        public Fixture()
+        public Fixture(Octo.Services.Notifications.NotificationService? notifications = null)
         {
             _catalog = new DeezerMetadataService(this, TestOptions.Monitor(new MetadataSettings()),
                 NullLogger<DeezerMetadataService>.Instance);
-            Resolver = new DeezerResolver(this, Config, NullLogger<DeezerResolver>.Instance, _catalog);
+            Resolver = new DeezerResolver(this, Config, NullLogger<DeezerResolver>.Instance, _catalog, notifications);
         }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
 

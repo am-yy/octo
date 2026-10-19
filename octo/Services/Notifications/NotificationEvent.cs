@@ -8,6 +8,14 @@ public enum NotificationEventType
     DownloadFailed,
     AlbumCompleted,
 
+    /// <summary>Deezer rejected the configured ARL, so Deezer streams and downloads are off until
+    /// a new one is saved. Sent once per rejected ARL.</summary>
+    ArlRejected,
+
+    /// <summary>A listener's New Releases list gained an album, EP or single. Sent once per release
+    /// and listener.</summary>
+    NewRelease,
+
     /// <summary>The admin "Send test" button. Always allowed regardless of the
     /// per-event toggles; never fired by the download pipeline.</summary>
     Test,

@@ -11,6 +11,11 @@ public sealed class RadioAdminController(RadioOutcomeStore outcomes) : Controlle
     [HttpGet]
     public IActionResult Stats() => Ok(outcomes.Stats());
 
+    /// <summary>The artists radio plays less because listeners skip them, most skipped first.</summary>
+    [HttpGet("skipped-artists")]
+    public IActionResult SkippedArtists() => Ok(outcomes.SkippedArtistStats(10)
+        .Select(row => new { artist = row.Artist, listeners = row.Listeners, skips = Math.Round(row.Skipped, 1) }));
+
     [HttpPost("reset")]
     public IActionResult Reset() { outcomes.Forget(); return Ok(outcomes.Stats()); }
 }

@@ -369,9 +369,13 @@ up.
 Every radio song carries `octoSuggestedBy`, the source that counted most for it, and the Octo
 apps show it in the song's info. Radio also learns from listening: a radio song played through
 counts for its source and one skipped counts against it, per listener, and each listener's
-weights lean on the sources they keep (never below 0.3 or above 1.5). The dashboard's Radio page
+weights lean on the sources they keep (never below 0.3 or above 1.5). It learns about songs
+too: an artist a listener skips on radio three times or more, far more often than they play one
+through, comes up on their stations half as often, as an artist they rated one star does, and a
+song they skipped twice in the last month waits behind every other song on a station and is left
+out of song radio. Playing the song through forgives it. The dashboard's Radio page
 has the switches, the base weights (YouTube Music 1.0, Last.fm 0.9, ListenBrainz 0.7, Sounds
-alike 0.4), what radio has learned, and "Forget what radio learned". `RADIO_YOUTUBE_MUSIC`,
+alike 0.4), what radio has learned, the artists it plays less, and "Forget what radio learned". `RADIO_YOUTUBE_MUSIC`,
 `RADIO_LISTENBRAINZ`, `RADIO_SOUNDS_ALIKE` and `RADIO_LEARN_FROM_LISTENING` switch them in `.env`.
 YouTube Music and ListenBrainz receive the artist and title of the song a radio starts from.
 

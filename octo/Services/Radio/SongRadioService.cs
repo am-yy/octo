@@ -89,7 +89,9 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
                 ExplicitFilter.ExplicitOnly => song.ExplicitContentLyrics is not 3,
                 _ => true,
             }).Take(count).ToList();
-        outcomes?.Served(listener, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))));
+        var named = songs.ToDictionary(song => song.Id);
+        outcomes?.Served(listener, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))),
+            nameOf: id => named.TryGetValue(id, out var song) ? (song.Artist, song.Title) : null);
 
         // A library-led radio keeps its order: its neighbours often share the seed's artist (one
         // uploader for a whole playlist), and spacing by artist would push every one of them back.

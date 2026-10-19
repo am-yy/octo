@@ -106,8 +106,10 @@ public static class ForYouLists
     /// Songs played at most once, from the listener's most-played artists, none of them in
     /// Rediscover: the corners of artists they already like.
     /// </summary>
+    /// <param name="narrow">Leaves out of the pool what the listener is unlikely to want, before the
+    /// draw (Sounds alike's taste); null draws from all of it.</param>
     public static IReadOnlyList<JsonObject> DeepCuts(IReadOnlyList<JsonObject> songs, IReadOnlyCollection<string> artistKeys,
-        IReadOnlySet<string> excludedIds, int seed)
+        IReadOnlySet<string> excludedIds, int seed, Func<IReadOnlyList<JsonObject>, IReadOnlyList<JsonObject>>? narrow = null)
     {
         var artists = artistKeys.ToHashSet(StringComparer.Ordinal);
         var pool = songs
@@ -115,7 +117,7 @@ public static class ForYouLists
                 && Str(song, "id") is { } id && !excludedIds.Contains(id))
             .OrderBy(song => Str(song, "id"), StringComparer.Ordinal)
             .ToList();
-        return Draw(pool, TrackCount, DeepCutsPerArtist, seed);
+        return Draw(narrow?.Invoke(pool) ?? pool, TrackCount, DeepCutsPerArtist, seed);
     }
 
     /// <summary>

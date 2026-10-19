@@ -369,7 +369,13 @@ nightcore, sped up or remixed seed whose original is known gets songs like the o
 behind its album and genre. A title written "Artist - Title" is also looked up under the artist
 it names. An album id starts from its first song, an artist id from artists like them. In song
 radio a library song that sounds far from the seed slips down and one that sounds close moves
-up.
+up. On a station, the library songs are put in an order that flows: each one is,
+of the next four, the one that sounds most like the song before it and is not by the same
+artist; outside songs keep their places. Deep Cuts and the genre and decade mixes lean toward
+the sound of what the listener loves (songs played three times or more, hearted, or rated 4 or
+more, once ten of them are analysed): of the songs they would draw from, the 40% that sound
+furthest from those are left out, never so many that the list comes up short, and songs not
+analysed yet stay in. All of this needs Sounds alike on.
 
 Every radio song carries `octoSuggestedBy`, the source that counted most for it, and the Octo
 apps show it in the song's info. Radio also learns from listening: a radio song played through

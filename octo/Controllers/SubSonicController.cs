@@ -505,6 +505,11 @@ public partial class SubsonicController : ControllerBase
         // id, on a copy, since a catalog row is shared with other responses.
         songs = songs.Select(song => suggested.TryGetValue(song.Id, out var by) && song.SuggestedBy != by
             ? WithSuggestion(song, by) : song).ToList();
+        // Library songs in an order that flows, by how they sound; outside songs keep their places.
+        if (HttpContext.RequestServices.GetService<Octo.Services.Sonic.SonicStore>() is { } sonic
+            && HttpContext.RequestServices.GetService<IOptionsMonitor<RadioSourceSettings>>()?.CurrentValue.SoundsAlike == true)
+            songs = sonic.Flow(songs, song => song.IsLocal ? song.Id : null, song => song.Artist ?? "",
+                LastFmRadioStreamService.FlowWindow).ToList();
         // A station refetched by a syncing client is not the listener choosing it, so it never
         // renews the window in which a start counts for radio.
         var named = songs.GroupBy(song => song.Id).ToDictionary(group => group.Key, group => group.First());

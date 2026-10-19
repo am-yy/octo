@@ -113,4 +113,45 @@ public sealed class SonicStoreTests : IDisposable
         Assert.Empty(store.Read(s => s.Failed));
         Assert.Empty(store.Nearest("a", 5));
     }
+
+    private SonicStore WithSounds(params (string Id, float At)[] songs)
+    {
+        var store = Store();
+        store.Write(state => { foreach (var (id, at) in songs) state.Songs[id] = Song(At(at)); });
+        return store;
+    }
+
+    [Fact]
+    public void Taste_NeedsTenAnalyzedLovedSongs_AndIsTheirAverage()
+    {
+        var store = WithSounds(Enumerable.Range(0, 10).Select(i => ("loved-" + i, i / 10f)).ToArray());
+        Assert.Null(store.Taste(Enumerable.Range(0, 9).Select(i => "loved-" + i).Append("not-analyzed")));
+        var taste = store.Taste(Enumerable.Range(0, 10).Select(i => "loved-" + i))!;
+        Assert.Equal(0.45, taste[1], 4);
+    }
+
+    [Fact]
+    public void NearTaste_LeavesOutTheFarthestAnalyzedSongs_KeepsTheRestInOrder()
+    {
+        var store = WithSounds(("near", 0), ("mid", 0.4f), ("far", 0.9f), ("farther", 1f), ("x", 0.2f));
+        string[] pool = ["far", "near", "new", "farther", "mid", "x"];
+        var kept = store.NearTaste(pool, id => id, At(0), keepAtLeast: 0);
+        // Five analyzed: the closest three stay (60%, rounded up); "new" has no sound yet, so it stays.
+        Assert.Equal(["near", "new", "mid", "x"], kept);
+        // Never fewer than the list needs.
+        Assert.Equal(5, store.NearTaste(pool, id => id, At(0), keepAtLeast: 5).Count);
+        Assert.Same(pool, store.NearTaste(pool, id => id, null, keepAtLeast: 0));
+    }
+
+    [Fact]
+    public void Flow_PutsTheClosestNext_NeverTheSameArtist_AndLeavesOtherSongsInPlace()
+    {
+        var store = WithSounds(("a", 0), ("b", 0.9f), ("c", 0.1f), ("d", 0.5f), ("e", 0.05f));
+        var artists = new Dictionary<string, string> { ["a"] = "One", ["b"] = "Two", ["c"] = "Three", ["d"] = "Four", ["e"] = "One", ["out"] = "Five" };
+        string[] items = ["a", "out", "b", "c", "d", "e"];
+        var flowed = store.Flow(items, id => id == "out" ? null : id, id => artists[id], window: 4);
+        // After "a": "e" sounds closest but is One again, so "c". Then "e" from "c".
+        Assert.Equal(["a", "out", "c", "e", "d", "b"], flowed);
+        Assert.Equal(flowed, store.Flow(items, id => id == "out" ? null : id, id => artists[id], window: 4));
+    }
 }

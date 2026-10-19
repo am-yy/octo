@@ -64,6 +64,15 @@ public sealed class GeneratedPlaylistService
     private readonly object _lock = new();
     private readonly Dictionary<string, UserMixes> _users = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _lastAttempt = new(StringComparer.Ordinal);
+    /// <summary>What each listener's loved songs sound like, from their last Made for you walk.
+    /// In memory: after a restart the mixes draw as before until the next walk.</summary>
+    private readonly Dictionary<string, float[]?> _taste = new(StringComparer.Ordinal);
+
+    /// <summary>The Sounds alike store while Sounds alike is on, else null.</summary>
+    private static Octo.Services.Sonic.SonicStore? Sonic(IServiceProvider services) =>
+        services.GetService<IOptionsMonitor<RadioSourceSettings>>()?.CurrentValue.SoundsAlike == true
+            ? services.GetService<Octo.Services.Sonic.SonicStore>()
+            : null;
     private IOptionsMonitor<SubsonicSettings>? _subsonic;
 
     public GeneratedPlaylistService(string? statePath, IServiceScopeFactory scopes,
@@ -410,6 +419,9 @@ public sealed class GeneratedPlaylistService
 
         var now = DateTime.UtcNow;
         var period = PeriodIndex(now, settings.EffectiveRefreshHours);
+        var sonic = Sonic(services);
+        var taste = sonic?.Taste(library.Where(ForYouLists.Loved).Select(song => ForYouLists.Str(song, "id")).OfType<string>());
+        lock (_lock) _taste[UserKey(username)] = taste;
         var rediscover = ForYouLists.Rediscover(library, now, settings.EffectiveRediscoverMonths,
             Seed(username, ForYouPrefix + ForYouLists.RediscoverKind, period));
         if (settings.Rediscover) lists[ForYouLists.RediscoverKind] = rediscover.Select(song => song.ToJsonString()).ToList();
@@ -418,7 +430,9 @@ public sealed class GeneratedPlaylistService
             var artists = ForYouLists.TopArtists(library, ForYouLists.DeepCutArtists).Select(artist => artist.Key).ToList();
             var excluded = rediscover.Select(song => ForYouLists.Str(song, "id")).OfType<string>().ToHashSet(StringComparer.Ordinal);
             lists[ForYouLists.DeepCutsKind] = ForYouLists.DeepCuts(library, artists, excluded,
-                Seed(username, ForYouPrefix + ForYouLists.DeepCutsKind, period)).Select(song => song.ToJsonString()).ToList();
+                Seed(username, ForYouPrefix + ForYouLists.DeepCutsKind, period),
+                pool => sonic?.NearTaste(pool, song => ForYouLists.Str(song, "id"), taste, ForYouLists.TrackCount) ?? pool)
+                .Select(song => song.ToJsonString()).ToList();
         }
         // Rediscover and Deep Cuts are ready in moments; New Releases waits on the catalog, a
         // minute or more the first time. Shown at once, a new listener's first lists never wait on it.
@@ -558,6 +572,11 @@ public sealed class GeneratedPlaylistService
         }
 
         var period = PeriodIndex(playlist.PeriodStartUtc, settings.EffectiveRefreshHours);
+        // Leaning toward the sound of what the listener loves, when Sounds alike knows it.
+        float[]? taste;
+        lock (_lock) taste = _taste.GetValueOrDefault(UserKey(username));
+        if (Sonic(scope.ServiceProvider) is { } sonic)
+            pool = sonic.NearTaste(pool, song => ForYouLists.Str(song, "id"), taste, settings.EffectiveTrackCount).ToList();
         var drawn = Select(pool, settings.EffectiveTrackCount, settings.EffectiveMaxPerArtist,
             settings.EffectiveNewShare, settings.EffectiveNewDays, DateTime.UtcNow, Seed(username, playlist.Key, period))
             .Select(song => song.ToJsonString())

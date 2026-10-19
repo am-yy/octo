@@ -158,6 +158,86 @@ public sealed class SonicStore
         }
     }
 
+    /// <summary>Analyzed loved songs a listener needs before their taste is read from them.</summary>
+    internal const int TasteMinimum = 10;
+    /// <summary>Share of a pool's analyzed songs a taste keeps: the ones that sound most like it.</summary>
+    internal const double TasteShare = 0.6;
+
+    /// <summary>
+    /// What a listener's loved songs sound like on average, or null with fewer than
+    /// <see cref="TasteMinimum"/> of them analyzed (version 2, whose numbers average sensibly).
+    /// </summary>
+    public float[]? Taste(IEnumerable<string> lovedIds)
+    {
+        lock (_lock)
+        {
+            var sounds = lovedIds.Distinct(StringComparer.Ordinal)
+                .Select(id => _state.Songs.GetValueOrDefault(id))
+                .Where(song => song is { Version: 2 } && song.F.Length == Version2Weights.Length)
+                .Select(song => song!.F).ToList();
+            if (sounds.Count < TasteMinimum) return null;
+            var mean = new float[Version2Weights.Length];
+            foreach (var f in sounds)
+                for (var i = 0; i < mean.Length; i++) mean[i] += f[i] / sounds.Count;
+            return mean;
+        }
+    }
+
+    /// <summary>
+    /// The pool with its analyzed songs that sound furthest from the taste left out: the closest
+    /// <see cref="TasteShare"/> stay, and never fewer than <paramref name="keepAtLeast"/> songs in
+    /// all. Songs not analyzed yet always stay, and the pool keeps its order. No taste, the pool as it is.
+    /// </summary>
+    public IReadOnlyList<T> NearTaste<T>(IReadOnlyList<T> pool, Func<T, string?> id, float[]? taste, int keepAtLeast)
+    {
+        if (taste is null) return pool;
+        HashSet<int> far;
+        lock (_lock)
+        {
+            var analyzed = pool.Select((item, index) => (Index: index, Song: id(item) is { } key ? _state.Songs.GetValueOrDefault(key) : null))
+                .Where(item => item.Song is { Version: 2 } && item.Song.F.Length == taste.Length)
+                .Select(item => (item.Index, Distance: Distance(taste, item.Song!.F)))
+                .OrderBy(item => item.Distance).ThenBy(item => item.Index).ToList();
+            var keep = Math.Max((int)Math.Ceiling(analyzed.Count * TasteShare),
+                Math.Min(analyzed.Count, keepAtLeast - (pool.Count - analyzed.Count)));
+            far = analyzed.Skip(keep).Select(item => item.Index).ToHashSet();
+        }
+        return pool.Where((_, index) => !far.Contains(index)).ToList();
+    }
+
+    /// <summary>
+    /// The list with its analyzed library songs put in an order that flows: from the first, each
+    /// next one is, of the following <paramref name="window"/> analyzed songs, the one that sounds
+    /// most like the one before, never by the same artist as it. Other songs keep their places.
+    /// The same list gives the same order.
+    /// </summary>
+    public IReadOnlyList<T> Flow<T>(IReadOnlyList<T> items, Func<T, string?> libraryId, Func<T, string> artist, int window)
+    {
+        var result = items.ToList();
+        lock (_lock)
+        {
+            float[]? Sound(T item) => libraryId(item) is { } key && _state.Songs.GetValueOrDefault(key) is { Version: 2 } song
+                && song.F.Length == Version2Weights.Length ? song.F : null;
+            var slots = Enumerable.Range(0, result.Count).Where(index => Sound(result[index]) is not null).ToList();
+            for (var k = 1; k < slots.Count; k++)
+            {
+                var previous = result[slots[k - 1]];
+                var before = Sound(previous)!;
+                var best = -1;
+                var bestDistance = double.MaxValue;
+                for (var j = k; j < Math.Min(slots.Count, k + window); j++)
+                {
+                    var candidate = result[slots[j]];
+                    if (string.Equals(artist(candidate), artist(previous), StringComparison.OrdinalIgnoreCase)) continue;
+                    var distance = Distance(before, Sound(candidate)!);
+                    if (distance < bestDistance) { best = j; bestDistance = distance; }
+                }
+                if (best > k) (result[slots[k]], result[slots[best]]) = (result[slots[best]], result[slots[k]]);
+            }
+        }
+        return result;
+    }
+
     private SonicState Load()
     {
         try

@@ -967,6 +967,7 @@ public class AdminController : ControllerBase
             ["GeneratedPlaylists"] = new Dictionary<string, object>
             {
                 ["PopularNow"] = mixes.PopularNow,
+                ["KeepThese"] = mixes.KeepThese,
                 ["Enabled"] = mixes.Enabled,
                 ["Genres"] = mixes.Genres,
                 ["Decades"] = mixes.Decades,
@@ -1814,6 +1815,7 @@ public class AdminController : ControllerBase
             ["GeneratedPlaylists"] = new JsonObject
             {
                 ["PopularNow"] = mixes.PopularNow,
+                ["KeepThese"] = mixes.KeepThese,
                 ["Enabled"] = mixes.Enabled,
                 ["Genres"] = mixes.Genres,
                 ["Decades"] = mixes.Decades,
@@ -2005,7 +2007,7 @@ public class AdminController : ControllerBase
             "Metadata:ReplaceVideoCovers", "Metadata:WriteCoverFile", "Metadata:EmbedFullSizeCovers",
             "Metadata:FetchLyrics", "Metadata:LyricsSources", "Metadata:PreferWordTimedLyrics",
             "Metadata:WriteLyricsBesideAllSongs", "Metadata:SaveLyricsTo",
-            "GeneratedPlaylists:PopularNow",
+            "GeneratedPlaylists:PopularNow", "GeneratedPlaylists:KeepThese",
             "Metadata:PreferOriginalAlbum", "Metadata:YearFromOriginalRelease", "Metadata:PreferredCountries",
             "Metadata:ReleaseDetailsLookup", "Metadata:ReplayGain", "Metadata:ReplayGainTimeoutSeconds",
             "Metadata:TagRehearsal",

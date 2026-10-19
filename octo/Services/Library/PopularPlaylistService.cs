@@ -25,7 +25,7 @@ namespace Octo.Services.Library;
 /// Nothing is written to Navidrome, and nothing to disk: after a restart the first list is made
 /// again in a second or two.
 /// </summary>
-public sealed class PopularPlaylistService
+public class PopularPlaylistService
 {
     public const string Key = "chart:popular";
     public const string Kind = "chart";
@@ -81,7 +81,28 @@ public sealed class PopularPlaylistService
         _logger = logger;
     }
 
-    public bool On => _settings.CurrentValue.PopularNow;
+    public virtual bool On => _settings.CurrentValue.PopularNow;
+
+    /// <summary>The list's key, kind and name; another list made the same way says its own.</summary>
+    protected virtual string ListKey => Key;
+    public virtual string ListKind => Kind;
+    public virtual string ListName => Name;
+
+    /// <summary>Whether a song the listener's library has is listed as their copy. A list of
+    /// songs to add leaves them out instead.</summary>
+    protected virtual bool ListsOwned => true;
+
+    protected IOptionsMonitor<GeneratedPlaylistSettings> Settings => _settings;
+    protected ExternalIdRegistry Registry => _registry;
+
+    /// <summary>The list's songs, in order, before the library match, and where they came from;
+    /// none when the source did not answer.</summary>
+    protected virtual async Task<(IReadOnlyList<TopSongsService.TopSong> Rows, string Source)> RowsAsync(
+        string username, CancellationToken ct)
+    {
+        var chart = await _topSongs.ChartAsync(ct);
+        return (chart.Songs.Take(MaxSongs).ToList(), chart.Source + " chart");
+    }
 
     /// <summary>
     /// The listener's list, made again first when its period ended or the settings it was made
@@ -93,7 +114,7 @@ public sealed class PopularPlaylistService
         if (!On || string.IsNullOrWhiteSpace(username)) return null;
         var (made, building) = Ensure(username, auth);
         if (made is null && building is not null) await Task.WhenAny(building, Task.Delay(FirstListWait));
-        return Find(username, PlaylistId(username));
+        return Find(username, IdFor(username));
     }
 
     /// <summary>The list by id, for this listener, as last made. Null for anyone else's id,
@@ -104,7 +125,7 @@ public sealed class PopularPlaylistService
     /// <summary>Whether the id is this listener's list while it is on, made yet or not: an app
     /// that kept the id across a restart still opens it.</summary>
     public bool IsTheList(string username, string id) =>
-        On && !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(id) && id == PlaylistId(username);
+        On && !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(id) && id == IdFor(username);
 
     /// <summary>The list as a playlist, as last made: its size is 0 while nothing is in it.</summary>
     public GeneratedPlaylist Playlist(string username)
@@ -112,7 +133,7 @@ public sealed class PopularPlaylistService
         var made = Current(username);
         var period = made?.Period ?? GeneratedPlaylistService.PeriodIndex(Clock(), RefreshHours);
         var start = DateTime.UnixEpoch.AddHours(period * RefreshHours);
-        return new GeneratedPlaylist(PlaylistId(username), Key, Kind, Name, Name, username.Trim(),
+        return new GeneratedPlaylist(IdFor(username), ListKey, ListKind, ListName, ListName, username.Trim(),
             made?.Entries.Count ?? 0, start, start.AddHours(RefreshHours));
     }
 
@@ -183,9 +204,9 @@ public sealed class PopularPlaylistService
         if (!On || Current(username) is not { Outside.Count: > 0 } made) return null;
         return new LastFmRadioStation
         {
-            Id = PlaylistId(username),
-            Key = Key,
-            Name = Name,
+            Id = IdFor(username),
+            Key = ListKey,
+            Name = ListName,
             Owner = username.Trim(),
             CreatedUtc = made.MadeUtc,
             ChangedUtc = made.MadeUtc,
@@ -238,7 +259,7 @@ public sealed class PopularPlaylistService
         _ = building.ContinueWith(task =>
             {
                 lock (_lock) _failedAt[user] = Clock();
-                _logger.LogDebug(task.Exception, "Popular right now could not be made for {User}", username);
+                _logger.LogDebug(task.Exception, "{List} could not be made for {User}", ListName, username);
             },
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         return (made, building);
@@ -252,12 +273,11 @@ public sealed class PopularPlaylistService
         string rule, CancellationToken ct)
     {
         var user = UserKey(username);
-        var chart = await _topSongs.ChartAsync(ct);
-        var rows = chart.Songs.Take(MaxSongs).ToList();
+        var (rows, source) = await RowsAsync(username, ct);
         if (rows.Count == 0)
         {
             lock (_lock) _failedAt[user] = Clock();
-            _logger.LogInformation("Popular right now for {User}: the chart did not answer, the last list stays", username);
+            _logger.LogInformation("{List} for {User}: {Source} gave no songs, the last list stays", ListName, username, source);
             return false;
         }
 
@@ -284,7 +304,7 @@ public sealed class PopularPlaylistService
 
         var subsonic = _subsonic.CurrentValue;
         var (entries, outside) = Assemble(rows, library, subsonic.EnableSearchDiscovery, subsonic.ExplicitFilter,
-            song => JsonSerializer.SerializeToNode(_responses.ConvertSongToJson(song))!.AsObject());
+            song => JsonSerializer.SerializeToNode(_responses.ConvertSongToJson(song))!.AsObject(), ListsOwned);
         lock (_lock)
         {
             _users[user] = new Made(period, Clock(), rule, unanswered == 0,
@@ -293,8 +313,8 @@ public sealed class PopularPlaylistService
             if (unanswered == 0) _failedAt.Remove(user);
             else _failedAt[user] = Clock();
         }
-        _logger.LogInformation("Popular right now for {User}: {Library} library and {Outside} outside songs from the {Source} chart",
-            username, entries.Count - outside.Count, outside.Count, chart.Source);
+        _logger.LogInformation("{List} for {User}: {Library} library and {Outside} outside songs from {Source}",
+            ListName, username, entries.Count - outside.Count, outside.Count, source);
         return true;
     }
 
@@ -303,8 +323,10 @@ public sealed class PopularPlaylistService
     /// when outside songs may be shown and the explicit filter lets it through. The filter is
     /// the one stations follow: a list Octo picks follows it, a search does not.
     /// </summary>
+    /// <param name="ownedListed">False leaves out a row the library has, rather than list its copy.</param>
     internal static (List<JsonObject> Entries, List<Song> Outside) Assemble(IReadOnlyList<TopSongsService.TopSong> rows,
-        IReadOnlyList<JsonElement?> library, bool outsideShown, ExplicitFilter filter, Func<Song, JsonObject> asJson)
+        IReadOnlyList<JsonElement?> library, bool outsideShown, ExplicitFilter filter, Func<Song, JsonObject> asJson,
+        bool ownedListed = true)
     {
         var entries = new List<JsonObject>();
         var outside = new List<Song>();
@@ -312,7 +334,7 @@ public sealed class PopularPlaylistService
         {
             if (i < library.Count && library[i] is { } owned)
             {
-                entries.Add(JsonNode.Parse(owned.GetRawText())!.AsObject());
+                if (ownedListed) entries.Add(JsonNode.Parse(owned.GetRawText())!.AsObject());
             }
             else if (outsideShown && Passes(rows[i].Song, filter))
             {
@@ -362,7 +384,7 @@ public sealed class PopularPlaylistService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug("Popular right now: library search '{Q}' failed: {M}", query, ex.Message);
+            _logger.LogDebug("{List}: library search '{Q}' failed: {M}", ListName, query, ex.Message);
             return null;
         }
     }
@@ -374,6 +396,9 @@ public sealed class PopularPlaylistService
     /// <summary>The list's id for this listener: Octo's generated playlist shape ("og"), so
     /// every guard that keeps Octo's playlists read-only covers it.</summary>
     public static string PlaylistId(string username) => GeneratedPlaylistService.PlaylistId(username, Key);
+
+    /// <summary>This list's id for the listener.</summary>
+    public string IdFor(string username) => GeneratedPlaylistService.PlaylistId(username, ListKey);
 
     private static string UserKey(string username) => username.Trim().ToLowerInvariant();
 }

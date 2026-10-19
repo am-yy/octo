@@ -612,6 +612,18 @@ default, whether or not the mixes are; `POPULAR_NOW=false` or the dashboard's Mi
 it off. Apps that copy the library to the device (Symfonium) get its outside songs in their
 sync catalog, so the playlist finds them there.
 
+### Keep these?
+
+Every listener also gets **Keep these?**, a read-only playlist of the outside songs they keep
+coming back to but never added: played three times or more, on two days or more, the last time
+in the last 90 days. A heart keeps a song, as it does anywhere, and it leaves the list once it is
+in the library. One star dismisses it, and it does not come back. Songs the library already has,
+or the listener hearted, are left out. Most played comes first, 50 at most. It is made with the
+listener's own sign-in when their app lists playlists and holds still for 6 hours, like Popular
+right now. It reads the plays radio learns from, so it stays empty while radio
+(`LASTFM_ENABLE_RADIO`) or its personal stations are off. It is on by default; `KEEP_THESE=false` or
+the dashboard's Mixes page turns it off.
+
 ### Download path on Windows and manual installs
 
 `DOWNLOAD_PATH` in `.env` is a HOST path: it is bind-mounted as `/music` into the octo and slskd containers, and it is the only path you change to move the library. Container-side settings (Octo's `Library__DownloadPath`, slskd's downloads dir) stay `/music`.

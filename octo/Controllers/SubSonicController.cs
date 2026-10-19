@@ -385,8 +385,10 @@ public partial class SubsonicController : ControllerBase
         var generated = _generatedPlaylists is not null && mixSettings is not null && (mixSettings.Enabled || mixSettings.AnyForYou)
             ? await _generatedPlaylists.ListAsync(username, parameters)
             : [];
-        var popular = Popular() is { } popularLists ? await popularLists.ListAsync(username, parameters) : null;
-        if (stations.Count == 0 && generated.Count == 0 && popular is null && _externalSaves is null)
+        var charts = new List<Octo.Services.Library.GeneratedPlaylist>();
+        foreach (var list in ChartLists())
+            if (await list.ListAsync(username, parameters) is { } made) charts.Add(made);
+        if (stations.Count == 0 && generated.Count == 0 && charts.Count == 0 && _externalSaves is null)
             return File(relay.Body, relay.ContentType ?? $"application/{format}");
         try
         {
@@ -401,8 +403,8 @@ public partial class SubsonicController : ControllerBase
                 ApplySavedPlaylistRows(rows, username, false);
                 foreach (var station in stations)
                     rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.RadioPlaylistFields(station)));
-                if (popular is not null)
-                    rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.PopularPlaylistFields(popular)));
+                foreach (var chart in charts)
+                    rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.PopularPlaylistFields(chart)));
                 foreach (var mix in generated)
                     rows.Add(JsonSerializer.SerializeToNode(_responseBuilder.GeneratedPlaylistFields(mix, mixSettings!)));
                 return File(Encoding.UTF8.GetBytes(root.ToJsonString()), "application/json");
@@ -417,9 +419,9 @@ public partial class SubsonicController : ControllerBase
                 playlistsElement.Add(new XElement(ns + "playlist",
                     _responseBuilder.RadioPlaylistFields(station).Select(pair =>
                         new XAttribute(pair.Key, XmlValue(pair.Value)))));
-            if (popular is not null)
+            foreach (var chart in charts)
                 playlistsElement.Add(new XElement(ns + "playlist",
-                    _responseBuilder.PopularPlaylistFields(popular).Select(pair =>
+                    _responseBuilder.PopularPlaylistFields(chart).Select(pair =>
                         new XAttribute(pair.Key, XmlValue(pair.Value)))));
             foreach (var mix in generated)
                 playlistsElement.Add(new XElement(ns + "playlist",
@@ -444,7 +446,7 @@ public partial class SubsonicController : ControllerBase
         var id = parameters.GetValueOrDefault("id", "");
         var username = parameters.GetValueOrDefault("u", "");
 
-        if (Popular() is { } popular && popular.IsTheList(username, id))
+        if (ChartLists().FirstOrDefault(list => list.IsTheList(username, id)) is { } popular)
             return await PopularPlaylistAsync(popular, parameters, format, username);
 
         // A mix is the listener's own library, served as a playlist Navidrome has never heard of.
@@ -1336,7 +1338,7 @@ public partial class SubsonicController : ControllerBase
         var stations = VisibleStations(username);
         // "Popular right now" rides along as one more station, so its outside songs are on the
         // device under the ids its playlist lists.
-        if (Popular() is { } popular)
+        foreach (var popular in ChartLists())
         {
             popular.Warm(username, parameters);
             if (popular.AsSyncStation(username) is { } chart) stations = [.. stations, chart];
@@ -2234,12 +2236,12 @@ public partial class SubsonicController : ControllerBase
         // A mix is the listener's own library, so its cover carries no Octo mark: the logo says
         // where a result came from, and this came from them.
         var coverUser = parameters.GetValueOrDefault("u", "");
-        if (Popular() is { } popularCover && popularCover.IsTheList(coverUser, id))
+        if (ChartLists().FirstOrDefault(list => list.IsTheList(coverUser, id)) is { } popularCover)
         {
             if (_coverArtService is null) return ServePlaceholder(branded: false);
             var chart = popularCover.Playlist(coverUser);
             var bytes = await _coverArtService.GetListCoverAsync(
-                new ListCover(chart.Name, null, ListKinds.Chart,
+                new ListCover(chart.Name, null, popularCover is Octo.Services.Library.KeepThesePlaylistService ? ListKinds.Mix : ListKinds.Chart,
                     _ => Task.FromResult(PopularCoverSeeds(popularCover, coverUser, parameters)),
                     chart.PoolSize > 0 ? chart.PoolSize : null),
                 RequestedCoverSize(parameters), HttpContext.RequestAborted);

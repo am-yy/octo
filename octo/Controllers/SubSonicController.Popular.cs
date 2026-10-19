@@ -15,6 +15,13 @@ public partial class SubsonicController
     private PopularPlaylistService? Popular() =>
         HttpContext?.RequestServices?.GetService<PopularPlaylistService>() is { On: true } popular ? popular : null;
 
+    /// <summary>Every list made the way "Popular right now" is, while it is on: the chart, then
+    /// "Keep these?".</summary>
+    private IReadOnlyList<PopularPlaylistService> ChartLists() =>
+        new PopularPlaylistService?[] { Popular(),
+            HttpContext?.RequestServices?.GetService<KeepThesePlaylistService>() is { On: true } keep ? keep : null }
+            .OfType<PopularPlaylistService>().ToList();
+
     /// <summary>
     /// "Popular right now" opened by any app: the ping is the sign-in check, as for a mix, so
     /// nothing is made for a caller Navidrome refuses. Outside songs a syncing app already holds
@@ -45,7 +52,7 @@ public partial class SubsonicController
     }
 
     /// <summary>
-    /// The songs whose covers colour "Popular right now"'s cover: its first songs, one per album,
+    /// The songs whose covers colour "Popular right now"'s (or "Keep these?"'s) cover: its first songs, one per album,
     /// four at most. A library song's cover is read from Navidrome as the listener, an outside
     /// song's is looked up as a station song's is. Only what is already made: drawing the cover
     /// never makes the list.

@@ -119,4 +119,12 @@ public class GeneratedPlaylistSettings
     /// Environment variable: POPULAR_NOW
     /// </summary>
     public bool PopularNow { get; set; } = true;
+
+    /// <summary>
+    /// "Keep these?": outside songs a listener played three times or more, on two days or more,
+    /// and never added, as a read-only playlist. A heart keeps one, one star dismisses it. Needs
+    /// radio's listening history, so it stays empty while radio does not learn.
+    /// Environment variable: KEEP_THESE
+    /// </summary>
+    public bool KeepThese { get; set; } = true;
 }

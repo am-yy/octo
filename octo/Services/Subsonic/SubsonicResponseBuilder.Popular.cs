@@ -12,13 +12,16 @@ public partial class SubsonicResponseBuilder
     /// <summary>What "Popular right now" says it is, in apps that show a playlist's comment.</summary>
     public const string PopularComment = "The most played songs right now, made by Octo. Songs you have play from your library.";
 
+    /// <summary>What "Keep these?" says it is.</summary>
+    public const string KeepTheseComment = "Songs you keep playing but have not added, made by Octo. Heart one to keep it, give it one star to stop seeing it.";
+
     /// <summary>"Popular right now" as a playlist row: the keys a mix has, read-only, with its own
     /// comment and its real song count.</summary>
     public Dictionary<string, object> PopularPlaylistFields(GeneratedPlaylist list)
     {
         var fields = GeneratedPlaylistFields(list, new GeneratedPlaylistSettings { TrackCount = 500 });
         fields["songCount"] = list.PoolSize;
-        fields["comment"] = PopularComment;
+        fields["comment"] = list.Kind == KeepThesePlaylistService.Kind ? KeepTheseComment : PopularComment;
         return fields;
     }
 

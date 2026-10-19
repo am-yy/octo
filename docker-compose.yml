@@ -131,6 +131,8 @@ services:
       # ----- Popular right now: the chart of the moment as a playlist in every app -----
       # Per listener, read-only, made again every 6 hours; on whether or not the mixes are.
       GeneratedPlaylists__PopularNow: ${POPULAR_NOW:-true}
+      # Outside songs a listener keeps playing but never added; needs radio learning on.
+      GeneratedPlaylists__KeepThese: ${KEEP_THESE:-true}
 
       # ----- Mixes: genre and decade playlists drawn from your own library -----
       # Served by Octo per listener, like the radio stations; nothing is written to Navidrome.

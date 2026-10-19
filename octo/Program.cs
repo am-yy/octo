@@ -323,6 +323,7 @@ builder.Services.AddSingleton<Octo.Services.Common.ExternalSearchService>();
 builder.Services.AddSingleton<Octo.Services.Common.TopSongsService>();
 // That chart as "Popular right now", a read-only playlist per listener for every app. In memory.
 builder.Services.AddSingleton<Octo.Services.Library.PopularPlaylistService>();
+builder.Services.AddSingleton<Octo.Services.Library.KeepThesePlaylistService>();
 
 // What page one of each search showed, so a later page carries on from it rather than
 // building its discovery rows again and repeating or skipping some.

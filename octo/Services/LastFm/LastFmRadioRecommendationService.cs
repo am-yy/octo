@@ -121,14 +121,11 @@ public sealed class LastFmRadioRecommendationService
     /// <param name="sources">Every radio source; null keeps stations on Last.fm alone.</param>
     /// <param name="library">Where the library's artists are read, so owning an artist counts as
     /// knowing it; null knows only the listener's plays.</param>
-    /// <param name="outcomes">What radio learned from listening: artists the listener skips are
-    /// played less, as a one-star artist is, and tracks skipped twice lately wait. Null learns nothing.</param>
     public LastFmRadioRecommendationService(LastFmService lastFm, LastFmRadioStateStore state,
         IOptionsMonitor<LastFmSettings> settings,
         ILogger<LastFmRadioRecommendationService> logger, RadioSourceSet? sources = null,
-        Octo.Services.Local.ILocalLibraryService? library = null, RadioOutcomeStore? outcomes = null)
+        Octo.Services.Local.ILocalLibraryService? library = null)
     {
-        _outcomes = outcomes;
         _lastFm = lastFm;
         _state = state;
         _settings = settings;
@@ -138,7 +135,6 @@ public sealed class LastFmRadioRecommendationService
     }
 
     private readonly RadioSourceSet? _sources;
-    private readonly RadioOutcomeStore? _outcomes;
     private readonly Octo.Services.Local.ILocalLibraryService? _library;
     private static readonly IReadOnlyDictionary<string, string> EmptyAuth = new Dictionary<string, string>();
     /// <summary>Seeds asked at once when several sources answer: the sources' own gates still pace them.</summary>
@@ -163,8 +159,6 @@ public sealed class LastFmRadioRecommendationService
             .Select(track => track.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var banned = user.RadioBans.Select(ban => ban.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var disliked = user.RadioBans.Select(ban => ArtistKey(ban.Artist)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (_outcomes is not null) disliked.UnionWith(_outcomes.SkippedArtists(username));
-        var skippedTracks = _outcomes?.HeldTracks(username);
         var refillHeadroom = Math.Min(unavailable.Count, settings.EffectiveRadioTrackCount);
         var candidateTarget = Math.Min(100,
             settings.EffectiveRadioTrackCount + refillHeadroom + 10);
@@ -213,7 +207,7 @@ public sealed class LastFmRadioRecommendationService
                     true, trackSeeds.Select(seed => seed.Artist),
                     Shape(familiar.Concat(mixCandidates), plays, settings, unavailable, random, Previous(mixKey),
                         ArtistCap(settings, LastFmRadioStationKind.YourMix), familiarQuota: familiarQuota,
-                        banned: banned, disliked: disliked, waiting: skippedTracks)));
+                        banned: banned, disliked: disliked)));
             }
 
             if (learned)
@@ -237,7 +231,7 @@ public sealed class LastFmRadioRecommendationService
                             LastFmRadioStationKind.Discovery, true, discoverySeeds,
                             Shape(discovery, plays, settings, unavailable, random, Previous("discovery"),
                                 discoveryCap, excludeRecent: true,
-                                banned: banned, disliked: disliked, waiting: skippedTracks)));
+                                banned: banned, disliked: disliked)));
                 }
 
                 foreach (var artist in artistScores.Take(settings.EffectiveArtistStationCount).Select(pair => pair.Key))
@@ -249,7 +243,7 @@ public sealed class LastFmRadioRecommendationService
                             LastFmRadioStationKind.Artist, true, [artist],
                             Shape(candidates, plays, settings, unavailable, random, Previous(stationKey),
                                 ArtistCap(settings, LastFmRadioStationKind.Artist),
-                                banned: banned, disliked: disliked, waiting: skippedTracks)));
+                                banned: banned, disliked: disliked)));
                 }
 
                 foreach (var tag in tags.OrderByDescending(pair => pair.Value).Select(pair => pair.Key)
@@ -262,7 +256,7 @@ public sealed class LastFmRadioRecommendationService
                             LastFmRadioStationKind.Genre, true, [tag],
                             Shape(candidates, plays, settings, unavailable, random, Previous(stationKey),
                                 ArtistCap(settings, LastFmRadioStationKind.Genre),
-                                banned: banned, disliked: disliked, waiting: skippedTracks)));
+                                banned: banned, disliked: disliked)));
                 }
             }
         }
@@ -282,7 +276,7 @@ public sealed class LastFmRadioRecommendationService
                         LastFmRadioStationKind.Pinned, false, definition.Tags,
                         Shape(candidates, plays, settings, unavailable, random, Previous(stationKey),
                             ArtistCap(settings, LastFmRadioStationKind.Pinned),
-                            banned: banned, disliked: disliked, waiting: skippedTracks),
+                            banned: banned, disliked: disliked),
                         DefinitionVersion(definition)));
             }
         }
@@ -507,8 +501,7 @@ public sealed class LastFmRadioRecommendationService
         IReadOnlyCollection<LastFmRadioPlay> plays, LastFmSettings settings,
         IReadOnlySet<string> unavailable, Random random, IReadOnlySet<string> previous,
         int artistCap, bool excludeRecent = false, int? familiarQuota = null,
-        IReadOnlySet<string>? banned = null, IReadOnlySet<string>? disliked = null,
-        IReadOnlySet<string>? waiting = null)
+        IReadOnlySet<string>? banned = null, IReadOnlySet<string>? disliked = null)
     {
         var target = settings.EffectiveRadioTrackCount;
         var recent = plays.Take(30).Select(play => LastFmRadioSeedNormalizer.TrackKey(play.Artist, play.Title))
@@ -575,8 +568,6 @@ public sealed class LastFmRadioRecommendationService
             {
                 // A familiar song is there because it was heard; only new ones wait.
                 if (!isFamiliar && heard.Contains(key)) return Verdict.Wait;
-                // Skipped twice on radio lately: played only when nothing else fits, familiar or not.
-                if (waiting is not null && waiting.Contains(key)) return Verdict.Wait;
                 if (outputArtists.TakeLast(artistGap).Contains(artist, StringComparer.OrdinalIgnoreCase)) return Verdict.Wait;
                 if (outputTitles.TakeLast(TitleGap).Contains(title)) return Verdict.Wait;
             }
@@ -606,7 +597,7 @@ public sealed class LastFmRadioRecommendationService
 
     /// <summary>One spelling per artist for caps and spacing: the credit without its
     /// featured guests, as seeding spells it.</summary>
-    internal static string ArtistKey(string artist) =>
+    private static string ArtistKey(string artist) =>
         (LastFmRadioSeedNormalizer.Artist(artist) ?? artist).Trim().ToLowerInvariant();
 
     /// <summary>

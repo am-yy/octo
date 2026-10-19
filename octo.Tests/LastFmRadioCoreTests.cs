@@ -883,43 +883,6 @@ public class LastFmRadioRecommendationTests
     }
 
     [Fact]
-    public async Task ATrackSkippedTwiceOnRadio_WaitsBehindEveryOtherSong()
-    {
-        var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "octo-radio-held-" + Guid.NewGuid());
-        Directory.CreateDirectory(directory);
-        try
-        {
-            var settings = TestOptions.Monitor(new LastFmSettings { ApiKey = "key", MinimumPlays = 3, RadioTrackCount = 10 });
-            var state = new LastFmRadioStateStore(System.IO.Path.Combine(directory, "state.json"), settings,
-                new ExternalIdRegistry(), new Mock<ILogger<LastFmRadioStateStore>>().Object);
-            for (var index = 0; index < 3; index++) state.RecordPlay("alice", new LastFmRadioPlay
-            {
-                Artist = "Fresh", Title = "Fresh Seed " + index, Genre = "Electronica",
-                PlayedAtUtc = DateTime.UtcNow.AddDays(-20).AddHours(-index)
-            });
-            var outcomes = new RadioOutcomeStore(System.IO.Path.Combine(directory, "outcomes.json"),
-                TestOptions.Monitor(new RadioSourceSettings { LearnFromListening = true }),
-                new Mock<ILogger<RadioOutcomeStore>>().Object);
-            var now = DateTime.UtcNow.AddHours(-2);
-            foreach (var serving in new[] { "first", "second" })
-            {
-                outcomes.Served("alice", [(serving, RadioProvider.LastFm)], now,
-                    nameOf: _ => ("Similar Artist 0", "similar-0"));
-                outcomes.Observe("alice", [serving], ["false"], now);
-                outcomes.Observe("alice", [serving], ["true"], now.AddSeconds(5));
-                now = now.AddMinutes(10);
-            }
-            Assert.Contains(LastFmRadioSeedNormalizer.TrackKey("Similar Artist 0", "similar-0"), outcomes.HeldTracks("alice"));
-
-            var stations = await RecommendationService(settings, state, new RecommendationHandler(), outcomes).BuildAsync("alice");
-            var tracks = stations.SelectMany(station => station.Tracks).ToList();
-            Assert.NotEmpty(tracks);
-            Assert.DoesNotContain(tracks, track => track.Title == "similar-0" && track.Artist == "Similar Artist 0");
-        }
-        finally { try { Directory.Delete(directory, true); } catch { } }
-    }
-
-    [Fact]
     public void OneStar_PullsTheSongFromTheStationsItIsOnNow()
     {
         var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "octo-radio-ban-now-" + Guid.NewGuid());
@@ -1347,13 +1310,13 @@ public class LastFmRadioRecommendationTests
 
     private static LastFmRadioRecommendationService RecommendationService(
         TestOptionsMonitor<LastFmSettings> settings, LastFmRadioStateStore state,
-        HttpMessageHandler handler, RadioOutcomeStore? outcomes = null)
+        HttpMessageHandler handler)
     {
         var lastFm = new LastFmService(new HttpClient(handler), settings,
             Options.Create(new MetadataSettings { Language = "en" }),
             new Mock<ILogger<LastFmService>>().Object);
         return new LastFmRadioRecommendationService(lastFm, state, settings,
-            new Mock<ILogger<LastFmRadioRecommendationService>>().Object, outcomes: outcomes);
+            new Mock<ILogger<LastFmRadioRecommendationService>>().Object);
     }
 
     private sealed class RecommendationHandler : HttpMessageHandler

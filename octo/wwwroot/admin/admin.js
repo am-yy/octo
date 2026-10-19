@@ -1989,31 +1989,6 @@ async function loadRadioOutcomes() {
   } catch (error) {
     summary.textContent = `Could not read what radio has learned: ${error.message}`;
   }
-  await loadSkippedArtists();
-}
-
-// The artists radio plays less because listeners skip them.
-async function loadSkippedArtists() {
-  const table = document.getElementById('radio-skipped');
-  const summary = document.getElementById('radio-skipped-summary');
-  if (!table || !summary) return;
-  try {
-    const response = await api('/api/admin/radio-outcomes/skipped-artists');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const rows = await response.json();
-    table.querySelector('tbody').replaceChildren(...rows.map(r => {
-      const tr = document.createElement('tr');
-      for (const text of [r.artist, String(r.listeners), String(r.skips)]) {
-        const td = document.createElement('td');
-        td.textContent = text;
-        tr.append(td);
-      }
-      return tr;
-    }));
-    table.hidden = summary.hidden = rows.length === 0;
-  } catch {
-    table.hidden = summary.hidden = true;
-  }
 }
 
 document.getElementById('radio-outcomes-reset')?.addEventListener('click', async (event) => {

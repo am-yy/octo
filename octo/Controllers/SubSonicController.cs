@@ -512,9 +512,8 @@ public partial class SubsonicController : ControllerBase
                 LastFmRadioStreamService.FlowWindow).ToList();
         // A station refetched by a syncing client is not the listener choosing it, so it never
         // renews the window in which a start counts for radio.
-        var named = songs.GroupBy(song => song.Id).ToDictionary(group => group.Key, group => group.First());
         _radioOutcomes?.Served(username, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))),
-            refresh: false, nameOf: id => named.TryGetValue(id, out var song) ? (song.Artist, song.Title) : null);
+            refresh: false);
         _radioQueueStore.Register(songs.Select(song => song.Id));
         _ = PrewarmPlaybackAsync(songs, 8);
         QueueRefreshIfStale(username);
@@ -3107,10 +3106,6 @@ public partial class SubsonicController : ControllerBase
         var bans = listener is not null && _radioStateStore is not null
             ? _radioStateStore.RadioBanKeys(listener)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // Song radio is short and asked for again at will, so a track skipped twice lately is left
-        // out rather than held back.
-        if (listener is not null && _radioOutcomes?.HeldTracks(listener) is { Count: > 0 } held)
-            bans = bans.Union(held, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var resolvedSongs = await _songRadio.BuildAsync(
             new Octo.Services.Radio.RadioSeed(artistName, trackTitle, librarySeed?.Duration, librarySeed, seedVideo),
             count, listener, parameters, bans, HttpContext.RequestAborted);

@@ -338,8 +338,8 @@ public class SoulseekDownloadService : BaseDownloadService
                 // committing to a single candidate would often mean committing to the
                 // slowest peer that happened to answer first. A handful is enough to
                 // choose well without waiting for stragglers.
-                enough: h => RankCandidates(h.ToList(), routing.Title!, routing.Duration, titleOnly).Count >= 3);
-            ranked = RankCandidates(hits, routing.Title!, routing.Duration, titleOnly);
+                enough: h => RankCandidates(h.ToList(), routing.Title!, routing.Duration, titleOnly, routing.Album).Count >= 3);
+            ranked = RankCandidates(hits, routing.Title!, routing.Duration, titleOnly, routing.Album);
             if (ranked.Count > 0) break;
         }
 
@@ -534,7 +534,8 @@ public class SoulseekDownloadService : BaseDownloadService
                 // Second on purpose. The check above reads a TagLib header; this one spawns a
                 // process and makes a network call, and neither is worth spending on a file
                 // already known to be wrong.
-                var verdict = await _verification.VerifyAsync(localPath, routing.Artist, routing.Title, song.Isrc ?? routing.Isrc);
+                var verdict = await _verification.VerifyAsync(localPath, routing.Artist, routing.Title, song.Isrc ?? routing.Isrc,
+                    refuseLive: !LiveVersion.Requested(routing.Title, routing.Album));
                 if (verdict.Verdict == Octo.Services.Fingerprint.VerificationVerdict.Mismatch)
                 {
                     Logger.LogWarning(
@@ -694,6 +695,19 @@ public class SoulseekDownloadService : BaseDownloadService
     internal static bool AddsVersion(string filename, string title) =>
         SongIdentity.AddedVersions(title, LeafTitle(filename)).Count > 0;
 
+    /// <summary>
+    /// Whether a plainly named file sits in a live album's folder: "Decade (live at the El
+    /// Mocambo) (2010)/17 - Smile in Your Sleep.flac" is the live take, though its own name says
+    /// nothing. The album folder and the one above it are read (a disc folder sits between);
+    /// not the share's top level. Never when the request itself asks for a live song or album.
+    /// </summary>
+    internal static bool FromLiveFolder(string filename, string title, string? album)
+    {
+        if (LiveVersion.Requested(title, album)) return false;
+        var parts = filename.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 1 && parts[..^1].TakeLast(2).Any(LiveVersion.Mentions);
+    }
+
     private static string LeafTitle(string filename)
     {
         var leaf = LeafOf(filename);
@@ -702,7 +716,7 @@ public class SoulseekDownloadService : BaseDownloadService
     }
 
     private List<SoulseekFileHit> RankCandidates(List<SoulseekFileHit> hits, string title, int? expectedDuration,
-        bool titleOnlySearch = false)
+        bool titleOnlySearch = false, string? album = null)
     {
         var wanted = SoulseekClient.NormalizeExtension(_settings.PreferredExtension, "");
         return hits
@@ -716,6 +730,7 @@ public class SoulseekDownloadService : BaseDownloadService
             .Where(h => FilenamePlausiblyMatchesTitle(h.Filename, title, requirePhrase: titleOnlySearch))
             .Where(h => DurationPlausible(h.Length, expectedDuration, requireKnownLength: titleOnlySearch))
             .Where(h => !AddsVersion(h.Filename, title))
+            .Where(h => !FromLiveFolder(h.Filename, title, album))
             // An unnamed bracketed addition sorts last rather than being dropped: it may be a
             // different take ("Angel (Angel Dust)"), or only a peer's own label.
             .OrderBy(h => VariantPenalty(h.Filename, title))

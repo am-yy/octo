@@ -276,7 +276,7 @@ public partial class DeezerMetadataService
 
     private const string WebTrackQuery = """
         query OctoTrackSearch($query:String!){instantSearch(query:$query){results{tracks(first:100){
-          edges{node{id title ISRC duration contributors{edges{roles node{... on Artist{id name}}}}}}
+          edges{node{id title ISRC duration contributorNames(roles:[MAIN])}}
           pageInfo{hasNextPage endCursor}}}}}
         """;
 
@@ -303,12 +303,17 @@ public partial class DeezerMetadataService
         return (new DeezerResponse { Transient = true }, null);
     }
 
-    /// <summary>Songs one batched pipe request looks up; see <see cref="FindTracksBatchAsync"/>.</summary>
-    internal const int BatchSearchSize = 10;
+    /// <summary>Songs one batched pipe request looks up; see <see cref="FindTracksBatchAsync"/>.
+    /// About 170 of pipe's query cost each (3340 for 20, measured live), far under its cap of
+    /// 25000, which Deezer has lowered before.</summary>
+    internal const int BatchSearchSize = 20;
+
+    /// <summary>Batched pipe requests in flight at once, across every radio being built.</summary>
+    private static readonly SemaphoreSlim BatchGate = new(4, 4);
 
     private const string BatchTrackFields = """
         results{tracks(first:5){edges{node{id title duration album{displayTitle}
-          contributors{edges{roles node{... on Artist{name}}}}}} pageInfo{hasNextPage}}}
+          contributorNames(roles:[MAIN])}} pageInfo{hasNextPage}}}
         """;
 
     /// <summary>
@@ -317,35 +322,62 @@ public partial class DeezerMetadataService
     /// single search matches. Seventy songs one search ladder at a time took half a minute.
     /// Each song gets its track, or null when this quick look found none: that is not a miss,
     /// so nothing is cached as absent and the caller can run <see cref="EnrichTrackAsync"/> for it.
+    /// A batch over pipe's cost cap is asked again in halves; a malformed query is logged, not retried.
     /// </summary>
     public async Task<IReadOnlyList<TrackMeta?>> FindTracksBatchAsync(
         IReadOnlyList<(string Artist, string Title, int? Duration)> songs, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         var results = new TrackMeta?[songs.Count];
-        await Task.WhenAll(Enumerable.Range(0, songs.Count).Chunk(BatchSearchSize).Select(async chunk =>
+        await Task.WhenAll(Enumerable.Range(0, songs.Count).Chunk(BatchSearchSize).Select(LookUpAsync));
+        return results;
+
+        async Task LookUpAsync(int[] chunk)
+        {
+            string? retry;
+            await BatchGate.WaitAsync(ct);
+            try { retry = await AskAsync(chunk); }
+            finally { BatchGate.Release(); }
+            if (retry != "QueryComplexityExceededError") return;
+            if (chunk.Length == 1) return;
+            _logger.LogWarning("deezer batch of {Count} is over pipe's cost cap; asking in halves", chunk.Length);
+            var half = chunk.Length / 2;
+            await Task.WhenAll(LookUpAsync(chunk[..half]), LookUpAsync(chunk[half..]));
+        }
+
+        // One request for the chunk; returns the error type that refused the whole query, if any.
+        async Task<string?> AskAsync(int[] chunk)
         {
             using var budget = new TrackSearchBudget(_stopping.Token, background: false);
             try
             {
                 var token = await SearchTokenAsync(budget);
-                if (token is null) return;
+                if (token is null) return null;
                 var query = "query OctoTrackBatch(" + string.Join(",", chunk.Select(i => $"$q{i}:String!")) + "){"
                     + string.Join(" ", chunk.Select(i => $"q{i}:instantSearch(query:$q{i}){{{BatchTrackFields}}}")) + "}";
                 var body = JsonSerializer.Serialize(new
                 {
+                    operationName = "OctoTrackBatch",
                     query,
                     variables = chunk.ToDictionary(i => "q" + i, i => PlainQuery(songs[i].Artist, songs[i].Title)),
                 });
                 for (var attempt = 0; attempt < 2; attempt++)
                 {
                     using var response = await DiscoveryRequestAsync("https://pipe.deezer.com/api", budget, body, token);
-                    if (response.Transient || response.Doc is null) return;
+                    if (response.Transient || response.Doc is null) return null;
                     var root = response.Doc.RootElement;
                     if (attempt == 0 && TokenExpired(root) && (token = await SearchTokenAsync(budget, token)) is not null)
                         continue;
                     if (root.TryGetProperty("extensions", out var extensions))
                         _logger.LogDebug("deezer batch of {Count} cost {Cost}", chunk.Length, Int(extensions, "queryCost"));
+                    if (QueryRefusal(root) is { } refusal)
+                    {
+                        // Pipe answers a query it cannot parse with a bare "Error": a bug in this
+                        // query or a schema change, which asking again will not fix.
+                        if (refusal != "QueryComplexityExceededError")
+                            _logger.LogWarning("deezer pipe refused the batch query: {Type}", refusal);
+                        return refusal;
+                    }
                     foreach (var i in chunk)
                     {
                         if (WebCandidates(root, "q" + i) is not { } found) continue;
@@ -358,7 +390,7 @@ public partial class DeezerMetadataService
                             match.TryGetProperty("artist", out var credit) ? Str(credit, "name") : null, null,
                             match.GetProperty("id").GetString());
                     }
-                    return;
+                    return null;
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -367,8 +399,20 @@ public partial class DeezerMetadataService
                 _logger.LogDebug("deezer batch of {Count} stopped after {Requests} request(s): {Type}",
                     chunk.Length, budget.Requests, ex.GetType().Name);
             }
-        }));
-        return results;
+            return null;
+        }
+    }
+
+    /// <summary>The error type that refused a whole pipe query (no data, an error without a path),
+    /// or null when the query ran.</summary>
+    private static string? QueryRefusal(JsonElement root)
+    {
+        if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object) return null;
+        if (!root.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array) return null;
+        return errors.EnumerateArray().Where(error => !error.TryGetProperty("path", out _))
+            .Select(error => Str(error, "type") ?? (error.TryGetProperty("extensions", out var extension)
+                ? Str(extension, "type") : null) ?? "error")
+            .FirstOrDefault();
     }
 
     private static bool TokenExpired(JsonElement root) =>
@@ -421,13 +465,11 @@ public partial class DeezerMetadataService
             if (unavailableNodes.Contains(index)) continue;
             var node = edges[index].GetProperty("node");
             if (node.ValueKind != JsonValueKind.Object) throw new JsonException("Missing search track.");
-            var names = new List<string>();
-            if (node.TryGetProperty("contributors", out var contributors) && contributors.ValueKind == JsonValueKind.Object
-                && contributors.TryGetProperty("edges", out var people) && people.ValueKind == JsonValueKind.Array)
-                foreach (var person in people.EnumerateArray())
-                    if (person.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Array
-                        && roles.EnumerateArray().Any(role => role.ValueKind == JsonValueKind.String && role.GetString() == "MAIN")
-                        && person.TryGetProperty("node", out var credit) && Str(credit, "name") is { Length: > 0 } name) names.Add(name);
+            // Every main artist, however many: contributorNames is not paged, where contributors is.
+            var names = node.TryGetProperty("contributorNames", out var credited) && credited.ValueKind == JsonValueKind.Array
+                ? credited.EnumerateArray().Select(name => name.ValueKind == JsonValueKind.String ? name.GetString() : null)
+                    .OfType<string>().Where(name => name.Length > 0).ToList()
+                : [];
             candidates.Add(new
             {
                 id = node.GetProperty("id").ToString(), title = Str(node, "title"), isrc = Str(node, "ISRC"),

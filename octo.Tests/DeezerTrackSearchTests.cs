@@ -363,7 +363,7 @@ public sealed class DeezerTrackSearchTests
             "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
             "pipe.deezer.com" when request.Body!.Contains("OctoTrackBatch") => Json(JsonSerializer.Serialize(new
             {
-                data = Enumerable.Range(0, 12).ToDictionary(i => "q" + i, i => BatchField(i == 11
+                data = Enumerable.Range(0, 22).ToDictionary(i => "q" + i, i => BatchField(i == 21
                     ? [] : [WebTrack((1000 + i).ToString(), $"Song {i}", Artist)])),
             })),
             "pipe.deezer.com" => Json(EmptyWeb),
@@ -373,22 +373,71 @@ public sealed class DeezerTrackSearchTests
             new Octo.Services.CoverArt.CoverArtAggregator([], NullLogger<Octo.Services.CoverArt.CoverArtAggregator>.Instance),
             NullLogger<Octo.Services.Soulseek.SoulseekMetadataService>.Instance);
         var songs = new List<Octo.Models.Domain.Song>();
-        for (var i = 0; i < 12; i++)
+        for (var i = 0; i < 22; i++)
             songs.Add((await metadata.SearchSongsByArtistTitleAsync(Artist, $"Song {i}", 1, 230))[0]);
 
         var kept = await metadata.PlayableAsync(songs);
 
         // The one the batch missed takes the full search, which finds Deezer lacks it.
-        Assert.Equal(songs.Take(11).Select(song => song.Id), kept.Select(song => song.Id));
+        Assert.Equal(songs.Take(21).Select(song => song.Id), kept.Select(song => song.Id));
         Assert.Equal("1003", registry.Lookup(songs[3].Id)?.DeezerId);
-        // Two batch requests for twelve songs; only the miss is searched song by song.
+        // Two batch requests for twenty-two songs; only the miss is searched song by song.
         Assert.Equal(2, rig.Calls.Count(call => call.Host == "pipe.deezer.com" && call.Body!.Contains("OctoTrackBatch")));
         // The first few hits are also checked against the full search in the background, for the log;
         // the rest of the batch's hits are never searched song by song.
         var rest = rig.Calls.Where(call => call.Path == "/search")
             .Select(call => Uri.UnescapeDataString(Query(call.Uri, "q")!)).ToList();
-        Assert.Contains(rest, q => q.Contains("Song 11"));
-        Assert.DoesNotContain(rest, q => Enumerable.Range(3, 8).Any(i => q.Contains($"Song {i}")));
+        Assert.Contains(rest, q => q.Contains("Song 21"));
+        Assert.DoesNotContain(rest, q => Enumerable.Range(3, 18).Any(i => q.Contains($"Song {i}")));
+    }
+
+    [Fact]
+    public async Task BatchMatchesASongWithMoreThanFiveMainArtists()
+    {
+        string[] credit = ["Kanye West", "Gucci Mane", "Big Sean", "2 Chainz", "Travis Scott", "Yo Gotti", "Quavo", "Desiigner"];
+        var champions = new
+        {
+            id = "125664692", title = "Champions", duration = 334,
+            contributorNames = credit, album = new { displayTitle = "Champions" },
+        };
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(JsonSerializer.Serialize(new { data = new { q0 = BatchField([champions]) } })),
+            _ => Json(EmptyRest),
+        }));
+
+        var found = await rig.Service.FindTracksBatchAsync([(string.Join(", ", credit), "Champions", 334)]);
+
+        Assert.Equal("125664692", Assert.Single(found)?.DeezerId);
+    }
+
+    [Fact]
+    public async Task BatchOverTheCostCapIsAskedAgainInHalves()
+    {
+        var asked = new ConcurrentQueue<int>();
+        using var rig = new Rig((request, _) =>
+        {
+            if (request.Host == "auth.deezer.com")
+                return Task.FromResult(Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }));
+            if (request.Host != "pipe.deezer.com") return Task.FromResult(Json(EmptyRest));
+            using var body = JsonDocument.Parse(request.Body!);
+            var names = body.RootElement.GetProperty("variables").EnumerateObject().Select(v => v.Name).ToList();
+            asked.Enqueue(names.Count);
+            // Pipe refuses a whole query over its cap, with no data and no path.
+            if (names.Count > 2) return Task.FromResult(Json(new { errors = new[] { new
+                { message = "The query exceeds the maximum complexity of 25000.", type = "QueryComplexityExceededError" } } }));
+            return Task.FromResult(Json(JsonSerializer.Serialize(new
+            {
+                data = names.ToDictionary(name => name, name => BatchField([WebTrack("9" + name[1..], $"Song {name[1..]}", Artist)])),
+            })));
+        });
+
+        var found = await rig.Service.FindTracksBatchAsync(
+            Enumerable.Range(0, 4).Select(i => (Artist, $"Song {i}", (int?)230)).ToList());
+
+        Assert.Equal(["90", "91", "92", "93"], found.Select(meta => meta?.DeezerId));
+        Assert.Equal([4, 2, 2], asked.Order().Reverse());
     }
 
     private static object BatchField(IEnumerable<object?> nodes) => new
@@ -837,7 +886,7 @@ public sealed class DeezerTrackSearchTests
         title,
         duration = 230,
         ISRC = "USGF19027706",
-        contributors = new { edges = new[] { new { roles = new[] { "MAIN" }, node = new { id = "artist-1058", name = artist } } } },
+        contributorNames = new[] { artist },
         album = new { id = "album-7", displayTitle = "Reading, Writing And Arithmetic" },
     };
 
@@ -868,7 +917,7 @@ public sealed class DeezerTrackSearchTests
         var query = body.RootElement.GetProperty("query").GetString()!;
         Assert.Contains("instantSearch", query, StringComparison.Ordinal);
         Assert.Contains("title", query, StringComparison.Ordinal);
-        Assert.Contains("contributors", query, StringComparison.Ordinal);
+        Assert.Contains("contributorNames(roles:[MAIN])", query, StringComparison.Ordinal);
         Assert.Contains("roles", query, StringComparison.Ordinal);
         Assert.Contains("id", query, StringComparison.Ordinal);
     }

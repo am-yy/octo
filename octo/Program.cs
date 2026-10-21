@@ -135,7 +135,8 @@ builder.Services.AddHttpClient(DeezerResolver.ApiClientName, c =>
 {
     c.Timeout = TimeSpan.FromSeconds(10);
     DeezerResolver.ApplyClientHeaders(c);
-}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false })
+    .AddHttpMessageHandler<Octo.Services.Metadata.DeezerEdgeRefusalHandler>();
 builder.Services.AddHttpClient(DeezerResolver.StreamClientName, c =>
 {
     c.Timeout = Timeout.InfiniteTimeSpan;
@@ -183,6 +184,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Meta
 // the named client or it bypasses this entirely.
 builder.Services.AddSingleton<Octo.Services.Metadata.DeezerRateLimiter>();
 builder.Services.AddTransient<Octo.Services.Metadata.DeezerRateLimitHandler>();
+builder.Services.AddTransient<Octo.Services.Metadata.DeezerEdgeRefusalHandler>();
 // The anonymous catalog traffic presents as the desktop client, as the ARL traffic from the same
 // address does, and keeps the cookies Deezer's edge sets in one jar of its own. The ARL never
 // enters this jar: the media clients below send it by hand and keep no cookies.
@@ -190,7 +192,9 @@ var deezerCatalogCookies = new System.Net.CookieContainer();
 builder.Services.AddHttpClient(Octo.Services.Metadata.DeezerRateLimiter.ClientName,
         c => DeezerResolver.ApplyClientHeaders(c))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { CookieContainer = deezerCatalogCookies })
-    .AddHttpMessageHandler<Octo.Services.Metadata.DeezerRateLimitHandler>();
+    .AddHttpMessageHandler<Octo.Services.Metadata.DeezerRateLimitHandler>()
+    // Inside the limiter, so only Deezer's own answers are judged, never the limiter's queue-full 429.
+    .AddHttpMessageHandler<Octo.Services.Metadata.DeezerEdgeRefusalHandler>();
 
 // Rejected-peer memory for download verification. Next to the settings file for the same
 // reason external-ids.json is: it is knowledge earned by a completed transfer, and losing it

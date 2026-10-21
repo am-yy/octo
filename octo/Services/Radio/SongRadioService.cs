@@ -25,10 +25,13 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
     /// <summary>Picks resolved beyond the count asked for in the first round, so the checks after
     /// it (playable, library share, explicit filter) have some to drop.</summary>
     internal const double PickHeadroom = 1.5;
+    /// <summary>The longest song radio: the most songs any source lists for one seed.</summary>
+    public const int MaxSongs = 100;
     /// <summary>Rounds of resolving before a radio settles for fewer songs than asked.</summary>
     internal const int ResolveRounds = 3;
-    /// <summary>A song this listener was served from this seed lately keeps this share of its
-    /// weight, as a station's previous snapshot does: the next radio from it is mostly new.</summary>
+    /// <summary>A song this listener was served by any song radio lately keeps this share of its
+    /// weight, as a station's previous snapshot does: the next radio, from the same seed or one
+    /// like it, is mostly new.</summary>
     internal const double ServedLatelyWeight = LastFmRadioRecommendationService.PreviousSnapshotWeight;
     internal static readonly TimeSpan ServedLately = TimeSpan.FromDays(7);
 
@@ -51,10 +54,10 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
         // An album's next songs are asked as well, so its radio is the album's, not one song's.
         var seeds = new[] { Lookup(seed) }.Concat((seed.AlsoFrom ?? [])
             .Select(song => Lookup(new RadioSeed(song.Artist, song.Title, song.Duration, song)))).ToList();
-        // Deeper than asked for: the middle of each list is where the less obvious songs are, and
-        // filler, one-star songs, the artist cap and the library share all leave some out. With no
-        // library share, Sounds alike (library songs only) is not asked.
-        var ask = Math.Min(count * 2, 100);
+        // Every source's whole list, however short the radio: the middle and the tail are where the
+        // less obvious songs are, and the draw needs a pool far larger than the radio to vary.
+        // With no library share, Sounds alike (library songs only) is not asked.
+        var ask = MaxSongs;
         var answers = (await Task.WhenAll(seeds.Select(each => sources.AskAllAsync(each, ask, auth, ct,
             source => libraryCap > 0 || source.Provider != RadioProvider.SoundsAlike)))).SelectMany(each => each).ToList();
 
@@ -85,15 +88,17 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
         var seedArtist = ArtistKey(seed.Artist);
         var known = share < 100 ? await KnownArtistsAsync(listener, ct) : new HashSet<string>();
         known.Remove(seedArtist);
-        var servedKey = $"{listener}|{seedKey}";
-        var servedLately = served?.Recent(servedKey) ?? new HashSet<string>();
+        // Per listener, not per seed: five radios from five 90s hip-hop songs would otherwise each
+        // lead with the same classics.
+        var servedLately = listener is null ? new HashSet<string>() : served?.Recent(listener) ?? new HashSet<string>();
         var fit = FitFactors(seed, pool);
-        // The draw's weight: the blend's score squared, so a strong match still usually leads,
-        // with artists the listener already knows and songs this seed served them lately held back.
+        // The draw's weight: the blend's score, with artists the listener already knows and songs
+        // radio served them lately held back. Not squared: that kept every draw to the top few
+        // dozen, the same songs each time.
         double Weight(RadioPick pick)
         {
             var (artist, title) = Names(pick);
-            var weight = pick.Score * pick.Score;
+            var weight = pick.Score;
             if (known.Contains(ArtistKey(artist))) weight *= LastFmRadioRecommendationService.KnownArtistWeight;
             if (servedLately.Contains(LastFmRadioSeedNormalizer.TrackKey(artist, title))) weight *= ServedLatelyWeight;
             if (pick.LibrarySong is { } song) weight *= fit.GetValueOrDefault(song.Id, 1.0);
@@ -104,7 +109,7 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
         var heard = HeardLately(listener);
         var songs = await TakeAsync(ordered, seed, count, libraryCap, seedArtist, heard, auth, ct);
         outcomes?.Served(listener, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))));
-        served?.Remember(servedKey, songs.Select(song => LastFmRadioSeedNormalizer.TrackKey(song.Artist, song.Title)));
+        if (listener is not null) served?.Remember(listener, songs.Select(song => LastFmRadioSeedNormalizer.TrackKey(song.Artist, song.Title)));
         logger.LogInformation("Radio for '{Artist} - {Title}' took {Total} ms: sources {Asked} ms; {Songs} songs, {Local} from the library",
             seed.Artist, seed.Title, (int)clock.ElapsedMilliseconds, (int)asked.TotalMilliseconds, songs.Count,
             songs.Count(song => song.IsLocal));
@@ -264,29 +269,30 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
 }
 
 /// <summary>
-/// The songs each listener was served from each seed lately, so the next radio from the same
-/// seed leads with others.
+/// The songs each listener was served by song radio lately, so the next radio leads with others.
 /// </summary>
-// ponytail: in memory, so a restart forgets it, and capped at MaxSeeds seeds. Upgrade: keep it in
+// ponytail: in memory, so a restart forgets it, and capped at MaxListeners listeners. Upgrade: keep it in
 // RadioOutcomeStore beside what each served song taught.
 public sealed class RadioServedMemory
 {
-    private const int MaxSeeds = 2000;
-    private readonly ConcurrentDictionary<string, (DateTime At, HashSet<string> Keys)> _seeds = new();
+    private const int MaxListeners = 2000;
+    /// <summary>Songs kept per listener, the latest radio's always among them.</summary>
+    private const int MaxSongsEach = 1000;
+    private readonly ConcurrentDictionary<string, (DateTime At, HashSet<string> Keys)> _listeners = new();
 
     public IReadOnlySet<string> Recent(string key) =>
-        _seeds.TryGetValue(key, out var entry) && entry.At > DateTime.UtcNow - SongRadioService.ServedLately
+        _listeners.TryGetValue(key, out var entry) && entry.At > DateTime.UtcNow - SongRadioService.ServedLately
             ? entry.Keys : new HashSet<string>();
 
     public void Remember(string key, IEnumerable<string> songs)
     {
         var keys = songs.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        // Two radios in a row from one seed both count: the third leads with neither.
-        if (_seeds.TryGetValue(key, out var old) && old.At > DateTime.UtcNow - SongRadioService.ServedLately)
-            keys.UnionWith(old.Keys);
-        _seeds[key] = (DateTime.UtcNow, keys);
-        if (_seeds.Count <= MaxSeeds) return;
-        foreach (var stale in _seeds.OrderBy(pair => pair.Value.At).Take(_seeds.Count - MaxSeeds).Select(pair => pair.Key).ToList())
-            _seeds.TryRemove(stale, out _);
+        // Two radios in a row both count: the third leads with neither.
+        if (_listeners.TryGetValue(key, out var old) && old.At > DateTime.UtcNow - SongRadioService.ServedLately)
+            foreach (var song in old.Keys.Take(MaxSongsEach - Math.Min(keys.Count, MaxSongsEach))) keys.Add(song);
+        _listeners[key] = (DateTime.UtcNow, keys);
+        if (_listeners.Count <= MaxListeners) return;
+        foreach (var stale in _listeners.OrderBy(pair => pair.Value.At).Take(_listeners.Count - MaxListeners).Select(pair => pair.Key).ToList())
+            _listeners.TryRemove(stale, out _);
     }
 }

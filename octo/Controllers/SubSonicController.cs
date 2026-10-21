@@ -3019,7 +3019,9 @@ public partial class SubsonicController : ControllerBase
         var id = parameters.GetValueOrDefault("id", "");
         var format = parameters.GetValueOrDefault("f", "xml");
         var count = int.TryParse(parameters.GetValueOrDefault("count", "50"), out var c) ? c : 50;
-        count = Math.Clamp(count, 1, _lastFmSettings.EffectiveRadioTrackCount);
+        // The client's own length, up to the most a source lists: a song radio is one queue,
+        // not a station, so the stations' length does not bound it.
+        count = Math.Clamp(count, 1, Octo.Services.Radio.SongRadioService.MaxSongs);
 
         // Subsonic spec: getSimilarSongs.view → key "similarSongs"; getSimilarSongs2.view → "similarSongs2".
         // Clients (Arpeggi) parse the v2 key strictly and ignore v1-shaped responses

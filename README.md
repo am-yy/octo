@@ -374,8 +374,9 @@ behind its album. A title written "Artist - Title" is also looked up under the a
 names. An album id starts from its first three songs, an artist id from artists like them.
 
 Song radio is drawn, not ranked: the best match plays first, and the rest come in a weighted
-random order, so the same seed gives a different radio each time, and songs it served the
-listener in the last week count a third as much. One artist holds at most a tenth of it (the
+random order from every source's whole list, so the same seed gives a different radio each
+time, and songs any song radio served the listener in the last week count a third as much. It
+is as long as the app asks for, up to 100 songs (Feishin: Settings, General, the radio count). One artist holds at most a tenth of it (the
 seed's artist a quarter), and a song the listener heard in the last eight days waits until
 nothing else fits. `RADIO_LIBRARY_SHARE` (default 0) is how much of it may be songs already in
 the library: at 0 song radio is all discovery, library songs stay off, and artists the library

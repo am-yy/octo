@@ -183,7 +183,13 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<Octo.Services.Meta
 // the named client or it bypasses this entirely.
 builder.Services.AddSingleton<Octo.Services.Metadata.DeezerRateLimiter>();
 builder.Services.AddTransient<Octo.Services.Metadata.DeezerRateLimitHandler>();
-builder.Services.AddHttpClient(Octo.Services.Metadata.DeezerRateLimiter.ClientName)
+// The anonymous catalog traffic presents as the desktop client, as the ARL traffic from the same
+// address does, and keeps the cookies Deezer's edge sets in one jar of its own. The ARL never
+// enters this jar: the media clients below send it by hand and keep no cookies.
+var deezerCatalogCookies = new System.Net.CookieContainer();
+builder.Services.AddHttpClient(Octo.Services.Metadata.DeezerRateLimiter.ClientName,
+        c => DeezerResolver.ApplyClientHeaders(c))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { CookieContainer = deezerCatalogCookies })
     .AddHttpMessageHandler<Octo.Services.Metadata.DeezerRateLimitHandler>();
 
 // Rejected-peer memory for download verification. Next to the settings file for the same

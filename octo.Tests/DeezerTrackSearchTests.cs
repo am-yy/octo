@@ -334,6 +334,8 @@ public sealed class DeezerTrackSearchTests
         var pipe = Assert.Single(rig.Calls, call => call.Host == "pipe.deezer.com");
         using var body = JsonDocument.Parse(pipe.Body!);
         Assert.Equal(3, body.RootElement.GetProperty("variables").EnumerateObject().Count());
+        Assert.Equal("SearchTracks", body.RootElement.GetProperty("operationName").GetString());
+        Assert.DoesNotContain("Octo", pipe.Body!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(rig.Calls, call => call.Host == "api.deezer.com");
         // A quick look that found nothing is not a miss: the full search still decides.
         Assert.False(rig.Service.KnownMissing("Nobody", "Nothing", null));
@@ -361,7 +363,7 @@ public sealed class DeezerTrackSearchTests
         using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
         {
             "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
-            "pipe.deezer.com" when request.Body!.Contains("OctoTrackBatch") => Json(JsonSerializer.Serialize(new
+            "pipe.deezer.com" when request.Body!.Contains("\"operationName\":\"SearchTracks\"") => Json(JsonSerializer.Serialize(new
             {
                 data = Enumerable.Range(0, 22).ToDictionary(i => "q" + i, i => BatchField(i == 21
                     ? [] : [WebTrack((1000 + i).ToString(), $"Song {i}", Artist)])),
@@ -382,7 +384,7 @@ public sealed class DeezerTrackSearchTests
         Assert.Equal(songs.Take(21).Select(song => song.Id), kept.Select(song => song.Id));
         Assert.Equal("1003", registry.Lookup(songs[3].Id)?.DeezerId);
         // Two batch requests for twenty-two songs; only the miss is searched song by song.
-        Assert.Equal(2, rig.Calls.Count(call => call.Host == "pipe.deezer.com" && call.Body!.Contains("OctoTrackBatch")));
+        Assert.Equal(2, rig.Calls.Count(call => call.Host == "pipe.deezer.com" && call.Body!.Contains("\"operationName\":\"SearchTracks\"")));
         // The first few hits are also checked against the full search in the background, for the log;
         // the rest of the batch's hits are never searched song by song.
         var rest = rig.Calls.Where(call => call.Path == "/search")
@@ -915,6 +917,10 @@ public sealed class DeezerTrackSearchTests
     {
         using var body = JsonDocument.Parse(call.Body!);
         var query = body.RootElement.GetProperty("query").GetString()!;
+        // Named as the web player's own track search, never as Octo.
+        Assert.Equal("SearchTracksTab", body.RootElement.GetProperty("operationName").GetString());
+        Assert.Equal(100, body.RootElement.GetProperty("variables").GetProperty("first").GetInt32());
+        Assert.DoesNotContain("Octo", call.Body!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("instantSearch", query, StringComparison.Ordinal);
         Assert.Contains("title", query, StringComparison.Ordinal);
         Assert.Contains("contributorNames(roles:[MAIN])", query, StringComparison.Ordinal);

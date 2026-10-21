@@ -258,15 +258,15 @@ public partial class DeezerMetadataService
             using var response = await DiscoveryRequestAsync("https://auth.deezer.com/login/anonymous?jo=p&rto=c", budget);
             if (response.Transient || response.Doc is null || Str(response.Doc.RootElement, "jwt") is not { Length: > 0 } jwt)
                 return null;
-            // Refresh conservatively, also respecting an earlier expiry encoded by Deezer.
+            // Kept until shortly before the expiry Deezer encodes (six minutes), as the official
+            // clients keep theirs; four minutes when the token does not say.
             _searchTokenExpires = DateTimeOffset.UtcNow.AddMinutes(4);
             try
             {
                 var payload = jwt.Split('.')[1].Replace('-', '+').Replace('_', '/');
                 using var claims = JsonDocument.Parse(Convert.FromBase64String(payload.PadRight((payload.Length + 3) / 4 * 4, '=')));
                 if (claims.RootElement.TryGetProperty("exp", out var exp) && exp.TryGetInt64(out var seconds))
-                    _searchTokenExpires = DateTimeOffset.FromUnixTimeSeconds(seconds).AddSeconds(-10) < _searchTokenExpires
-                        ? DateTimeOffset.FromUnixTimeSeconds(seconds).AddSeconds(-10) : _searchTokenExpires;
+                    _searchTokenExpires = DateTimeOffset.FromUnixTimeSeconds(seconds).AddSeconds(-30);
             }
             catch (Exception ex) when (ex is FormatException or JsonException or IndexOutOfRangeException or ArgumentOutOfRangeException) { }
             return _searchToken = jwt;
@@ -274,8 +274,9 @@ public partial class DeezerMetadataService
         finally { _searchTokenGate.Release(); }
     }
 
+    // Named and shaped as the web player's own track search (SearchTracksTab), with Octo's fields.
     private const string WebTrackQuery = """
-        query OctoTrackSearch($query:String!){instantSearch(query:$query){results{tracks(first:100){
+        query SearchTracksTab($query: String!, $first: Int, $cursor: String){instantSearch(query:$query){results{tracks(first:$first, after:$cursor){
           edges{node{id title ISRC duration contributorNames(roles:[MAIN])}}
           pageInfo{hasNextPage endCursor}}}}}
         """;
@@ -285,7 +286,11 @@ public partial class DeezerMetadataService
     {
         var token = await SearchTokenAsync(budget);
         if (token is null) return (new DeezerResponse { Transient = true }, null);
-        var body = JsonSerializer.Serialize(new { query = WebTrackQuery, variables = new { query } });
+        var body = JsonSerializer.Serialize(new
+        {
+            operationName = "SearchTracksTab", query = WebTrackQuery,
+            variables = new { query, first = TrackPageSize, cursor = (string?)null },
+        });
         for (var attempt = 0; attempt < 2; attempt++)
         {
             using var response = await DiscoveryRequestAsync("https://pipe.deezer.com/api", budget, body, token);
@@ -353,11 +358,11 @@ public partial class DeezerMetadataService
             {
                 var token = await SearchTokenAsync(budget);
                 if (token is null) return null;
-                var query = "query OctoTrackBatch(" + string.Join(",", chunk.Select(i => $"$q{i}:String!")) + "){"
+                var query = "query SearchTracks(" + string.Join(",", chunk.Select(i => $"$q{i}:String!")) + "){"
                     + string.Join(" ", chunk.Select(i => $"q{i}:instantSearch(query:$q{i}){{{BatchTrackFields}}}")) + "}";
                 var body = JsonSerializer.Serialize(new
                 {
-                    operationName = "OctoTrackBatch",
+                    operationName = "SearchTracks",
                     query,
                     variables = chunk.ToDictionary(i => "q" + i, i => PlainQuery(songs[i].Artist, songs[i].Title)),
                 });

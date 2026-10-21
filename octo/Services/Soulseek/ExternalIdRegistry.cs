@@ -54,6 +54,7 @@ public class ExternalIdRegistry : IDisposable
             // names none, and must not forget it.
             routing.Isrc ??= previous.Isrc;
             routing.DeezerId ??= previous.DeezerId;
+            if (routing.DeezerId is null) routing.DeezerMissingSince ??= previous.DeezerMissingSince;
             if (string.IsNullOrWhiteSpace(routing.Album)) routing.Album = previous.Album;
             // And the catalog artist an artist search or page settled on: every album row
             // mints its artist again by name alone, and must not undo that choice.
@@ -138,9 +139,21 @@ public class ExternalIdRegistry : IDisposable
     {
         if (!_byId.TryGetValue(shortId, out var routing)) return;
         if (string.IsNullOrWhiteSpace(deezerId) && string.IsNullOrWhiteSpace(album) && duration is not > 0) return;
-        if (!string.IsNullOrEmpty(deezerId)) routing.DeezerId = deezerId;
+        if (!string.IsNullOrEmpty(deezerId))
+        {
+            routing.DeezerId = deezerId;
+            routing.DeezerMissingSince = null;
+        }
         if (string.IsNullOrWhiteSpace(routing.Album) && !string.IsNullOrWhiteSpace(album)) routing.Album = album;
         SongLength.Remember(routing, duration, LengthSource.Deezer);
+        Interlocked.Exchange(ref _dirty, 1);
+    }
+
+    /// <summary>Remember that a finished Deezer search found no match for this song.</summary>
+    public void RememberDeezerMissing(string shortId)
+    {
+        if (!_byId.TryGetValue(shortId, out var routing) || !string.IsNullOrEmpty(routing.DeezerId)) return;
+        routing.DeezerMissingSince = DateTimeOffset.UtcNow;
         Interlocked.Exchange(ref _dirty, 1);
     }
 

@@ -118,8 +118,12 @@ public class SoulseekMetadataService : IMusicMetadataService
         // ponytail: an imported library copy of a song Deezer lacks is dropped too; checking for
         // one costs a Navidrome search per row, and a Lidarr grab Deezer cannot match is rare.
         if (_subsonic?.CurrentValue.WaitForLosslessOnPlay == true) return songs.ToList();
-        var pending = songs.Where(song => !song.IsLocal && string.IsNullOrEmpty(song.DeezerId)
-                && string.IsNullOrEmpty(_idRegistry.Lookup(song.Id)?.DeezerId))
+        var unmatched = songs.Where(song => !song.IsLocal && string.IsNullOrEmpty(song.DeezerId)
+            && string.IsNullOrEmpty(_idRegistry.Lookup(song.Id)?.DeezerId)).ToList();
+        // A song a recent search already found missing is left out without asking again.
+        var remembered = unmatched.Where(song => _idRegistry.Lookup(song.Id)?.DeezerMissingSince is { } since
+            && DateTimeOffset.UtcNow - since < MissingRecheck).ToHashSet();
+        var pending = unmatched.Where(song => !remembered.Contains(song))
             .Select(song => (Song: song, Length: _idRegistry.Lookup(song.Id) is { } routing
                 ? SongLength.Shown(routing).Seconds : null))
             .ToList();
@@ -150,16 +154,18 @@ public class SoulseekMetadataService : IMusicMetadataService
                         return null;
                     }
                     if (!_deezer.KnownMissing(song.Artist, song.Title, length)) return null;
+                    _idRegistry.RememberDeezerMissing(song.Id);
                     _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from",
                         song.Artist, song.Title);
                     return song;
                 }
                 finally { sem.Release(); }
             }));
-        var missing = leftOut.OfType<Song>().ToHashSet();
-        if (pending.Count > 0)
+        var missing = leftOut.OfType<Song>().Concat(remembered).ToHashSet();
+        if (unmatched.Count > 0)
             _logger.LogInformation("Deezer check: {Songs} songs, {Hits} found by the batch, {Searched} searched "
-                + "one by one, {Missing} left out", pending.Count, hits, pending.Count - hits, missing.Count);
+                + "one by one, {Missing} left out ({Remembered} already known missing)", unmatched.Count, hits,
+                pending.Count - hits, missing.Count, remembered.Count);
         return songs.Where(song => !missing.Contains(song)).ToList();
 
         void Remember(Song song, DeezerMetadataService.TrackMeta hit)
@@ -168,6 +174,10 @@ public class SoulseekMetadataService : IMusicMetadataService
             _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId, hit.AlbumTitle, hit.Duration);
         }
     }
+
+    /// <summary>How long a song Deezer lacks stays left out before it is searched again. The catalog
+    /// gains releases, but rarely one song a week after it was first looked for.</summary>
+    internal static readonly TimeSpan MissingRecheck = TimeSpan.FromDays(7);
 
     // ponytail: a temporary check of the batched lookup against the full search, on the background
     // lane for a few of each call's hits. Remove it once the logs show the two agree.
@@ -1190,6 +1200,11 @@ public class SoulseekRouting
     /// <summary>Where <see cref="ShownDuration"/> came from, so a weaker source never
     /// replaces a stronger one.</summary>
     public LengthSource ShownDurationSource { get; set; }
+
+    /// <summary>When a finished Deezer search last found no match for this song. Kept here so
+    /// the answer outlives the in-memory cache and a restart: a station rebuild would otherwise
+    /// search every song Deezer lacks again, each one a ladder of requests.</summary>
+    public DateTimeOffset? DeezerMissingSince { get; set; }
 
     public bool HasDeezer => !string.IsNullOrEmpty(DeezerId);
     public bool HasArtistTitle => !string.IsNullOrEmpty(Artist) && !string.IsNullOrEmpty(Title);

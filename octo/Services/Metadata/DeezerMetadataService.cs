@@ -118,6 +118,10 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// catalog gains releases.</summary>
     private static readonly TimeSpan NegativeTtl = TimeSpan.FromMinutes(5);
 
+    /// <summary>A finished track search that found nothing. One song rarely appears within hours,
+    /// and each repeat is a ladder of up to seven requests, so this outlasts <see cref="NegativeTtl"/>.</summary>
+    private static readonly TimeSpan TrackMissTtl = TimeSpan.FromHours(6);
+
     /// <summary>A tracklist we know is incomplete. Usable now, refetched soon.</summary>
     private static readonly TimeSpan PartialTtl = TimeSpan.FromMinutes(10);
 
@@ -312,7 +316,7 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         // Retaining it for 12 hours would prevent a corrected response from supplying one.
         if (meta is not null && (!long.TryParse(meta.DeezerId, out var resolvedId) || resolvedId <= 0)) return meta;
 
-        Put(key, meta, meta is null ? NegativeTtl : PositiveTtl);
+        Put(key, meta, meta is null ? TrackMissTtl : PositiveTtl);
         if (meta?.DeezerId is { Length: > 0 } id)
             Put(TrackKey(artist, title, id), meta, PositiveTtl);
         return meta;

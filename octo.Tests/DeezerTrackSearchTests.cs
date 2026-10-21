@@ -394,6 +394,35 @@ public sealed class DeezerTrackSearchTests
     }
 
     [Fact]
+    public async Task PlayableRemembersASongDeezerLacksPastTheCache()
+    {
+        var registry = new Octo.Services.Soulseek.ExternalIdRegistry();
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" when request.Body!.Contains("\"operationName\":\"SearchTracks\"")
+                => Json(JsonSerializer.Serialize(new { data = new { q0 = BatchField([]) } })),
+            "pipe.deezer.com" => Json(EmptyWeb),
+            _ => Json(EmptyRest),
+        }));
+        var metadata = new Octo.Services.Soulseek.SoulseekMetadataService(registry, rig.Service,
+            new Octo.Services.CoverArt.CoverArtAggregator([], NullLogger<Octo.Services.CoverArt.CoverArtAggregator>.Instance),
+            NullLogger<Octo.Services.Soulseek.SoulseekMetadataService>.Instance);
+        var song = (await metadata.SearchSongsByArtistTitleAsync(Artist, "Nowhere", 1, 230))[0];
+
+        Assert.Empty(await metadata.PlayableAsync([song]));
+        var asked = rig.Calls.Count;
+        // As after a restart: the metadata cache is empty, the registry is not.
+        rig.Service.ClearCaches();
+        var again = (await metadata.SearchSongsByArtistTitleAsync(Artist, "Nowhere", 1, 230))[0];
+
+        Assert.Empty(await metadata.PlayableAsync([again]));
+        Assert.Equal(asked, rig.Calls.Count);
+        registry.RememberDeezerTrack(again.Id, "42");
+        Assert.Null(registry.Lookup(again.Id)?.DeezerMissingSince);
+    }
+
+    [Fact]
     public async Task BatchMatchesASongWithMoreThanFiveMainArtists()
     {
         string[] credit = ["Kanye West", "Gucci Mane", "Big Sean", "2 Chainz", "Travis Scott", "Yo Gotti", "Quavo", "Desiigner"];

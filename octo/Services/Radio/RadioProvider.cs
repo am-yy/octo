@@ -10,17 +10,18 @@ public static class RadioProvider
     public const string YouTubeMusic = "youtube-music";
     public const string ListenBrainz = "listenbrainz";
     public const string SoundsAlike = "sounds-alike";
+    public const string Deezer = "deezer";
     public const string Library = "library";
     /// <summary>A song from the listener's own plays, which no source suggested.</summary>
     public const string History = "history";
 
     /// <summary>The sources that know songs beyond the library.</summary>
     public static bool IsCatalog(string provider) =>
-        provider is LastFm or YouTubeMusic or ListenBrainz;
+        provider is LastFm or YouTubeMusic or ListenBrainz or Deezer;
 
     /// <summary>A provider's own key, as a station's source lists are prefixed with.</summary>
     public static bool IsKnown(string key) =>
-        key is LastFm or YouTubeMusic or ListenBrainz or SoundsAlike or Library or History;
+        key is LastFm or YouTubeMusic or ListenBrainz or Deezer or SoundsAlike or Library or History;
 
     /// <summary>What the apps show; null for a song the listener played themselves.</summary>
     public static string? DisplayName(string? provider) => provider switch
@@ -29,12 +30,13 @@ public static class RadioProvider
         YouTubeMusic => "YouTube Music",
         ListenBrainz => "ListenBrainz",
         SoundsAlike => "Sounds alike",
+        Deezer => "Deezer",
         Library => "Your library",
         _ => null,
     };
 
     /// <summary>The key behind a display name, for a song that carries only the name.</summary>
     public static string? FromDisplayName(string? name) =>
-        new[] { LastFm, YouTubeMusic, ListenBrainz, SoundsAlike, Library }
+        new[] { LastFm, YouTubeMusic, ListenBrainz, Deezer, SoundsAlike, Library }
             .FirstOrDefault(key => DisplayName(key) == name);
 }

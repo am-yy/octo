@@ -7,8 +7,9 @@ namespace Octo.Services.Radio;
 /// <param name="Title">Empty for an artist's radio.</param>
 /// <param name="LibrarySong">The library song, when it is one: its album, genre and file.</param>
 /// <param name="YouTubeId">A video already known to play the seed.</param>
+/// <param name="AlsoFrom">More songs the radio is built from as well, an album's next songs.</param>
 public sealed record RadioSeed(string Artist, string Title, int? Duration, Song? LibrarySong,
-    string? YouTubeId = null)
+    string? YouTubeId = null, IReadOnlyList<Song>? AlsoFrom = null)
 {
     public bool IsArtist => Title.Length == 0;
 }

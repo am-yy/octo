@@ -124,6 +124,9 @@ services:
       RadioSources__ListenBrainz: ${RADIO_LISTENBRAINZ:-true}
       RadioSources__ListenBrainzRadioMode: ${RADIO_LISTENBRAINZ_MODE:-medium}
       RadioSources__SoundsAlike: ${RADIO_SOUNDS_ALIKE:-true}
+      RadioSources__Deezer: ${RADIO_DEEZER:-true}
+      # Share of a song radio that may be songs already in the library, 0-100. 0 = all discovery.
+      RadioSources__LibraryShare: ${RADIO_LIBRARY_SHARE:-0}
       RadioSources__SonicUrl: ${RADIO_SONIC_URL:-http://octo-sonic:8080}
       RadioSources__SonicPauseSeconds: ${RADIO_SONIC_PAUSE_SECONDS:-2}
       RadioSources__LearnFromListening: ${RADIO_LEARN_FROM_LISTENING:-false}

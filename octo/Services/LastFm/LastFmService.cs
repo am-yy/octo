@@ -63,8 +63,9 @@ public partial class LastFmService
     public record SimilarAnswer(List<SimilarTrack> Tracks, SimilarSource Source, bool ArtistTrusted);
 
     /// <summary>Listeners Last.fm counts for an artist before artists like them are worth a radio
-    /// without the song itself: a new song by a known artist, not yet on Last.fm.</summary>
-    internal const long KnownArtistListeners = 10_000;
+    /// without the song itself: a new song by a known artist, not yet on Last.fm. At ten thousand,
+    /// an uploader's channel name often passed for an artist.</summary>
+    internal const long KnownArtistListeners = 50_000;
 
     public async Task<List<SimilarTrack>> GetSimilarTracksAsync(string artist, string title, int limit = 50,
         CancellationToken cancellationToken = default) =>
@@ -280,26 +281,33 @@ public partial class LastFmService
         return tracks;
     }
 
+    /// <summary>Artists like the seed's a similar-artists answer draws from, the songs it takes
+    /// from each, and how many of each artist's biggest hits it passes over when the artist has
+    /// enough songs. Ten artists of five songs each, rather than five of ten, and not the top
+    /// two: the same handful of hits led every radio Last.fm could not place.</summary>
+    internal const int SimilarArtistsUsed = 10;
+    internal const int TracksPerSimilarArtist = 5;
+    internal const int TopHitsPassedOver = 2;
+
     private async Task<List<SimilarTrack>> GetTopTracksFromSimilarArtistsAsync(string artist, int limit,
         CancellationToken cancellationToken)
     {
         try
         {
-            // Get similar artists
-            var artistUrl = $"{BaseUrl}?method=artist.getsimilar&artist={Uri.EscapeDataString(artist)}&api_key={_settings.ApiKey}&format=json&limit=10";
-            
+            var artistUrl = $"{BaseUrl}?method=artist.getsimilar&artist={Uri.EscapeDataString(artist)}&api_key={_settings.ApiKey}&format=json&limit={SimilarArtistsUsed}";
+
             var artistResponse = await _httpClient.GetAsync(artistUrl, cancellationToken);
             artistResponse.EnsureSuccessStatusCode();
-            
-            var artistJson = await artistResponse.Content.ReadAsStringAsync();
-            var artistDoc = JsonDocument.Parse(artistJson);
-            
+
+            var artistJson = await artistResponse.Content.ReadAsStringAsync(cancellationToken);
+            using var artistDoc = JsonDocument.Parse(artistJson);
+
             var similarArtists = new List<string>();
-            
+
             if (artistDoc.RootElement.TryGetProperty("similarartists", out var similarArtistsObj) &&
                 similarArtistsObj.TryGetProperty("artist", out var artistArray))
             {
-                foreach (var a in artistArray.EnumerateArray().Take(5))
+                foreach (var a in artistArray.EnumerateArray().Take(SimilarArtistsUsed))
                 {
                     var name = a.GetProperty("name").GetString();
                     if (!string.IsNullOrEmpty(name))
@@ -308,39 +316,24 @@ public partial class LastFmService
                     }
                 }
             }
-            
+
             _logger.LogInformation("Found {Count} similar artists for {Artist}", similarArtists.Count, artist);
-            
-            // Get top tracks from each similar artist
-            var tracks = new List<SimilarTrack>();
-            
-            foreach (var similarArtist in similarArtists)
+
+            // A few artists at once: Last.fm throttles a burst from one address.
+            using var gate = new SemaphoreSlim(4);
+            var perArtist = await Task.WhenAll(similarArtists.Select(async similarArtist =>
             {
-                var topTracksUrl = $"{BaseUrl}?method=artist.gettoptracks&artist={Uri.EscapeDataString(similarArtist)}&api_key={_settings.ApiKey}&format=json&limit=10";
-                
-                var topResponse = await _httpClient.GetAsync(topTracksUrl, cancellationToken);
-                if (!topResponse.IsSuccessStatusCode) continue;
-                
-                var topJson = await topResponse.Content.ReadAsStringAsync();
-                var topDoc = JsonDocument.Parse(topJson);
-                
-                if (topDoc.RootElement.TryGetProperty("toptracks", out var topTracks) &&
-                    topTracks.TryGetProperty("track", out var trackArray))
-                {
-                    foreach (var track in trackArray.EnumerateArray().Take(10))
-                    {
-                        var trackName = track.GetProperty("name").GetString() ?? "";
-                        
-                        if (!string.IsNullOrEmpty(trackName))
-                        {
-                            tracks.Add(new SimilarTrack(similarArtist, trackName, 0.5));
-                        }
-                    }
-                }
-            }
-            
+                await gate.WaitAsync(cancellationToken);
+                try { return await ArtistTopTracksAsync(similarArtist, cancellationToken); }
+                finally { gate.Release(); }
+            }));
+            // One song from each artist in turn, so the list's head is not one artist's hits.
+            var tracks = LastFmRadioTrackResolver.Interleave(perArtist.Select(list => (IReadOnlyList<SimilarTrack>)list
+                .Skip(Math.Clamp(list.Count - TracksPerSimilarArtist, 0, TopHitsPassedOver))
+                .Take(TracksPerSimilarArtist).ToList()).ToList()).ToList();
+
             _logger.LogInformation("Found {Count} top tracks from similar artists", tracks.Count);
-            
+
             return tracks.Take(limit).ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -348,6 +341,30 @@ public partial class LastFmService
             _logger.LogError(ex, "Error fetching top tracks from similar artists for {Artist}", artist);
             return new List<SimilarTrack>();
         }
+    }
+
+    /// <summary>One artist's most played songs, most played first; none when Last.fm does not answer.</summary>
+    private async Task<List<SimilarTrack>> ArtistTopTracksAsync(string similarArtist, CancellationToken cancellationToken)
+    {
+        var tracks = new List<SimilarTrack>();
+        var topTracksUrl = $"{BaseUrl}?method=artist.gettoptracks&artist={Uri.EscapeDataString(similarArtist)}&api_key={_settings.ApiKey}&format=json&limit={TracksPerSimilarArtist + TopHitsPassedOver}";
+
+        var topResponse = await _httpClient.GetAsync(topTracksUrl, cancellationToken);
+        if (!topResponse.IsSuccessStatusCode) return tracks;
+
+        var topJson = await topResponse.Content.ReadAsStringAsync(cancellationToken);
+        using var topDoc = JsonDocument.Parse(topJson);
+
+        if (topDoc.RootElement.TryGetProperty("toptracks", out var topTracks) &&
+            topTracks.TryGetProperty("track", out var trackArray) && trackArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var track in trackArray.EnumerateArray())
+            {
+                var trackName = track.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
+                if (!string.IsNullOrEmpty(trackName)) tracks.Add(new SimilarTrack(similarArtist, trackName, 0.5));
+            }
+        }
+        return tracks;
     }
 
     /// <summary>

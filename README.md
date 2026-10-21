@@ -349,27 +349,38 @@ library. **Start radio from this song** remains a one-time `getSimilarSongs[2]` 
 
 #### Radio sources
 
-That queue, and every station, draws on four sources and blends their answers:
+That queue, and every station, draws on five sources and blends their answers:
 
 | Source | What it gives |
 | --- | --- |
 | Last.fm | songs like the seed, by its artist and title; similar artists; tag charts |
 | YouTube Music | YouTube Music's radio for the song, which knows uploads Last.fm never heard of (nightcore and phonk channels included); for an artist, the artist's radio |
 | ListenBrainz | recordings people play alongside it, from ListenBrainz's open listening data; with a ListenBrainz token, LB Radio for artist and genre stations |
+| Deezer | Deezer's mix of songs like the seed; for an artist, or a song Deezer lacks, Deezer's radio for the artist |
 | Sounds alike | library songs that sound like it (tempo, timbre, loudness, harmony), from Octo's own analysis of every file |
 
 Each song scores its source's weight, times how closely that source matched the seed itself,
-times its place in the source's list; a song more than one source suggests adds up. A source
-with only a few songs counts less. When the catalogs have fewer than 20 songs like the seed
-itself, as with a YouTube upload tagged with its uploader for the artist, the seed's own tags
-lead: the rest of its album (for a library downloaded from playlists, the playlist), library
-songs with its genre, and the top songs for that genre. Similar artists to the seed's artist
-join only when the source knows the artist, so an uploader's name never picks the music. A
+times its place in the source's list; a song more than one source suggests scores its best
+source's part and a quarter of each other's, so agreement helps without putting the hits every
+catalog lists first. A source with only a few songs counts less. When the catalogs have fewer
+than 20 songs like the seed itself, as with a YouTube upload tagged with its uploader for the
+artist, the seed's own tags lead: the rest of its album (for a library downloaded from
+playlists, the playlist), and the top songs for its genre, which count less. Similar artists
+to the seed's artist join only when the source knows the artist (on Last.fm: it has the song,
+or 50,000 listeners), so an uploader's name never picks the music; Last.fm's similar artists
+give five songs each from ten artists, in turn, passing over each artist's two biggest hits. A
 nightcore, sped up or remixed seed whose original is known gets songs like the original too,
-behind its album and genre. A title written "Artist - Title" is also looked up under the artist
-it names. An album id starts from its first song, an artist id from artists like them. In song
-radio a library song that sounds far from the seed slips down and one that sounds close moves
-up. On a station, the library songs are put in an order that flows: each one is,
+behind its album. A title written "Artist - Title" is also looked up under the artist it
+names. An album id starts from its first three songs, an artist id from artists like them.
+
+Song radio is drawn, not ranked: the best match plays first, and the rest come in a weighted
+random order, so the same seed gives a different radio each time, and songs it served the
+listener in the last week count a third as much. One artist holds at most a tenth of it (the
+seed's artist a quarter), and a song the listener heard in the last eight days waits until
+nothing else fits. `RADIO_LIBRARY_SHARE` (default 0) is how much of it may be songs already in
+the library: at 0 song radio is all discovery, library songs stay off, and artists the library
+or the listener's plays know count a third as much. In song radio a library song that sounds
+far from the seed slips down and one that sounds close moves up. On a station, the library songs are put in an order that flows: each one is,
 of the next four, the one that sounds most like the song before it and is not by the same
 artist; outside songs keep their places. Deep Cuts and the genre and decade mixes lean toward
 the sound of what the listener loves (songs played three times or more, hearted, or rated 4 or
@@ -382,10 +393,10 @@ apps show it in the song's info. Radio can also learn from listening, off by def
 skip is often a song the listener already knows: a radio song played through counts for its
 source and one skipped counts against it, per listener, and each listener's weights lean on the
 sources they keep (never below 0.3 or above 1.5). The dashboard's Radio page
-has the switches, the base weights (YouTube Music 1.0, Last.fm 0.9, ListenBrainz 0.7, Sounds
-alike 0.4), what radio has learned, and "Forget what radio learned". `RADIO_YOUTUBE_MUSIC`,
-`RADIO_LISTENBRAINZ`, `RADIO_SOUNDS_ALIKE` and `RADIO_LEARN_FROM_LISTENING` switch them in `.env`.
-YouTube Music and ListenBrainz receive the artist and title of the song a radio starts from.
+has the switches, the library share, the base weights (YouTube Music 1.0, Deezer 1.0, Last.fm
+0.9, ListenBrainz 0.7, Sounds alike 0.4), what radio has learned, and "Forget what radio learned". `RADIO_YOUTUBE_MUSIC`,
+`RADIO_LISTENBRAINZ`, `RADIO_DEEZER`, `RADIO_SOUNDS_ALIKE` and `RADIO_LEARN_FROM_LISTENING` switch them in `.env`.
+YouTube Music, ListenBrainz and Deezer receive the artist and title of the song a radio starts from.
 
 Sounds alike runs in the `octo-sonic` service (bliss-rs). It reads each song once, one at a time
 with `RADIO_SONIC_PAUSE_SECONDS` between, only while nothing downloads, then keeps up with new

@@ -3051,6 +3051,7 @@ public partial class SubsonicController : ControllerBase
         string artistName = "";
         string trackTitle = "";
         Song? librarySeed = null;
+        IReadOnlyList<Song>? alsoFrom = null;
         string? seedVideo = null;
 
         var (isExternal, provider, externalId) = _localLibraryService.ParseSongId(id);
@@ -3078,6 +3079,7 @@ public partial class SubsonicController : ControllerBase
                 return _responseBuilder.CreateResponse(format, responseKey, new { });
             }
             librarySeed = seed.Song;
+            alsoFrom = seed.AlbumSongs;
             artistName = seed.Artist;
             trackTitle = seed.Song?.Title ?? "";
         }
@@ -3107,7 +3109,8 @@ public partial class SubsonicController : ControllerBase
             ? _radioStateStore.RadioBanKeys(listener)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var resolvedSongs = await _songRadio.BuildAsync(
-            new Octo.Services.Radio.RadioSeed(artistName, trackTitle, librarySeed?.Duration, librarySeed, seedVideo),
+            new Octo.Services.Radio.RadioSeed(artistName, trackTitle, librarySeed?.Duration, librarySeed, seedVideo,
+                alsoFrom),
             count, listener, parameters, bans, HttpContext.RequestAborted);
         if (resolvedSongs.Count == 0)
         {

@@ -23,17 +23,17 @@ public sealed class RadioSourceSet(IEnumerable<IRadioSource> sources,
         && !(_health.TryGetValue(source.Provider, out var health) && health.RestUntil > DateTime.UtcNow)).ToList();
 
     /// <summary>
-    /// What each source counts for this radio: its base weight, raised for Sounds alike when no
-    /// catalog knows the song, times what this listener's plays have taught (1 with no data),
-    /// kept within <see cref="LowestWeight"/> and <see cref="HighestWeight"/>. A base of 0 means
-    /// the admin left the source out, and stays 0.
+    /// What each source counts for this radio: its base weight times what this listener's plays
+    /// have taught (1 with no data), kept within <see cref="LowestWeight"/> and
+    /// <see cref="HighestWeight"/>. A base of 0 means the admin left the source out, and stays 0.
+    /// Sounds alike keeps its base even when no catalog knows the song: tempo and timbre alone
+    /// filled such radios with songs of any style.
     /// </summary>
-    public IReadOnlyDictionary<string, double> Weights(string? listener = null, bool libraryLed = false)
+    public IReadOnlyDictionary<string, double> Weights(string? listener = null)
     {
         var current = settings.CurrentValue;
         var learned = outcomes?.Multipliers(listener) ?? new Dictionary<string, double>();
         var sound = RadioSourceSettings.EffectiveWeight(current.SoundsAlikeWeight);
-        if (libraryLed && sound > 0) sound = Math.Max(sound, RadioBlend.SoundsAlikeWhenUnknown);
         // The bounds never undo the admin: a base set below 0.3 or above 1.5 is itself the bound.
         double Weigh(string provider, double baseWeight) => baseWeight <= 0 ? 0
             : Math.Clamp(baseWeight * learned.GetValueOrDefault(provider, 1.0),
@@ -43,6 +43,7 @@ public sealed class RadioSourceSet(IEnumerable<IRadioSource> sources,
             [RadioProvider.LastFm] = Weigh(RadioProvider.LastFm, RadioSourceSettings.EffectiveWeight(current.LastFmWeight)),
             [RadioProvider.YouTubeMusic] = Weigh(RadioProvider.YouTubeMusic, RadioSourceSettings.EffectiveWeight(current.YouTubeMusicWeight)),
             [RadioProvider.ListenBrainz] = Weigh(RadioProvider.ListenBrainz, RadioSourceSettings.EffectiveWeight(current.ListenBrainzWeight)),
+            [RadioProvider.Deezer] = Weigh(RadioProvider.Deezer, RadioSourceSettings.EffectiveWeight(current.DeezerWeight)),
             [RadioProvider.SoundsAlike] = Weigh(RadioProvider.SoundsAlike, sound),
             [RadioProvider.Library] = 1.0,
         };

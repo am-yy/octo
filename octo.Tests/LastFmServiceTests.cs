@@ -161,6 +161,27 @@ public class LastFmServiceTests
     }
 
     [Fact]
+    public async Task SimilarArtistTracks_PassOverEachArtistsBiggestHits_AndTakeArtistsInTurn()
+    {
+        var service = Service(new FixtureHandler(request =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var artist = query["artist"] ?? "";
+            return query["method"] switch
+            {
+                "artist.getsimilar" => """{"similarartists":{"artist":[{"name":"A"},{"name":"B"}]}}""",
+                "artist.gettoptracks" => "{\"toptracks\":{\"track\":[" + string.Join(",",
+                    Enumerable.Range(1, 7).Select(i => $"{{\"name\":\"{artist}{i}\"}}")) + "]}}",
+                _ => "{}",
+            };
+        }));
+
+        var tracks = await service.GetSimilarArtistTracksAsync("Seed");
+
+        Assert.Equal(["A3", "B3", "A4", "B4", "A5", "B5", "A6", "B6", "A7", "B7"], tracks.Select(track => track.Title));
+    }
+
+    [Fact]
     public async Task SimilarTracks_AnArtistWithOneNameIsAskedOnlyUnderIt()
     {
         var asked = new List<(string Method, string Artist)>();

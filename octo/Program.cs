@@ -369,6 +369,7 @@ builder.Services.AddSingleton<LastFmService>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.LastFmRadioSource>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.YouTubeMusicRadioSource>();
 builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.ListenBrainzRadioSource>();
+builder.Services.AddSingleton<Octo.Services.Radio.IRadioSource, Octo.Services.Radio.DeezerRadioSource>();
 // Sounds alike (multi-source radio): what every library song sounds like, from octo-sonic.
 builder.Services.AddSingleton<Octo.Services.Common.IAcquisitionActivity>(sp =>
     new Octo.Services.Common.AcquisitionActivity(sp));
@@ -399,6 +400,7 @@ builder.Services.AddSingleton(sp =>
     return store;
 });
 builder.Services.AddSingleton<Octo.Services.Radio.RadioSourceSet>();
+builder.Services.AddSingleton<Octo.Services.Radio.RadioServedMemory>();
 builder.Services.AddScoped<Octo.Services.Radio.SongRadioService>();
 
 // Push notifications (ntfy / Discord webhook). The orchestrator takes

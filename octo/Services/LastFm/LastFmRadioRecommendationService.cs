@@ -677,7 +677,7 @@ public sealed class LastFmRadioRecommendationService
     private static IEnumerable<Candidate> WeightedOrder(
         IEnumerable<Candidate> candidates, Random random, IReadOnlySet<string> previous) =>
         candidates
-            .Select(item => (Item: item, Draw: Math.Pow(random.NextDouble(), 1d / Weight(item, previous))))
+            .Select(item => (Item: item, Draw: RadioShape.Draw(random, Weight(item, previous))))
             .OrderByDescending(pair => pair.Draw)
             .ThenBy(pair => StableOrder(pair.Item.Track.Artist, pair.Item.Track.Title))
             .Select(pair => pair.Item);

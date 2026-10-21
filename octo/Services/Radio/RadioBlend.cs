@@ -9,13 +9,21 @@ public sealed record RadioPick(LastFmService.SimilarTrack? Track, Song? LibraryS
     bool NeedsReading = false);
 
 /// <summary>
-/// How radio weighs its sources' answers. Each song scores weight x match x rank decay, the
-/// stations' shape (<see cref="RankHalfDepth"/>), and the same song from several sources adds
-/// up, since agreement is the best sign a suggestion fits.
+/// How radio weighs its sources' answers. Each song scores weight x match x rank decay
+/// (<see cref="RankHalfDepth"/>). The same song from several sources scores its best term and
+/// <see cref="AgreementShare"/> of the others: agreement is a good sign a suggestion fits, but
+/// the songs every catalog lists are mostly the hits, and a plain sum put them first every time.
 /// </summary>
 public static class RadioBlend
 {
-    internal const int RankHalfDepth = 20;
+    /// <summary>Rank r keeps 1 / (1 + r / depth). Twice the stations' depth: a song radio asks
+    /// for deeper lists, and the middle of a list is where the less obvious songs are.</summary>
+    internal const int RankHalfDepth = 40;
+    /// <summary>What each further source naming a song adds, as a share of its own term.</summary>
+    internal const double AgreementShare = 0.25;
+    /// <summary>What a genre chart counts in a song radio: the tag's most played songs, so
+    /// popular by definition, and a looser fit than songs like the seed itself.</summary>
+    internal const double GenreFill = 0.4;
     /// <summary>What a guess from similar artists counts, when nothing better came back.</summary>
     internal const double GuessFactor = 0.3;
 
@@ -30,9 +38,6 @@ public static class RadioBlend
 
     /// <summary>Songs a catalog answer needs before it counts in full.</summary>
     internal const int FullAnswer = 20;
-    /// <summary>What Sounds alike counts at least when no catalog knows the song: then the sound is
-    /// one of the few signs of its style.</summary>
-    internal const double SoundsAlikeWhenUnknown = 0.8;
 
     /// <summary>A catalog answer of five songs is a weaker sign than one of fifty. Library answers
     /// (an album of three, say) are what they are and count in full.</summary>
@@ -79,8 +84,9 @@ public static class RadioBlend
     private sealed class Entry(int order)
     {
         public int Order { get; } = order;
-        public double Score { get; set; }
+        public double Sum { get; set; }
         public double Best { get; set; }
+        public double Score => Best + AgreementShare * (Sum - Best);
         public string Provider { get; set; } = "";
         public Song? Song { get; set; }
         public bool SongComplete { get; set; }
@@ -93,7 +99,12 @@ public static class RadioBlend
         var byKey = new Dictionary<string, Entry>(StringComparer.Ordinal);
         foreach (var answer in answers)
         {
-            var match = guesses && answer.Match == RadioMatch.ArtistsGuessed ? GuessFactor : MatchFactor(answer.Match);
+            var match = answer.Match switch
+            {
+                RadioMatch.ArtistsGuessed when guesses => GuessFactor,
+                RadioMatch.Genre => GenreFill,
+                _ => MatchFactor(answer.Match),
+            };
             var factor = match * Thin(answer, wanted) * weights.GetValueOrDefault(answer.Provider, 1.0);
             if (factor <= 0) continue;
             var rank = 0;
@@ -103,7 +114,7 @@ public static class RadioBlend
                 var key = LastFmRadioSeedNormalizer.TrackKey(artist, title);
                 if (key.Length == 0 || key == seedKey || (song is not null && song.Id == seedId)) continue;
                 if (!byKey.TryGetValue(key, out var entry)) byKey[key] = entry = new Entry(byKey.Count);
-                entry.Score += term;
+                entry.Sum += term;
                 if (term > entry.Best) { entry.Best = term; entry.Provider = answer.Provider; }
                 // A library copy wins over a track to look up: it needs no resolving. A complete
                 // copy wins over a stub, which would have to be read again.

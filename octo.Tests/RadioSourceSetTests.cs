@@ -37,16 +37,10 @@ public sealed class RadioSourceSetTests
         Assert.Equal(0.9, weights[RadioProvider.LastFm]);
         Assert.Equal(0.7, weights[RadioProvider.ListenBrainz]);
         Assert.Equal(0.4, weights[RadioProvider.SoundsAlike]);
+        Assert.Equal(1.0, weights[RadioProvider.Deezer]);
         Assert.Equal(1.0, weights[RadioProvider.Library]);
     }
 
-    [Fact]
-    public void WhenNoCatalogKnowsTheSong_SoundsAlikeCountsMore_UnlessItWasLeftOut()
-    {
-        Assert.Equal(RadioBlend.SoundsAlikeWhenUnknown, Set(new RadioSourceSettings()).Weights(libraryLed: true)[RadioProvider.SoundsAlike]);
-        Assert.Equal(1.2, Set(new RadioSourceSettings { SoundsAlikeWeight = 1.2 }).Weights(libraryLed: true)[RadioProvider.SoundsAlike]);
-        Assert.Equal(0, Set(new RadioSourceSettings { SoundsAlikeWeight = 0 }).Weights(libraryLed: true)[RadioProvider.SoundsAlike]);
-    }
 
     [Fact]
     public void AnAdminWeightOutsideTheBounds_IsKept()

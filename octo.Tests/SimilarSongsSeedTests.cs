@@ -38,10 +38,12 @@ public sealed class SimilarSongsSeedTests
 
         Assert.NotEmpty(songs);
         Assert.DoesNotContain("spooky", songs);
-        // The playlist's own songs and the library's phonk, then Last.fm's phonk.
+        // The playlist's own songs, then Last.fm's phonk. Random library songs of the genre
+        // no longer join: a tag as broad as "Electronic" made them anything at all.
         Assert.Contains("pl-2", songs);
         Assert.Contains("pl-3", songs);
-        Assert.Contains("genre-1", songs);
+        Assert.DoesNotContain("genre-1", songs);
+        Assert.DoesNotContain(fixture.Handler.Calls, call => call.Contains("rest/getRandomSongs", StringComparison.Ordinal));
         Assert.Contains(songs, id => id.StartsWith("ext-Kordhell", StringComparison.Ordinal));
         Assert.True(songs.IndexOf(songs.First(id => id.StartsWith("ext-", StringComparison.Ordinal)))
             > 0, "a library song plays first");
@@ -219,6 +221,71 @@ public sealed class SimilarSongsSeedTests
     }
 
     [Fact]
+    public async Task WithNoLibraryShare_LibrarySongsStayOff_AndTheLibraryIsNotAsked()
+    {
+        await using var fixture = new Factory(new() { ["RadioSources:LibraryShare"] = "0" });
+        using var client = fixture.CreateClient();
+
+        var songs = await RadioIds(client, "roads");
+
+        Assert.Contains("ext-Massive Attack-Angel", songs);
+        Assert.DoesNotContain("dummy-2", songs);
+        Assert.DoesNotContain(fixture.Handler.Calls, call => call.Contains("rest/getAlbum", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ALibraryShare_CapsTheLibrarySongs()
+    {
+        // 5% of 20 songs: one of the playlist's two.
+        await using var fixture = new Factory(new() { ["RadioSources:LibraryShare"] = "5" });
+        using var client = fixture.CreateClient();
+
+        var songs = await RadioIds(client, "spooky");
+
+        Assert.Single(songs, id => id.StartsWith("pl-", StringComparison.Ordinal));
+        Assert.Contains(songs, id => id.StartsWith("ext-Kordhell", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OneArtist_HoldsAtMostATenthOfTheRadio()
+    {
+        await using var fixture = new Factory();
+        using var client = fixture.CreateClient();
+
+        var songs = await RadioIds(client, "mono");
+
+        // Two of Same Artist's ten and the fifteen others: a shorter radio, not a samey one.
+        Assert.Equal(17, songs.Count);
+        Assert.Equal(2, songs.Count(id => id.StartsWith("ext-Same Artist-", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task ASongHeardLately_WaitsUntilNothingElseFits()
+    {
+        await using var fixture = new Factory();
+        fixture.Services.GetRequiredService<LastFmRadioStateStore>().RecordPlay("alice",
+            new Octo.Models.Radio.LastFmRadioPlay { Artist = "Portishead", Title = "Glory Box", PlayedAtUtc = DateTime.UtcNow.AddDays(-1) });
+        using var client = fixture.CreateClient();
+
+        // Teardrop has 25 songs like it, so 20 others fill the radio first.
+        Assert.DoesNotContain("ext-Portishead-Glory Box", await RadioIds(client, "teardrop"));
+    }
+
+    [Fact]
+    public async Task TheSameSeedAgain_LeadsWithSongsTheFirstRadioDidNotServe()
+    {
+        await using var fixture = new Factory();
+        using var client = fixture.CreateClient();
+
+        var first = await RadioIds(client, "teardrop");
+        var second = await RadioIds(client, "teardrop");
+
+        Assert.Equal("ext-Portishead-Glory Box", first[0]);
+        Assert.DoesNotContain(second[0], first);
+        Assert.Equal(20, second.Count);
+    }
+
+    [Fact]
     public async Task AThinExactAnswer_IsFilledFromTheLibrary()
     {
         await using var fixture = new Factory();
@@ -263,7 +330,7 @@ public sealed class SimilarSongsSeedTests
     }
 
     [Fact]
-    public async Task AlbumId_IsARadioFromItsFirstSong()
+    public async Task AlbumId_IsARadioFromItsFirstSongs()
     {
         await using var fixture = new Factory();
         using var client = fixture.CreateClient();
@@ -377,6 +444,7 @@ public sealed class SimilarSongsSeedTests
             ["teardrop"] = Song("teardrop", "Teardrop", "Massive Attack", "Mezzanine", "al-mezz", "Trip-Hop"),
             ["roads"] = Song("roads", "Roads", "Portishead", "Dummy", "al-dummy", "Trip-Hop"),
             ["brand-new"] = Song("brand-new", "Brand New", "Drake", "Brand New", "al-brand-new", "Hip-Hop"),
+            ["mono"] = Song("mono", "Mono", "Seeder", "Mono", "al-mono", "Rock"),
             ["faded-nightcore"] = Song("faded-nightcore", "Alan Walker - Faded (Nightcore)", "Nightcore Galaxy",
                 "Nightcore", "al-nightcore", ""),
         };
@@ -465,6 +533,9 @@ public sealed class SimilarSongsSeedTests
                 {
                     // A full answer: Last.fm knows this song well.
                     ("Massive Attack", "Teardrop") => """{"similartracks":{"track":[{"name":"Glory Box","artist":{"name":"Portishead"},"match":0.9},{"name":"Trigger Hippie","artist":{"name":"Morcheeba"},"match":0.8},{"name":"Song 1","artist":{"name":"Artist 1"},"match":0.69},{"name":"Song 2","artist":{"name":"Artist 2"},"match":0.68},{"name":"Song 3","artist":{"name":"Artist 3"},"match":0.67},{"name":"Song 4","artist":{"name":"Artist 4"},"match":0.66},{"name":"Song 5","artist":{"name":"Artist 5"},"match":0.65},{"name":"Song 6","artist":{"name":"Artist 6"},"match":0.64},{"name":"Song 7","artist":{"name":"Artist 7"},"match":0.63},{"name":"Song 8","artist":{"name":"Artist 8"},"match":0.62},{"name":"Song 9","artist":{"name":"Artist 9"},"match":0.61},{"name":"Song 10","artist":{"name":"Artist 10"},"match":0.60},{"name":"Song 11","artist":{"name":"Artist 11"},"match":0.59},{"name":"Song 12","artist":{"name":"Artist 12"},"match":0.58},{"name":"Song 13","artist":{"name":"Artist 13"},"match":0.57},{"name":"Song 14","artist":{"name":"Artist 14"},"match":0.56},{"name":"Song 15","artist":{"name":"Artist 15"},"match":0.55},{"name":"Song 16","artist":{"name":"Artist 16"},"match":0.54},{"name":"Song 17","artist":{"name":"Artist 17"},"match":0.53},{"name":"Song 18","artist":{"name":"Artist 18"},"match":0.52},{"name":"Song 19","artist":{"name":"Artist 19"},"match":0.51},{"name":"Song 20","artist":{"name":"Artist 20"},"match":0.50},{"name":"Song 21","artist":{"name":"Artist 21"},"match":0.49},{"name":"Song 22","artist":{"name":"Artist 22"},"match":0.48},{"name":"Song 23","artist":{"name":"Artist 23"},"match":0.47}]}}""",
+                    // Ten of the first songs by one artist.
+                    ("Seeder", "Mono") => """{"similartracks":{"track":[""" + string.Join(",", Enumerable.Range(1, 25).Select(i =>
+                        $$"""{"name":"Tune {{i}}","artist":{"name":"{{(i <= 10 ? "Same Artist" : $"Other {i}")}}"},"match":{{1 - i / 100.0}}}""")) + "]}}",
                     // A thin one: two songs like it.
                     ("Portishead", "Roads") => """{"similartracks":{"track":[{"name":"Angel","artist":{"name":"Massive Attack"},"match":0.9},{"name":"Unfinished Sympathy","artist":{"name":"Massive Attack"},"match":0.8}]}}""",
                     ("Alan Walker", "Faded") => """{"similartracks":{"track":[{"name":"Wake Me Up","artist":{"name":"Avicii"},"match":0.9}]}}""",
@@ -505,6 +576,12 @@ public sealed class SimilarSongsSeedTests
 
         private static HttpResponseMessage Json(string body) =>
             new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+    }
+
+    /// <summary>Draws the same for every candidate, so a weighted draw is the weight order.</summary>
+    private sealed class Steady : Random
+    {
+        public override double NextDouble() => 0.5;
     }
 
     private sealed class Factory : WebApplicationFactory<Program>
@@ -548,6 +625,9 @@ public sealed class SimilarSongsSeedTests
                     ["RadioSources:YouTubeMusic"] = "false",
                     ["RadioSources:ListenBrainz"] = "false",
                     ["RadioSources:SoundsAlike"] = "false",
+                    ["RadioSources:Deezer"] = "false",
+                    // The library-led cases below are about library songs; the share has its own tests.
+                    ["RadioSources:LibraryShare"] = "100",
                     ["RadioSources:LearnFromListening"] = "false",
                     ["Octo:StateDirectory"] = _directory,
                 }).AddInMemoryCollection(_settings));
@@ -560,6 +640,8 @@ public sealed class SimilarSongsSeedTests
                 services.AddSingleton(_metadata.Object);
                 services.RemoveAll<Octo.Services.Admin.SettingsFileWriter>();
                 services.AddSingleton(new Octo.Services.Admin.SettingsFileWriter(Path.Combine(_directory, "settings.json")));
+                // The draw in weight order, so a test can name where a song lands.
+                services.AddSingleton<Func<Random>>(() => new Steady());
                 services.RemoveAll<LastFmRadioStateStore>();
                 services.AddSingleton(provider => new LastFmRadioStateStore(
                     Path.Combine(_directory, "radio-state.json"),

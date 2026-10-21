@@ -17,6 +17,16 @@ public class RadioSourceSettings
     /// file. Off also stops the analysis. RADIO_SOUNDS_ALIKE.</summary>
     public bool SoundsAlike { get; set; } = true;
 
+    /// <summary>Deezer's track mix for the song (its own "similar tracks" radio), or its artist
+    /// radio when Deezer has no such song. RADIO_DEEZER.</summary>
+    public bool Deezer { get; set; } = true;
+
+    /// <summary>The share of a song radio (getSimilarSongs) that may be songs already in the
+    /// library, 0 to 100. 0 makes song radio all discovery: library songs, and songs by artists
+    /// the library or the listener's plays already know, give way to new ones. The empty-radio
+    /// fallback to Navidrome still applies. RADIO_LIBRARY_SHARE.</summary>
+    public int LibraryShare { get; set; } = 0;
+
     /// <summary>The octo-sonic sidecar. RADIO_SONIC_URL.</summary>
     public string SonicUrl { get; set; } = "http://octo-sonic:8080";
 
@@ -41,10 +51,13 @@ public class RadioSourceSettings
     public double YouTubeMusicWeight { get; set; } = 1.0;
     public double ListenBrainzWeight { get; set; } = 0.7;
     public double SoundsAlikeWeight { get; set; } = 0.4;
+    public double DeezerWeight { get; set; } = 1.0;
 
     /// <summary>Let each listener's plays and skips move these weights (0.3 to 1.5). Off by default:
     /// a skip is often a song the listener already knows. RADIO_LEARN_FROM_LISTENING.</summary>
     public bool LearnFromListening { get; set; } = false;
+
+    public int EffectiveLibraryShare => Math.Clamp(LibraryShare, 0, 100);
 
     public int EffectiveSonicPauseSeconds => Math.Clamp(SonicPauseSeconds, 0, 600);
 

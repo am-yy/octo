@@ -291,64 +291,151 @@ public partial class DeezerMetadataService
             using var response = await DiscoveryRequestAsync("https://pipe.deezer.com/api", budget, body, token);
             if (response.Transient || response.Doc is null) return (new DeezerResponse { Transient = true }, null);
             var root = response.Doc.RootElement;
-            var unavailableNodes = new HashSet<int>();
-            if (root.TryGetProperty("errors", out var errors) && errors.ValueKind != JsonValueKind.Null)
-            {
-                if (errors.ValueKind != JsonValueKind.Array) return (new DeezerResponse { Transient = true }, null);
-                if (errors.GetArrayLength() > 0)
-                {
-                    var expired = errors.EnumerateArray().Any(error => Str(error, "type") == "JwtTokenExpiredError"
-                        || error.TryGetProperty("extensions", out var extension) && Str(extension, "type") == "JwtTokenExpiredError");
-                    if (expired && attempt == 0 && (token = await SearchTokenAsync(budget, token)) is not null) continue;
-                    // An unavailable result can coexist with usable recordings. Accept only
-                    // this known node-local error; all broader failures remain retryable.
-                    foreach (var error in errors.EnumerateArray())
-                    {
-                        var type = Str(error, "type") ?? (error.TryGetProperty("extensions", out var extension)
-                            ? Str(extension, "type") : null);
-                        if (type != "TrackMediaNotFoundException"
-                            || !error.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.Array
-                            || path.GetArrayLength() != 6 || path[0].GetString() != "instantSearch"
-                            || path[1].GetString() != "results" || path[2].GetString() != "tracks"
-                            || path[3].GetString() != "edges" || path[4].ValueKind != JsonValueKind.Number
-                            || !path[4].TryGetInt32(out var index) || index < 0 || path[5].GetString() != "node")
-                            return (new DeezerResponse { Transient = true }, null);
-                        unavailableNodes.Add(index);
-                    }
-                    budget.Incomplete = true;
-                }
-            }
-            var tracks = root.GetProperty("data").GetProperty("instantSearch").GetProperty("results").GetProperty("tracks");
-            var edges = tracks.GetProperty("edges");
-            if (edges.ValueKind != JsonValueKind.Array) return (new DeezerResponse { Transient = true }, null);
-            if (unavailableNodes.Any(index => index >= edges.GetArrayLength()
-                || edges[index].GetProperty("node").ValueKind != JsonValueKind.Null))
-                return (new DeezerResponse { Transient = true }, null);
-            budget.Incomplete |= tracks.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
-            var candidates = new List<object>();
-            for (var index = 0; index < edges.GetArrayLength(); index++)
-            {
-                if (unavailableNodes.Contains(index)) continue;
-                var node = edges[index].GetProperty("node");
-                if (node.ValueKind != JsonValueKind.Object) throw new JsonException("Missing search track.");
-                var names = new List<string>();
-                if (node.TryGetProperty("contributors", out var contributors) && contributors.ValueKind == JsonValueKind.Object
-                    && contributors.TryGetProperty("edges", out var people) && people.ValueKind == JsonValueKind.Array)
-                    foreach (var person in people.EnumerateArray())
-                        if (person.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Array
-                            && roles.EnumerateArray().Any(role => role.ValueKind == JsonValueKind.String && role.GetString() == "MAIN")
-                            && person.TryGetProperty("node", out var credit) && Str(credit, "name") is { Length: > 0 } name) names.Add(name);
-                candidates.Add(new
-                {
-                    id = node.GetProperty("id").ToString(), title = Str(node, "title"), isrc = Str(node, "ISRC"),
-                    duration = Int(node, "duration"), artist = new { name = names.Count == 0 ? null : string.Join(", ", names) }
-                });
-            }
+            if (attempt == 0 && TokenExpired(root) && (token = await SearchTokenAsync(budget, token)) is not null) continue;
+            if (WebCandidates(root, "instantSearch") is not { } found) return (new DeezerResponse { Transient = true }, null);
+            budget.Incomplete |= found.Incomplete;
+            var candidates = found.Candidates;
             using var normalized = JsonSerializer.SerializeToDocument(new { data = candidates });
             if (BestMatch(normalized, artist, title, excluded, recording: true, duration: budget.Duration) is JsonElement match)
                 return await ReadCandidateAsync(match.GetProperty("id").ToString(), artist, title, budget, readableOnly, match);
             return await HydrateIncompleteAsync(normalized, artist, title, budget, excluded, readableOnly);
         }
         return (new DeezerResponse { Transient = true }, null);
+    }
+
+    /// <summary>Songs one batched pipe request looks up; see <see cref="FindTracksBatchAsync"/>.</summary>
+    internal const int BatchSearchSize = 10;
+
+    private const string BatchTrackFields = """
+        results{tracks(first:5){edges{node{id title duration album{displayTitle}
+          contributors{edges{roles node{... on Artist{name}}}}}} pageInfo{hasNextPage}}}
+        """;
+
+    /// <summary>
+    /// Many songs looked up at once, for radio: one pipe request per <see cref="BatchSearchSize"/>
+    /// songs, each song an aliased instantSearch for its artist and title, matched the way the
+    /// single search matches. Seventy songs one search ladder at a time took half a minute.
+    /// Each song gets its track, or null when this quick look found none: that is not a miss,
+    /// so nothing is cached as absent and the caller can run <see cref="EnrichTrackAsync"/> for it.
+    /// </summary>
+    public async Task<IReadOnlyList<TrackMeta?>> FindTracksBatchAsync(
+        IReadOnlyList<(string Artist, string Title, int? Duration)> songs, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var results = new TrackMeta?[songs.Count];
+        await Task.WhenAll(Enumerable.Range(0, songs.Count).Chunk(BatchSearchSize).Select(async chunk =>
+        {
+            using var budget = new TrackSearchBudget(_stopping.Token, background: false);
+            try
+            {
+                var token = await SearchTokenAsync(budget);
+                if (token is null) return;
+                var query = "query OctoTrackBatch(" + string.Join(",", chunk.Select(i => $"$q{i}:String!")) + "){"
+                    + string.Join(" ", chunk.Select(i => $"q{i}:instantSearch(query:$q{i}){{{BatchTrackFields}}}")) + "}";
+                var body = JsonSerializer.Serialize(new
+                {
+                    query,
+                    variables = chunk.ToDictionary(i => "q" + i, i => PlainQuery(songs[i].Artist, songs[i].Title)),
+                });
+                for (var attempt = 0; attempt < 2; attempt++)
+                {
+                    using var response = await DiscoveryRequestAsync("https://pipe.deezer.com/api", budget, body, token);
+                    if (response.Transient || response.Doc is null) return;
+                    var root = response.Doc.RootElement;
+                    if (attempt == 0 && TokenExpired(root) && (token = await SearchTokenAsync(budget, token)) is not null)
+                        continue;
+                    if (root.TryGetProperty("extensions", out var extensions))
+                        _logger.LogDebug("deezer batch of {Count} cost {Cost}", chunk.Length, Int(extensions, "queryCost"));
+                    foreach (var i in chunk)
+                    {
+                        if (WebCandidates(root, "q" + i) is not { } found) continue;
+                        using var normalized = JsonSerializer.SerializeToDocument(new { data = found.Candidates });
+                        if (BestMatch(normalized, songs[i].Artist, songs[i].Title, recording: true,
+                                duration: songs[i].Duration) is not JsonElement match) continue;
+                        results[i] = new TrackMeta(
+                            match.TryGetProperty("album", out var album) ? Str(album, "title") : null, null, null,
+                            Int(match, "duration"),
+                            match.TryGetProperty("artist", out var credit) ? Str(credit, "name") : null, null,
+                            match.GetProperty("id").GetString());
+                    }
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // Unknown, not missing: the caller's full search decides these songs.
+                _logger.LogDebug("deezer batch of {Count} stopped after {Requests} request(s): {Type}",
+                    chunk.Length, budget.Requests, ex.GetType().Name);
+            }
+        }));
+        return results;
+    }
+
+    private static bool TokenExpired(JsonElement root) =>
+        root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array
+        && errors.EnumerateArray().Any(error => Str(error, "type") == "JwtTokenExpiredError"
+            || error.TryGetProperty("extensions", out var extension) && Str(extension, "type") == "JwtTokenExpiredError");
+
+    /// <summary>
+    /// The tracks one instantSearch field (<paramref name="field"/>: "instantSearch", or an alias
+    /// in a batch) answered, in the REST search shape BestMatch reads. Null when the answer cannot
+    /// be trusted. The one error accepted is node-local "media not found" under that field: its
+    /// track is left out and the answer counts as incomplete, as is one with a next page.
+    /// </summary>
+    private static (List<object> Candidates, bool Incomplete)? WebCandidates(JsonElement root, string field)
+    {
+        var unavailableNodes = new HashSet<int>();
+        if (root.TryGetProperty("errors", out var errors) && errors.ValueKind != JsonValueKind.Null)
+        {
+            if (errors.ValueKind != JsonValueKind.Array) return null;
+            foreach (var error in errors.EnumerateArray())
+            {
+                var type = Str(error, "type") ?? (error.TryGetProperty("extensions", out var extension)
+                    ? Str(extension, "type") : null);
+                if (!error.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.Array
+                    || path.GetArrayLength() == 0 || path[0].GetString() is not { } owner)
+                    return null;
+                // Another field's error in a batch is that field's business.
+                if (owner != field) continue;
+                if (type != "TrackMediaNotFoundException"
+                    || path.GetArrayLength() != 6
+                    || path[1].GetString() != "results" || path[2].GetString() != "tracks"
+                    || path[3].GetString() != "edges" || path[4].ValueKind != JsonValueKind.Number
+                    || !path[4].TryGetInt32(out var index) || index < 0 || path[5].GetString() != "node")
+                    return null;
+                unavailableNodes.Add(index);
+            }
+        }
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
+            || !data.TryGetProperty(field, out var search) || search.ValueKind != JsonValueKind.Object) return null;
+        var tracks = search.GetProperty("results").GetProperty("tracks");
+        var edges = tracks.GetProperty("edges");
+        if (edges.ValueKind != JsonValueKind.Array) return null;
+        if (unavailableNodes.Any(index => index >= edges.GetArrayLength()
+            || edges[index].GetProperty("node").ValueKind != JsonValueKind.Null))
+            return null;
+        var incomplete = unavailableNodes.Count > 0 || tracks.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
+        var candidates = new List<object>();
+        for (var index = 0; index < edges.GetArrayLength(); index++)
+        {
+            if (unavailableNodes.Contains(index)) continue;
+            var node = edges[index].GetProperty("node");
+            if (node.ValueKind != JsonValueKind.Object) throw new JsonException("Missing search track.");
+            var names = new List<string>();
+            if (node.TryGetProperty("contributors", out var contributors) && contributors.ValueKind == JsonValueKind.Object
+                && contributors.TryGetProperty("edges", out var people) && people.ValueKind == JsonValueKind.Array)
+                foreach (var person in people.EnumerateArray())
+                    if (person.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Array
+                        && roles.EnumerateArray().Any(role => role.ValueKind == JsonValueKind.String && role.GetString() == "MAIN")
+                        && person.TryGetProperty("node", out var credit) && Str(credit, "name") is { Length: > 0 } name) names.Add(name);
+            candidates.Add(new
+            {
+                id = node.GetProperty("id").ToString(), title = Str(node, "title"), isrc = Str(node, "ISRC"),
+                duration = Int(node, "duration"), artist = new { name = names.Count == 0 ? null : string.Join(", ", names) },
+                album = new { title = node.TryGetProperty("album", out var album) && album.ValueKind == JsonValueKind.Object
+                    ? Str(album, "displayTitle") : null },
+            });
+        }
+        return (candidates, incomplete);
     }
 }

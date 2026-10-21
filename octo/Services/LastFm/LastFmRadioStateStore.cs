@@ -131,26 +131,29 @@ public sealed class LastFmRadioStateStore
     }
 
     /// <summary>Removes an unplayable song from every current station and prevents
-    /// an immediate deterministic refresh from selecting it again.</summary>
-    public int RejectTrack(string username, LastFmRadioTrack track, DateTime? nowUtc = null)
+    /// an immediate deterministic refresh from selecting it again. Returns each station it
+    /// left, with the songs that station has left.</summary>
+    public IReadOnlyList<(string Key, int Remaining)> RejectTrack(string username, LastFmRadioTrack track,
+        DateTime? nowUtc = null)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(track.Artist)
-            || string.IsNullOrWhiteSpace(track.Title)) return 0;
+            || string.IsNullOrWhiteSpace(track.Title)) return [];
         lock (_lock)
         {
             var state = LoadLocked();
             var user = GetOrCreateLocked(state, username);
             var now = nowUtc ?? DateTime.UtcNow;
             var key = LastFmRadioSeedNormalizer.TrackKey(track.Artist, track.Title);
-            var removed = 0;
+            var shortened = new List<(string Key, int Remaining)>();
             foreach (var station in user.Stations)
             {
                 var before = station.Tracks.Count;
                 station.Tracks = station.Tracks.Where(candidate =>
                     LastFmRadioSeedNormalizer.TrackKey(candidate.Artist, candidate.Title) != key)
                     .ToList();
-                removed += before - station.Tracks.Count;
-                if (before != station.Tracks.Count) station.ChangedUtc = now;
+                if (before == station.Tracks.Count) continue;
+                station.ChangedUtc = now;
+                shortened.Add((station.Key, station.Tracks.Count));
             }
             user.UnavailableTracks = (user.UnavailableTracks ?? [])
                 .Where(item => item.RetryAfterUtc > now && item.Key != key)
@@ -163,7 +166,7 @@ public sealed class LastFmRadioStateStore
                 .Take(MaxUnavailableTracksPerUser).ToList();
             user.LastSeenUtc = now;
             SaveLocked(state);
-            return removed;
+            return shortened;
         }
     }
 

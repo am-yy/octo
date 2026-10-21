@@ -38,10 +38,10 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
                 || (_personalizedShape != PersonalizedShape(changed));
             foreach (var user in _state.KnownUsers())
             {
-                if (rebuildAll) _queue.Enqueue(user);
+                if (rebuildAll) _queue.Enqueue(user, reason: "settings changed");
                 else foreach (var pair in next.Where(pair => !_definitions.TryGetValue(pair.Key, out var old)
                                   || old != pair.Value))
-                        _queue.Enqueue(user, pair.Key);
+                        _queue.Enqueue(user, "pinned-" + pair.Key, "station definition changed");
             }
             _definitions = next;
             _radioEnabled = changed.EnableRadio;
@@ -75,7 +75,7 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
             if (stoppingToken.IsCancellationRequested) break;
             var user = _state.GetUser(username);
             var stale = LastFmRadioRefreshPolicy.IsStale(user, _settings.CurrentValue);
-            if (stale) _queue.Enqueue(username);
+            if (stale) _queue.Enqueue(username, reason: "stale at startup");
             try { await Task.Delay(LastFmRadioRefreshPolicy.StartupJitter(username), stoppingToken); }
             catch (OperationCanceledException) { return; }
         }
@@ -112,7 +112,7 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
             foreach (var username in _state.KnownUsers())
                 if (LastFmRadioRefreshPolicy.ShouldSchedulePeriodicRefresh(
                         _state.GetUser(username), settings))
-                    _queue.Enqueue(username);
+                    _queue.Enqueue(username, reason: "stale");
         }
     }
 
@@ -136,16 +136,19 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
         var settings = _settings.CurrentValue;
         if (!settings.EnableRadio
             || (!settings.EnablePersonalizedStations && !settings.EnableDiscoveryStations)) return false;
+        _logger.LogInformation("Radio refresh for {User}, {Stations}: {Reason}", job.Username,
+            job.StationKey ?? "all stations", job.Reason);
         _state.MarkRefreshing(job.Username);
         using var scope = _scopes.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<LastFmRadioRecommendationService>();
         var built = await service.BuildAsync(job.Username, cancellationToken);
         IReadOnlyCollection<Octo.Models.Radio.LastFmRadioStation> stations = built;
-        if (!string.IsNullOrEmpty(job.StationDefinitionId))
+        if (!string.IsNullOrEmpty(job.StationKey))
         {
+            // One station is replaced; every other station keeps the songs it has.
             var replacement = built.FirstOrDefault(station =>
-                station.Key == "pinned-" + job.StationDefinitionId);
-            if (replacement is null) throw new InvalidOperationException("Pinned station returned no usable tracks");
+                string.Equals(station.Key, job.StationKey, StringComparison.OrdinalIgnoreCase));
+            if (replacement is null) throw new InvalidOperationException("Station returned no usable tracks");
             var merged = _state.GetUser(job.Username).Stations
                 .Where(station => station.Key != replacement.Key).ToList();
             merged.Add(replacement);

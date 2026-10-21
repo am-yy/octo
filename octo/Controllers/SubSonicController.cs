@@ -838,7 +838,7 @@ public partial class SubsonicController : ControllerBase
         if (_radioStateStore is null || _radioRefreshQueue is null || username.Length == 0) return;
         var user = _radioStateStore.GetUser(username);
         if (user.Stations.Count == 0 || LastFmRadioRefreshPolicy.IsStale(user, _lastFmSettings))
-            _radioRefreshQueue.Enqueue(username);
+            _radioRefreshQueue.Enqueue(username, reason: user.Stations.Count == 0 ? "no stations on read" : "stale on read");
     }
 
     private async Task BootstrapRadioProfileAsync(string username,
@@ -3349,8 +3349,8 @@ public partial class SubsonicController : ControllerBase
         }
         if (!learning || !recorded || _radioRefreshQueue is null) return;
         var user = _radioStateStore!.GetUser(username);
-        if (LastFmRadioRefreshPolicy.ShouldRefreshAfterPlay(user, _lastFmSettings))
-            _radioRefreshQueue.Enqueue(username);
+        if (LastFmRadioRefreshPolicy.RefreshReasonAfterPlay(user, _lastFmSettings) is { } reason)
+            _radioRefreshQueue.Enqueue(username, reason: "after a play: " + reason);
     }
 
     /// <summary>

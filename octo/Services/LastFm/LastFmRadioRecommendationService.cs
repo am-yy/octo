@@ -67,6 +67,12 @@ public sealed class LastFmRadioRecommendationService
     internal const int ArtistGap = 4;
     internal const int TitleGap = 8;
 
+    /// <summary>The linked Last.fm account's long-term artists: how far back, how many, and what
+    /// the account's top artist adds to an artist's score (see <see cref="ScoreArtists"/>).</summary>
+    internal const string LongTermPeriod = "6month";
+    internal const int LongTermArtists = 50;
+    internal const double LongTermWeight = 1.0;
+
     /// <summary>Weight kept by an artist with a song the listener rated one star.</summary>
     internal const double DislikedArtistWeight = 0.5;
 
@@ -162,7 +168,6 @@ public sealed class LastFmRadioRecommendationService
         var refillHeadroom = Math.Min(unavailable.Count, settings.EffectiveRadioTrackCount);
         var candidateTarget = Math.Min(100,
             settings.EffectiveRadioTrackCount + refillHeadroom + 10);
-        var artistScores = ScoreArtists(plays);
         // Seeds are the strongest recent signals, not simply the newest plays: a heart
         // outranks a play, a chosen play outranks one the radio served, and age decays.
         var trackSeeds = plays.OrderByDescending(SeedScore)
@@ -174,7 +179,11 @@ public sealed class LastFmRadioRecommendationService
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(TimeSpan.FromSeconds(25));
         var ct = budget.Token;
-        var known = await KnownArtistsAsync(plays, ct);
+        var longTerm = await LongTermArtistsAsync(username, settings, ct);
+        var artistScores = ScoreArtists(plays, longTerm);
+        _logger.LogInformation("Radio taste for {User} ({LongTerm} long-term Last.fm artists): {Artists}", username,
+            longTerm.Count, string.Join(", ", artistScores.Take(20).Select(pair => $"{pair.Key} {pair.Value:0.00}")));
+        var known = await KnownArtistsAsync(plays.Select(play => play.Artist).Concat(longTerm), ct);
         foreach (var artist in artistScores.Take(5).Select(pair => pair.Key))
         {
             try
@@ -465,11 +474,21 @@ public sealed class LastFmRadioRecommendationService
         }
     }
 
-    /// <summary>The artists this listener already knows: everyone they have played, and everyone
-    /// in the library when Octo can read it. Spelled by <see cref="ArtistKey"/>.</summary>
-    private async Task<IReadOnlySet<string>> KnownArtistsAsync(IEnumerable<LastFmRadioPlay> plays, CancellationToken ct)
+    /// <summary>The linked Last.fm account's top <see cref="LongTermArtists"/> artists over
+    /// <see cref="LongTermPeriod"/>; none when no account is linked or Last.fm does not answer.</summary>
+    private async Task<IReadOnlyList<string>> LongTermArtistsAsync(string username, LastFmSettings settings,
+        CancellationToken ct)
     {
-        var known = plays.Select(play => ArtistKey(play.Artist)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (settings.SessionFor(username)?.LastFmUser?.Trim() is not { Length: > 0 } account) return [];
+        try { return await _lastFm.GetUserTopArtistsAsync(account, LongTermPeriod, LongTermArtists, ct); }
+        catch (OperationCanceledException) { return []; }
+    }
+
+    /// <summary>The artists this listener already knows: everyone they have played or follow on
+    /// Last.fm, and everyone in the library when Octo can read it. Spelled by <see cref="ArtistKey"/>.</summary>
+    private async Task<IReadOnlySet<string>> KnownArtistsAsync(IEnumerable<string> artists, CancellationToken ct)
+    {
+        var known = artists.Select(ArtistKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (_library is null) return known;
         try
         {
@@ -684,12 +703,25 @@ public sealed class LastFmRadioRecommendationService
         }
     }
 
-    private static Dictionary<string, double> ScoreArtists(IEnumerable<LastFmRadioPlay> plays)
+    /// <summary>
+    /// How closely the listener follows each artist, strongest first. Every play counts, by
+    /// <see cref="SeedScore"/>, taken as log(1 + sum): a steady favourite outranks one
+    /// afternoon's binge, and the binge still counts. The linked Last.fm account's long-term
+    /// top artists add <see cref="LongTermWeight"/>, fading by rank the way a provider list
+    /// does, so a taste is more than the last few plays.
+    /// </summary>
+    internal static Dictionary<string, double> ScoreArtists(IEnumerable<LastFmRadioPlay> plays,
+        IReadOnlyList<string>? longTerm = null)
     {
         var scores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in plays.GroupBy(play => LastFmRadioSeedNormalizer.Artist(play.Artist) ?? play.Artist,
                      StringComparer.OrdinalIgnoreCase))
-            scores[group.Key] = group.Take(3).Sum(SeedScore);
+            scores[group.Key] = Math.Log(1 + group.Sum(SeedScore));
+        foreach (var (artist, rank) in (longTerm ?? []).Select((artist, rank) => (artist, rank)))
+        {
+            var key = LastFmRadioSeedNormalizer.Artist(artist) ?? artist;
+            scores[key] = scores.GetValueOrDefault(key) + LongTermWeight * RankDecay(rank);
+        }
         return scores.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key)
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
     }

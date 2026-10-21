@@ -461,6 +461,19 @@ public partial class LastFmService
                 .Where(item => item.Name.Length > 0).Take(limit).ToList();
         }, cancellationToken);
 
+    /// <summary>A Last.fm account's most played artists over <paramref name="period"/> (7day,
+    /// 1month, 3month, 6month, 12month or overall), most played first. Public: no session needed.</summary>
+    public Task<List<string>> GetUserTopArtistsAsync(string user, string period = "6month", int limit = 50,
+        CancellationToken cancellationToken = default) => CachedAsync(
+        $"user-top-artists|{user}|{period}|{limit}", async ct =>
+        {
+            using var doc = await GetDocumentAsync("user.gettopartists", new Dictionary<string, string>
+                { ["user"] = user, ["period"] = period, ["limit"] = limit.ToString() }, ct);
+            if (doc is null || !TryArray(doc.RootElement, "topartists", "artist", out var values)) return [];
+            return values.EnumerateArray().Select(item => Text(item, "name"))
+                .Where(name => name.Length > 0).Take(limit).ToList();
+        }, cancellationToken);
+
     public Task<List<string>> GetArtistTopTagsAsync(string artist, int limit = 10,
         CancellationToken cancellationToken = default) => GetTagsAsync(
         "artist.gettoptags", new() { ["artist"] = artist }, $"artist-tags|{artist}|{limit}", limit,

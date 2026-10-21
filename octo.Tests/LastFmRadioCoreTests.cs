@@ -572,7 +572,7 @@ public class LastFmRadioStateStoreTests
             new LastFmRadioStation { Id = "two", Tracks = [bad, new() { Artist = "B", Title = "U" }] },
         ]);
 
-        Assert.Equal(2, fixture.Store.RejectTrack("alice", bad));
+        Assert.Equal(2, fixture.Store.RejectTrack("alice", bad).Count);
         var user = fixture.Store.GetUser("alice");
         Assert.All(user.Stations, station => Assert.DoesNotContain(station.Tracks,
             track => track.Title == "Bad Song"));
@@ -610,9 +610,9 @@ public class LastFmRadioRefreshQueueTests
         Assert.False(queue.Enqueue("ALICE"));
         Assert.True(queue.Enqueue("alice", "rock"));
         Assert.True(queue.Enqueue("alice", "jazz"));
-        Assert.Null((await queue.DequeueAsync(default)).StationDefinitionId);
-        Assert.Equal("rock", (await queue.DequeueAsync(default)).StationDefinitionId);
-        Assert.Equal("jazz", (await queue.DequeueAsync(default)).StationDefinitionId);
+        Assert.Null((await queue.DequeueAsync(default)).StationKey);
+        Assert.Equal("rock", (await queue.DequeueAsync(default)).StationKey);
+        Assert.Equal("jazz", (await queue.DequeueAsync(default)).StationKey);
     }
 
     [Fact]
@@ -686,7 +686,7 @@ public class LastFmRadioRefreshQueueTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
         var job = await fixture.Queue.DequeueAsync(timeout.Token);
         Assert.Equal("alice", job.Username);
-        Assert.Equal("jazz", job.StationDefinitionId);
+        Assert.Equal("pinned-jazz", job.StationKey);
     }
 
     [Fact]
@@ -704,6 +704,78 @@ public class LastFmRadioRefreshQueueTests
         Assert.True(await first);
         Assert.True(await second);
         Assert.Equal(0, fixture.Worker.InFlightCount);
+    }
+
+    [Fact]
+    public async Task Worker_StationJobReplacesOnlyThatStation()
+    {
+        using var fixture = new WorkerFixture(new LastFmSettings
+        {
+            ApiKey = "key", EnableRadio = true, EnablePersonalizedStations = false, EnableDiscoveryStations = true,
+            DiscoveryStations =
+            [
+                new() { Id = "rock", Name = "Rock", Tags = ["rock"] },
+                new() { Id = "jazz", Name = "Jazz", Tags = ["jazz"] }
+            ]
+        }, new TagChartHandler());
+        LastFmRadioStation Old(string id) => new()
+        {
+            Id = LastFmRadioStateStore.StationId("alice", "pinned-" + id), Key = "pinned-" + id,
+            Name = id, Owner = "alice", Tracks = [new() { Artist = "Old", Title = "Old " + id }]
+        };
+        fixture.State.ReplaceStations("alice", [Old("rock"), Old("jazz")]);
+
+        Assert.True(await fixture.Worker.ProcessAsync(new LastFmRadioRefreshJob("alice", "pinned-jazz")));
+
+        var stations = fixture.State.GetUser("alice").Stations;
+        Assert.Equal("Old rock", Assert.Single(Assert.Single(stations, s => s.Key == "pinned-rock").Tracks).Title);
+        Assert.DoesNotContain(Assert.Single(stations, s => s.Key == "pinned-jazz").Tracks, t => t.Artist == "Old");
+    }
+
+    [Fact]
+    public void RejectTrack_ReportsWhatEachShortenedStationHasLeft()
+    {
+        var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "octo-radio-reject-" + Guid.NewGuid());
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settings = TestOptions.Monitor(new LastFmSettings { RadioTrackCount = 50 });
+            var state = new LastFmRadioStateStore(System.IO.Path.Combine(directory, "state.json"), settings,
+                new ExternalIdRegistry(), new Mock<ILogger<LastFmRadioStateStore>>().Object);
+            var bad = new LastFmRadioTrack { Artist = "Bad", Title = "Song" };
+            List<LastFmRadioTrack> Tracks(int count) => [bad, .. Enumerable.Range(0, count)
+                .Select(index => new LastFmRadioTrack { Artist = "A" + index, Title = "T" + index })];
+            state.ReplaceStations("alice",
+            [
+                new LastFmRadioStation { Id = "full", Key = "full", Tracks = Tracks(40) },
+                new LastFmRadioStation { Id = "thin", Key = "thin", Tracks = Tracks(12) },
+                new LastFmRadioStation { Id = "other", Key = "other", Tracks = [new() { Artist = "C", Title = "D" }] },
+            ]);
+
+            var shortened = state.RejectTrack("alice", bad);
+
+            Assert.Equal([("full", 40), ("thin", 12)], shortened);
+            // Only the station below half its size is rebuilt; one bad song leaves the rest alone.
+            var floor = LastFmRadioStreamService.RefillFloor(settings.CurrentValue);
+            Assert.Equal(["thin"], shortened.Where(item => item.Remaining < floor).Select(item => item.Key));
+        }
+        finally { try { Directory.Delete(directory, true); } catch { } }
+    }
+
+    private sealed class TagChartHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            object body = query["method"] == "tag.gettoptracks"
+                ? new { tracks = new { track = Enumerable.Range(0, 20)
+                    .Select(index => new { name = $"{query["tag"]}-{index}", duration = 180000,
+                        artist = new { name = $"{query["tag"]} Artist {index}" } }).ToArray() }}
+                : new { };
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new StringContent(JsonSerializer.Serialize(body)) });
+        }
     }
 
     private sealed class WorkerFixture : IDisposable

@@ -10,6 +10,7 @@ namespace Octo.Services.Radio;
 /// answers blended, resolved local first, and each song marked with the source it came from.
 /// </summary>
 public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackResolver resolver,
+    IMusicMetadataService metadata,
     IOptionsMonitor<LastFmSettings> lastFmSettings,
     IOptionsMonitor<SubsonicSettings> subsonicSettings,
     ILogger<SongRadioService> logger, RadioOutcomeStore? outcomes = null,
@@ -25,6 +26,7 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
     public async Task<List<Song>> BuildAsync(RadioSeed seed, int count, string? listener,
         IReadOnlyDictionary<string, string> auth, IReadOnlySet<string> bans, CancellationToken ct)
     {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         // Strip collab/feature decoration so the catalogs find the canonical artist.
         var lookup = seed with
         {
@@ -45,6 +47,7 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
                 answers.AddRange(await sources.TagAllAsync(genre, count, ct));
         }
 
+        var asked = clock.Elapsed;
         answers = answers.Select(answer => RadioBlend.WithoutFillerOrBans(answer, bans)).ToList();
         var weights = sources.Weights(listener, libraryLed);
         var picks = RadioBlend.Blend(answers, weights, (int)Math.Ceiling(count * PickHeadroom),
@@ -65,8 +68,8 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
             {
                 var song = pick.LibrarySong is { } library
                     ? (pick.NeedsReading ? await resolver.ReadLibrarySongAsync(library.Id, auth) : library)
-                    : await resolver.ResolveAsync(pick.Track!.Artist, pick.Track.Title, pick.Track.Duration,
-                        auth, ct, pick.Track.YouTubeId);
+                    : await resolver.ResolvePlaceholderAsync(pick.Track!.Artist, pick.Track.Title, pick.Track.Duration,
+                        auth, pick.Track.YouTubeId);
                 if (song is not null) song.SuggestedBy = RadioProvider.DisplayName(pick.Provider);
                 return song;
             }
@@ -77,9 +80,14 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
             }
             finally { gate.Release(); }
         }));
-        // One per song, and never the seed itself.
+        var placed = clock.Elapsed;
+        // Every outside song is checked against Deezer in one batched pass, not one search each.
+        var playable = (await metadata.PlayableAsync(resolved.OfType<Song>().Where(song => !song.IsLocal).ToList(), ct))
+            .ToHashSet();
+        // One per song, playable, and never the seed itself.
         var scored = picks.Zip(resolved, (pick, song) => (Song: song, pick.Score))
-            .Where(item => item.Song is not null && item.Song.Id != seed.LibrarySong?.Id)
+            .Where(item => item.Song is not null && (item.Song.IsLocal || playable.Contains(item.Song))
+                && item.Song.Id != seed.LibrarySong?.Id)
             .Select(item => (Song: item.Song!, item.Score)).DistinctBy(item => item.Song.Id).ToList();
         // Sound check: a library pick that sounds far from the seed slips down, one that sounds
         // close moves up. It catches a catalog's wrong-mood pick that the other sources missed.
@@ -101,6 +109,10 @@ public sealed class SongRadioService(RadioSourceSet sources, LastFmRadioTrackRes
                 _ => true,
             }).Take(count).ToList();
         outcomes?.Served(listener, songs.Select(song => (song.Id, RadioProvider.FromDisplayName(song.SuggestedBy))));
+        logger.LogInformation("Radio for '{Artist} - {Title}' took {Total} ms: sources {Asked} ms, library and "
+            + "placeholders {Placed} ms, Deezer check {Checked} ms; {Songs} songs", seed.Artist, seed.Title,
+            (int)clock.ElapsedMilliseconds, (int)asked.TotalMilliseconds, (int)(placed - asked).TotalMilliseconds,
+            (int)(clock.Elapsed - placed).TotalMilliseconds, songs.Count);
 
         // A library-led radio keeps its order: its neighbours often share the seed's artist (one
         // uploader for a whole playlist), and spacing by artist would push every one of them back.

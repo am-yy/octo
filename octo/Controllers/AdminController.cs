@@ -352,7 +352,9 @@ public class AdminController : ControllerBase
             request.User = listener;
         if (_radioRefresh is null || string.IsNullOrWhiteSpace(request.User))
             return BadRequest(new { error = "A known Navidrome user is required" });
-        var queued = _radioRefresh.Enqueue(request.User, request.StationId);
+        // StationId names a pinned definition, as the dashboard and the Octo app send it.
+        var queued = _radioRefresh.Enqueue(request.User,
+            string.IsNullOrWhiteSpace(request.StationId) ? null : "pinned-" + request.StationId.Trim(), "asked from Octo");
         return Accepted(new { ok = true, queued });
     }
 

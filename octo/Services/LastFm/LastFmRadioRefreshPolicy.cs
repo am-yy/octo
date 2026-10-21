@@ -13,12 +13,18 @@ public static class LastFmRadioRefreshPolicy
             .AddHours(-settings.EffectiveRefreshIntervalHours);
 
     public static bool ShouldRefreshAfterPlay(LastFmRadioUserState user, LastFmSettings settings,
+        DateTime? nowUtc = null) => RefreshReasonAfterPlay(user, settings, nowUtc) is not null;
+
+    /// <summary>Why a play calls for a rebuild, for the log; null when it does not.</summary>
+    public static string? RefreshReasonAfterPlay(LastFmRadioUserState user, LastFmSettings settings,
         DateTime? nowUtc = null)
     {
-        var learnedCount = user.Plays.Count(play => play.LearnedSignal);
-        return user.Stations.Count == 0 || IsStale(user, settings, nowUtc)
-            || user.NewPlaysSinceRefresh >= Math.Max(3, settings.EffectiveMinimumPlays / 2)
-            || learnedCount == settings.EffectiveMinimumPlays;
+        if (user.Stations.Count == 0) return "no stations yet";
+        if (IsStale(user, settings, nowUtc)) return "stale";
+        var threshold = Math.Max(3, settings.EffectiveMinimumPlays / 2);
+        if (user.NewPlaysSinceRefresh >= threshold) return $"{user.NewPlaysSinceRefresh} new plays (threshold {threshold})";
+        return user.Plays.Count(play => play.LearnedSignal) == settings.EffectiveMinimumPlays
+            ? "enough plays to learn from" : null;
     }
 
     public static bool ShouldSchedulePeriodicRefresh(LastFmRadioUserState user,

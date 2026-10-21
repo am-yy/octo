@@ -303,6 +303,103 @@ public sealed class DeezerTrackSearchTests
     }
 
     [Fact]
+    public async Task BatchLooksUpManySongsInOnePipeRequest()
+    {
+        // q0 is found; q1's only hit has no media, q2 has nothing; another field's error is not q0's.
+        var answer = JsonSerializer.Serialize(new
+        {
+            errors = new object[] { new { type = "TrackMediaNotFoundException",
+                path = new object[] { "q1", "results", "tracks", "edges", 0, "node" } } },
+            data = new Dictionary<string, object>
+            {
+                ["q0"] = BatchField([WebTrack("2476993601", Title, Artist)]),
+                ["q1"] = BatchField([null]),
+                ["q2"] = BatchField([]),
+            },
+        });
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(answer),
+            _ => Json(EmptyRest),
+        }));
+
+        var found = await rig.Service.FindTracksBatchAsync(
+            [(Artist, Title, 230), ("Gone", "Song", null), ("Nobody", "Nothing", null)]);
+
+        Assert.Equal("2476993601", found[0]?.DeezerId);
+        Assert.Equal("Reading, Writing And Arithmetic", found[0]?.AlbumTitle);
+        Assert.Null(found[1]);
+        Assert.Null(found[2]);
+        var pipe = Assert.Single(rig.Calls, call => call.Host == "pipe.deezer.com");
+        using var body = JsonDocument.Parse(pipe.Body!);
+        Assert.Equal(3, body.RootElement.GetProperty("variables").EnumerateObject().Count());
+        Assert.DoesNotContain(rig.Calls, call => call.Host == "api.deezer.com");
+        // A quick look that found nothing is not a miss: the full search still decides.
+        Assert.False(rig.Service.KnownMissing("Nobody", "Nothing", null));
+    }
+
+    [Fact]
+    public async Task BatchAnswerWithAnUnknownErrorLeavesEverySongUnknown()
+    {
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => Json(new { errors = new[] { new { type = "error", message = "Error" } } }),
+            _ => Json(EmptyRest),
+        }));
+
+        var found = await rig.Service.FindTracksBatchAsync([(Artist, Title, 230)]);
+
+        Assert.Null(Assert.Single(found));
+    }
+
+    [Fact]
+    public async Task PlayableAsksTheBatchFirstAndSearchesFullyOnlyForItsMisses()
+    {
+        var registry = new Octo.Services.Soulseek.ExternalIdRegistry();
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" when request.Body!.Contains("OctoTrackBatch") => Json(JsonSerializer.Serialize(new
+            {
+                data = Enumerable.Range(0, 12).ToDictionary(i => "q" + i, i => BatchField(i == 11
+                    ? [] : [WebTrack((1000 + i).ToString(), $"Song {i}", Artist)])),
+            })),
+            "pipe.deezer.com" => Json(EmptyWeb),
+            _ => Json(EmptyRest),
+        }));
+        var metadata = new Octo.Services.Soulseek.SoulseekMetadataService(registry, rig.Service,
+            new Octo.Services.CoverArt.CoverArtAggregator([], NullLogger<Octo.Services.CoverArt.CoverArtAggregator>.Instance),
+            NullLogger<Octo.Services.Soulseek.SoulseekMetadataService>.Instance);
+        var songs = new List<Octo.Models.Domain.Song>();
+        for (var i = 0; i < 12; i++)
+            songs.Add((await metadata.SearchSongsByArtistTitleAsync(Artist, $"Song {i}", 1, 230))[0]);
+
+        var kept = await metadata.PlayableAsync(songs);
+
+        // The one the batch missed takes the full search, which finds Deezer lacks it.
+        Assert.Equal(songs.Take(11).Select(song => song.Id), kept.Select(song => song.Id));
+        Assert.Equal("1003", registry.Lookup(songs[3].Id)?.DeezerId);
+        // Two batch requests for twelve songs; only the miss is searched song by song.
+        Assert.Equal(2, rig.Calls.Count(call => call.Host == "pipe.deezer.com" && call.Body!.Contains("OctoTrackBatch")));
+        // The first few hits are also checked against the full search in the background, for the log;
+        // the rest of the batch's hits are never searched song by song.
+        var rest = rig.Calls.Where(call => call.Path == "/search")
+            .Select(call => Uri.UnescapeDataString(Query(call.Uri, "q")!)).ToList();
+        Assert.Contains(rest, q => q.Contains("Song 11"));
+        Assert.DoesNotContain(rest, q => Enumerable.Range(3, 8).Any(i => q.Contains($"Song {i}")));
+    }
+
+    private static object BatchField(IEnumerable<object?> nodes) => new
+    {
+        results = new
+        {
+            tracks = new { edges = nodes.Select(node => new { node }).ToArray(), pageInfo = new { hasNextPage = false } },
+        },
+    };
+
+    [Fact]
     public async Task RestTitleVersionFieldParticipatesInRecordingIdentity()
     {
         var row = new

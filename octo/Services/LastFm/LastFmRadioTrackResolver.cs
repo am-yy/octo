@@ -52,10 +52,19 @@ public sealed class LastFmRadioTrackResolver
         IReadOnlyDictionary<string, string> authenticatedParameters,
         CancellationToken cancellationToken = default, string? youTubeId = null)
     {
+        var song = await ResolvePlaceholderAsync(artist, title, duration, authenticatedParameters, youTubeId);
+        if (song is null || song.IsLocal) return song;
+        return await _metadata.PlayableAsync([song], cancellationToken) is [var playable] ? playable : null;
+    }
+
+    /// <summary>The library copy, or else an outside placeholder nobody has checked Deezer for
+    /// yet: for a caller that checks many songs at once with <see cref="IMusicMetadataService.PlayableAsync"/>.</summary>
+    public async Task<Song?> ResolvePlaceholderAsync(string artist, string title, int? duration,
+        IReadOnlyDictionary<string, string> authenticatedParameters, string? youTubeId = null)
+    {
         var local = await TryFindLocalMatchAsync(artist, title, authenticatedParameters);
         if (local is not null) return local;
-        var hits = await _metadata.PlayableAsync(
-            await _metadata.SearchSongsByArtistTitleAsync(artist, title, 1, duration), cancellationToken);
+        var hits = await _metadata.SearchSongsByArtistTitleAsync(artist, title, 1, duration);
         // A source that already named the video saves the search later, and plays exactly what
         // it suggested.
         if (hits.Count > 0 && !string.IsNullOrEmpty(youTubeId)

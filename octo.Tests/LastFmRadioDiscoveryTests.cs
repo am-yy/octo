@@ -88,14 +88,55 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
         Assert.True(known < strangers * 0.7, $"known {known}, strangers {strangers}");
     }
 
+    [Fact]
+    public async Task DiscoveryMix_ReachesOutFromTheLinkedAccountsLongTermArtists()
+    {
+        // Long Love is a long-term favourite on Last.fm that Octo has never heard played here.
+        var graph = new Dictionary<string, (string Name, double Match)[]>(Graph, StringComparer.OrdinalIgnoreCase)
+        {
+            ["Long Love"] = [("Far W", .9)],
+        };
+
+        var linked = Assert.Single(await Build(new GraphHandler(graph, topArtists: ["Long Love"]), null, linkedAccount: true),
+            station => station.Kind == LastFmRadioStationKind.Discovery);
+        var unlinked = Assert.Single(await Build(new GraphHandler(graph, topArtists: ["Long Love"]), null),
+            station => station.Kind == LastFmRadioStationKind.Discovery);
+
+        Assert.Contains("Long Love", linked.Seeds);
+        Assert.Contains(linked.Tracks, track => track.Artist == "Far W");
+        // A long-term favourite is known, not a discovery.
+        Assert.DoesNotContain(linked.Tracks, track => track.Artist == "Long Love");
+        Assert.DoesNotContain("Long Love", unlinked.Seeds);
+    }
+
+    [Fact]
+    public void ScoreArtists_SteadyFavouriteOutranksOneAfternoon_AndLongTermArtistsCount()
+    {
+        var now = DateTime.UtcNow;
+        var plays = Enumerable.Range(0, 15).Select(index => new LastFmRadioPlay
+                { Artist = "Steady", Title = "S" + index, PlayedAtUtc = now.AddDays(-index * 4) })
+            .Concat(Enumerable.Range(0, 3).Select(index => new LastFmRadioPlay
+                { Artist = "Binge", Title = "B" + index, PlayedAtUtc = now.AddHours(-index) }))
+            .Append(new LastFmRadioPlay { Artist = "Once", Title = "O", PlayedAtUtc = now })
+            .OrderByDescending(play => play.PlayedAtUtc).ToList();
+
+        var scores = LastFmRadioRecommendationService.ScoreArtists(plays, ["Long Love", "Once"]);
+
+        Assert.Equal(["Steady", "Once", "Binge", "Long Love"], scores.Keys);
+        Assert.True(scores["Long Love"] > Math.Log(2), "a top long-term artist outweighs a single play");
+    }
+
     private async Task<IReadOnlyList<LastFmRadioStation>> Build(HttpMessageHandler handler, ILocalLibraryService? library,
-        int trackCount = 50, int seed = 7)
+        int trackCount = 50, int seed = 7, bool linkedAccount = false)
     {
         Directory.CreateDirectory(_directory);
         var settings = TestOptions.Monitor(new LastFmSettings
         {
             ApiKey = "test-key", EnablePersonalizedStations = true, EnableDiscoveryStations = false, MinimumPlays = 3,
             RadioTrackCount = trackCount,
+            UserSessions = linkedAccount
+                ? new(StringComparer.OrdinalIgnoreCase) { ["alice"] = new() { SessionKey = "sk", LastFmUser = "alicefm" } }
+                : new(StringComparer.OrdinalIgnoreCase),
         });
         var state = new LastFmRadioStateStore(Path.Combine(_directory, Guid.NewGuid() + ".json"), settings,
             new ExternalIdRegistry(), new Mock<ILogger<LastFmRadioStateStore>>().Object);
@@ -116,8 +157,8 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
         return await service.BuildAsync("alice");
     }
 
-    private sealed class GraphHandler(Dictionary<string, (string Name, double Match)[]> graph, string[]? chart = null)
-        : HttpMessageHandler
+    private sealed class GraphHandler(Dictionary<string, (string Name, double Match)[]> graph, string[]? chart = null,
+        string[]? topArtists = null) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -129,6 +170,8 @@ public sealed class LastFmRadioDiscoveryTests : IDisposable
                     .Select(item => new { name = item.Name, match = item.Match }).ToArray() } },
                 "artist.gettoptracks" => new { toptracks = new { track = Enumerable.Range(0, 3)
                     .Select(index => new { name = $"{artist}-top-{index}", artist = new { name = artist } }).ToArray() } },
+                "user.gettopartists" when query["user"] == "alicefm" => new { topartists = new { artist =
+                    (topArtists ?? []).Select(name => new { name }).ToArray() } },
                 "tag.gettoptracks" => new { tracks = new { track = Enumerable.Range(0, chart?.Length ?? 20)
                     .Select(index => new { name = $"{query["tag"]}-{index}", duration = 180000,
                         artist = new { name = chart?[index] ?? $"{query["tag"]} Artist {index}" } }).ToArray() } },

@@ -109,39 +109,89 @@ public class SoulseekMetadataService : IMusicMetadataService
     /// placeholder plays only from Deezer, so one with no match is a 502 at play time, and Feishin
     /// pauses the song before it when that is its preload. Each is matched the way playback
     /// matches it, and the track id kept, so playing it needs no second search. A throttle or
-    /// error keeps the song: unknown is not missing.
+    /// error keeps the song: unknown is not missing. One batched look goes first
+    /// (<see cref="DeezerMetadataService.FindTracksBatchAsync"/>); only the songs it did not
+    /// find take the full search, so a radio of seventy songs is a handful of requests.
     /// </summary>
     public async Task<List<Song>> PlayableAsync(IReadOnlyList<Song> songs, CancellationToken ct = default)
     {
         // ponytail: an imported library copy of a song Deezer lacks is dropped too; checking for
         // one costs a Navidrome search per row, and a Lidarr grab Deezer cannot match is rare.
         if (_subsonic?.CurrentValue.WaitForLosslessOnPlay == true) return songs.ToList();
-        using var sem = new SemaphoreSlim(8);
-        var keep = await Task.WhenAll(songs.Select(async song =>
-        {
-            if (song.IsLocal || !string.IsNullOrEmpty(song.DeezerId)) return true;
-            var routing = _idRegistry.Lookup(song.Id);
-            if (!string.IsNullOrEmpty(routing?.DeezerId)) return true;
-            var length = routing is null ? null : SongLength.Shown(routing).Seconds;
-            await sem.WaitAsync(ct);
-            try
+        var pending = songs.Where(song => !song.IsLocal && string.IsNullOrEmpty(song.DeezerId)
+                && string.IsNullOrEmpty(_idRegistry.Lookup(song.Id)?.DeezerId))
+            .Select(song => (Song: song, Length: _idRegistry.Lookup(song.Id) is { } routing
+                ? SongLength.Shown(routing).Seconds : null))
+            .ToList();
+        var quick = pending.Count == 0 ? []
+            : await _deezer.FindTracksBatchAsync(
+                pending.Select(item => (item.Song.Artist, item.Song.Title, item.Length)).ToList(), ct);
+        var hits = 0;
+        for (var i = 0; i < quick.Count; i++)
+            if (long.TryParse(quick[i]?.DeezerId, out var found) && found > 0)
             {
-                var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct,
-                    duration: length);
-                if (long.TryParse(hit?.DeezerId, out var id) && id > 0)
-                {
-                    song.DeezerId = hit!.DeezerId;
-                    _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId, hit.AlbumTitle, hit.Duration);
-                    return true;
-                }
-                if (!_deezer.KnownMissing(song.Artist, song.Title, length)) return true;
-                _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from",
-                    song.Artist, song.Title);
-                return false;
+                Remember(pending[i].Song, quick[i]!);
+                if (hits++ < BatchChecksPerCall) _ = CompareWithFullSearchAsync(pending[i].Song, pending[i].Length, quick[i]!);
             }
-            finally { sem.Release(); }
-        }));
-        return songs.Where((_, i) => keep[i]).ToList();
+
+        using var sem = new SemaphoreSlim(8);
+        var leftOut = await Task.WhenAll(pending.Where(item => string.IsNullOrEmpty(item.Song.DeezerId))
+            .Select(async item =>
+            {
+                var (song, length) = item;
+                await sem.WaitAsync(ct);
+                try
+                {
+                    var hit = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, ct: ct,
+                        duration: length);
+                    if (long.TryParse(hit?.DeezerId, out var id) && id > 0)
+                    {
+                        Remember(song, hit!);
+                        return null;
+                    }
+                    if (!_deezer.KnownMissing(song.Artist, song.Title, length)) return null;
+                    _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from",
+                        song.Artist, song.Title);
+                    return song;
+                }
+                finally { sem.Release(); }
+            }));
+        var missing = leftOut.OfType<Song>().ToHashSet();
+        if (pending.Count > 0)
+            _logger.LogInformation("Deezer check: {Songs} songs, {Hits} found by the batch, {Searched} searched "
+                + "one by one, {Missing} left out", pending.Count, hits, pending.Count - hits, missing.Count);
+        return songs.Where(song => !missing.Contains(song)).ToList();
+
+        void Remember(Song song, DeezerMetadataService.TrackMeta hit)
+        {
+            song.DeezerId = hit.DeezerId;
+            _idRegistry.RememberDeezerTrack(song.Id, hit.DeezerId, hit.AlbumTitle, hit.Duration);
+        }
+    }
+
+    // ponytail: a temporary check of the batched lookup against the full search, on the background
+    // lane for a few of each call's hits. Remove it once the logs show the two agree.
+    private const int BatchChecksPerCall = 3;
+
+    private async Task CompareWithFullSearchAsync(Song song, int? length, DeezerMetadataService.TrackMeta batch)
+    {
+        try
+        {
+            var full = await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, background: true,
+                duration: length);
+            if (full is null && !_deezer.KnownMissing(song.Artist, song.Title, length))
+                _logger.LogDebug("Deezer batch comparison for '{Artist} - {Title}' did not finish", song.Artist, song.Title);
+            else if (full?.DeezerId == batch.DeezerId)
+                _logger.LogDebug("Deezer batch agrees with the full search on '{Artist} - {Title}'", song.Artist, song.Title);
+            else
+                _logger.LogWarning("Deezer batch disagrees on '{Artist} - {Title}': batch {Batch} ({BatchAlbum}), "
+                    + "full search {Full} ({FullAlbum})", song.Artist, song.Title, batch.DeezerId, batch.AlbumTitle,
+                    full?.DeezerId ?? "none", full?.AlbumTitle);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Deezer batch comparison failed for '{Artist} - {Title}'", song.Artist, song.Title);
+        }
     }
 
     // Deezer's real ceiling is ~50 requests per 5 seconds, and this runs on search3's

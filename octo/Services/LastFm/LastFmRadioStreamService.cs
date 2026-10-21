@@ -271,7 +271,6 @@ public sealed class LastFmRadioStreamService
         bool rejectFailures = true, bool externalOnly = false)
     {
         var prepared = new List<PreparedRadioTrack>();
-        var rejectedAny = false;
         foreach (var candidate in Candidates(session))
         {
             try
@@ -288,7 +287,7 @@ public sealed class LastFmRadioStreamService
             {
                 if (rejectFailures)
                 {
-                    rejectedAny |= _state.RejectTrack(session.Username, candidate.Track) > 0;
+                    RejectAndRefill(session, candidate.Track);
                     _logger.LogWarning(ex,
                         "Could not prepare Radio pool track {Artist} - {Title}; trying the next track",
                         candidate.Track.Artist, candidate.Track.Title);
@@ -299,7 +298,6 @@ public sealed class LastFmRadioStreamService
                         candidate.Track.Artist, candidate.Track.Title);
             }
         }
-        if (rejectFailures && rejectedAny) _refreshQueue.Enqueue(session.Username);
         return prepared;
     }
 
@@ -505,11 +503,22 @@ public sealed class LastFmRadioStreamService
         }
     }
 
+    /// <summary>
+    /// Takes an unplayable song out of every station, and rebuilds only a station that has
+    /// grown too short to play from. The others keep their songs: one bad track is no reason
+    /// to replace every station a listener has.
+    /// </summary>
     private void RejectAndRefill(LastFmRadioStreamSession session, LastFmRadioTrack track)
     {
-        if (_state.RejectTrack(session.Username, track) <= 0) return;
-        _refreshQueue.Enqueue(session.Username);
+        var floor = RefillFloor(_settings.CurrentValue);
+        foreach (var (key, remaining) in _state.RejectTrack(session.Username, track))
+            if (remaining < floor)
+                _refreshQueue.Enqueue(session.Username, key, $"{remaining} songs left after an unplayable track");
     }
+
+    /// <summary>Below this many songs a station is rebuilt; half the station, never under 10.</summary>
+    internal static int RefillFloor(LastFmSettings settings) =>
+        Math.Max(10, settings.EffectiveRadioTrackCount / 2);
 
     private async Task<OpenedRadioTrack?> OpenTrackAsync(LastFmRadioTrack track,
         IReadOnlyDictionary<string, string> authentication, CancellationToken cancellationToken)

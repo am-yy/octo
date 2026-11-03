@@ -815,6 +815,7 @@ public class AdminController : ControllerBase
             ["Server"] = new Dictionary<string, object>
             {
                 ["PublicUrl"] = _serverOpts.CurrentValue.PublicUrl ?? "",
+                ["LogStreamRequests"] = _serverOpts.CurrentValue.LogStreamRequests,
             },
             ["Soulseek"] = new Dictionary<string, object>
             {
@@ -1668,6 +1669,7 @@ public class AdminController : ControllerBase
             ["Server"] = new JsonObject
             {
                 ["PublicUrl"] = server.PublicUrl ?? "",
+                ["LogStreamRequests"] = server.LogStreamRequests,
             },
             ["Soulseek"] = new JsonObject
             {
@@ -1968,6 +1970,7 @@ public class AdminController : ControllerBase
             "Subsonic:PlaylistsDirectory",
             "Library:DownloadPath",
             "Server:PublicUrl",
+            "Server:LogStreamRequests",
             "Soulseek:Enabled", "Soulseek:BaseUrl", "Soulseek:Username", "Soulseek:Password",
             "Soulseek:SearchWaitSeconds", "Soulseek:MinFileSizeBytes",
             "Soulseek:PreferredExtension", "Soulseek:DownloadTimeoutSeconds",

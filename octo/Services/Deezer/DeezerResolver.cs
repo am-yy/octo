@@ -10,6 +10,10 @@ using Octo.Services.Metadata;
 
 namespace Octo.Services.Deezer;
 
+/// <summary>The CDN served different bytes than the source was opened with: every reader of
+/// that source is reading a file that no longer exists as one, so the shared fill must stop.</summary>
+public sealed class DeezerSourceChangedException(string message) : IOException(message);
+
 /// <summary>
 /// Native account-backed media resolution adapted from V1ck3s/octo-fiesta (GPL-3.0).
 /// One account, one cached session. A rejected ARL latches Deezer off until the ARL changes, and
@@ -726,16 +730,16 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
         if (source.StrongETag is { Length: > 0 } expectedTag
             && response.Headers.ETag is { } returnedTag
             && !string.Equals(returnedTag.Tag, expectedTag, StringComparison.Ordinal))
-            throw new IOException("Deezer CDN changed source representation during transfer.");
+            throw new DeezerSourceChangedException("Deezer CDN changed source representation during transfer.");
         if (source.ModifiedUtc is { } expectedModified
             && response.Content.Headers.LastModified is { } returnedModified
             && returnedModified != expectedModified)
-            throw new IOException("Deezer CDN changed source modification time during transfer.");
+            throw new DeezerSourceChangedException("Deezer CDN changed source modification time during transfer.");
         var returnedLength = partial ? response.Content.Headers.ContentRange?.Length
             : response.Content.Headers.ContentLength;
         if (source.ExpectedLength is long expectedLength && returnedLength is long actualLength
             && actualLength != expectedLength)
-            throw new IOException("Deezer CDN changed source length during transfer.");
+            throw new DeezerSourceChangedException("Deezer CDN changed source length during transfer.");
     }
 
     public async Task<string?> DownloadAsync(string trackId, string destWithoutExt,

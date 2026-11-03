@@ -345,7 +345,14 @@ public sealed class DeezerAudioCache : BackgroundService
         catch (Exception ex)
         {
             transfer.Dispose();
-            if (!ct.IsCancellationRequested) job.Abort(ex);
+            if (ct.IsCancellationRequested) throw;
+            // Only a changed source poisons the fill everyone else is reading. A read-ahead that
+            // timed out or met a dead CDN node fails its own request: aborting the fill for it
+            // cut off whoever was listening from the start.
+            _logger.LogWarning("Deezer read-ahead at {Offset} for {TrackId} failed: {Type}{Effect}",
+                offset, job.TrackId, ex.GetType().Name,
+                ex is DeezerSourceChangedException ? "; the source changed, so its fill stops too" : "");
+            if (ex is DeezerSourceChangedException) job.Abort(ex);
             throw;
         }
     }

@@ -223,6 +223,29 @@ public sealed class ProgressiveDeliveryIntegrationTests
     }
 
     [Fact]
+    public async Task AFailedReadAheadLeavesTheSharedFillToFinish()
+    {
+        // A read-ahead that met a dead CDN node aborted the fill the listener was playing from,
+        // and their stream stopped a few seconds in.
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        fixture.FailRanges = true;
+        using var playing = await fixture.Client.GetAsync("/stream?format=raw", HttpCompletionOption.ResponseHeadersRead);
+        var body = await playing.Content.ReadAsStreamAsync();
+        await body.ReadExactlyAsync(new byte[8192]).AsTask().WaitAsync(TimeSpan.FromSeconds(15));
+
+        using var ahead = new HttpRequestMessage(HttpMethod.Get, "/stream?format=raw");
+        ahead.Headers.Range = new RangeHeaderValue(150000, 150100);
+        using var aheadResponse = await fixture.Client.SendAsync(ahead, HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.BadGateway, aheadResponse.StatusCode);
+
+        fixture.Release.TrySetResult();
+        using var rest = new MemoryStream();
+        await body.CopyToAsync(rest).WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(fixture.Audio.Length - 8192, rest.Length);
+        await WaitForFileAsync(fixture.SourcePath);
+    }
+
+    [Fact]
     public async Task EncoderKeysUseAcquiredValidatorAndShareWorkAcrossProbeChange()
     {
         await using var fixture = await Fixture.CreateAsync("FLAC");
@@ -335,6 +358,12 @@ public sealed class ProgressiveDeliveryIntegrationTests
         }
     }
 
+    private static async Task WaitForFileAsync(string path)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!File.Exists(path)) await Task.Delay(25, timeout.Token);
+    }
+
     private static async Task RunFfmpegAsync(string[] arguments)
     {
         using var process = new Process { StartInfo = new ProcessStartInfo("ffmpeg")
@@ -358,6 +387,7 @@ public sealed class ProgressiveDeliveryIntegrationTests
         public int HeadProbes;
         public bool ChangeValidatorAfterFirstHead;
         public bool ChangeRangeValidator;
+        public bool FailRanges;
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string SourcePath => Path.Combine(Root, TrackId + (_quality == "FLAC" ? ".flac" : ".mp3"));
         public WebApplication App => _app;
@@ -453,6 +483,7 @@ public sealed class ProgressiveDeliveryIntegrationTests
                 return Task.FromResult(head);
             }
             if (request.Headers.Range is null) Interlocked.Increment(ref SourceStartRequests);
+            else if (FailRanges) throw new HttpRequestException("CDN node unreachable");
             var from = (int)(request.Headers.Range?.Ranges.Single().From ?? 0);
             var content = new StreamContent(new HeldStream(_encrypted, from, from == 0 ? Release.Task : Task.CompletedTask, () => Interlocked.Increment(ref BodyReads)));
             content.Headers.ContentLength = _encrypted.Length - from;

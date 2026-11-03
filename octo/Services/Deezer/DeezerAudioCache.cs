@@ -659,6 +659,10 @@ public sealed class DeezerAudioCache : BackgroundService
         var quality = SourceQuality;
         var path = TrackPath(trackId, quality);
         if (IsValidSource(path, quality)) return path;
+        // Deezer already said it has nothing to play for this track: asking again within the
+        // miss's lifetime would only set up a fill to fail and warn twice, every time a
+        // warm-up or the pinned-song pass came round.
+        if (_resolver.RecentlyMissing(trackId, quality)) return null;
         try
         {
             await using var lease = await OpenProgressiveByTrackIdAsync(trackId, metadata, quality, priority,

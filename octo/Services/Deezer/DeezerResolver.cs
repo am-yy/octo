@@ -205,6 +205,15 @@ public sealed class DeezerResolver(IHttpClientFactory httpFactory, IConfiguratio
     private static string MediaKey(string arl, string trackId, string quality, string? strictFormat) =>
         strictFormat is not null ? $"{arl}\0{trackId}\0{quality}\0strict-{strictFormat}" : $"{arl}\0{trackId}\0{quality}";
 
+    /// <summary>True while Deezer is remembered to have had no full-track media for this track
+    /// at this strict quality, so background work can skip it without starting a fill.</summary>
+    public bool RecentlyMissing(string trackId, string quality)
+    {
+        if (Arl(Settings) is not { } arl) return false;
+        var selected = NormalizeStrictQuality(quality);
+        return _misses.TryGetValue(MediaKey(arl, trackId, selected, selected), out _);
+    }
+
     private void Remember(string key, Media media)
     {
         if (media.ExpiresUtc > DateTime.UtcNow)

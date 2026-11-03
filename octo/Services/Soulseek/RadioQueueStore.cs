@@ -3,9 +3,9 @@ using System.Collections.Concurrent;
 namespace Octo.Services.Soulseek;
 
 /// <summary>
-/// Tracks the most recent search/radio responses as ordered queues so we can
-/// implement a sliding-window prewarm: when the client scrobbles song N, we
-/// look up which queue N belongs to and prewarm songs N+1..N+8 from there.
+/// Tracks the most recent song lists Octo served (searches, radio, playlists, albums) as
+/// ordered queues so we can implement a sliding-window prewarm: when the client starts or
+/// scrobbles song N, we look up which queue N belongs to and prewarm songs N+1..N+8 from there.
 ///
 /// Stateless across restarts (in-memory only) and bounded by entry count.
 /// Subsonic has no notion of a per-client session so we just keep the last

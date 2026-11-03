@@ -627,6 +627,22 @@ public partial class SubsonicController
         if (_deezerCache?.Enabled == true) await _deezerCache.PrewarmAsync(visible, topN);
     }
 
+    /// <summary>Warms the songs after one that just started, from the list Octo last served it in.</summary>
+    private void PrewarmAfter(string songId)
+    {
+        var upcoming = _radioQueueStore.GetUpcomingFrom(songId, count: 8);
+        if (upcoming.Count > 0) _ = PrewarmPlaybackIdsAsync(upcoming, 8);
+    }
+
+    /// <summary>True for a request with no Range, or one starting at byte 0: a play from the
+    /// start, not a seek.</summary>
+    private static bool StartsAtFirstByte(HttpRequest request)
+    {
+        if (string.IsNullOrEmpty(request.Headers.Range)) return true;
+        var ranges = request.GetTypedHeaders().Range;
+        return ranges is { Unit.Value: "bytes", Ranges.Count: 1 } && ranges.Ranges.First().From == 0;
+    }
+
     private async Task PrewarmPlaybackIdsAsync(IEnumerable<string> songIds, int topN)
     {
         var ids = songIds.Take(topN).ToList();

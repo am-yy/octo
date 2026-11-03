@@ -1597,6 +1597,9 @@ public partial class SubsonicController : ControllerBase
         if (isExternal && await RefuseUnlessSignedInAsync(parameters, format) is { } refused) return refused;
         if (isExternal)
         {
+            // A play from the start warms the songs after it, so the next one is ready when the
+            // player moves on even if it never scrobbles. Seeks and HEAD probes do not count.
+            if (!HttpMethods.IsHead(Request.Method) && StartsAtFirstByte(Request)) PrewarmAfter(id);
             string? losslessPath = null;
             if (_subsonicSettings.WaitForLosslessOnPlay)
             {
@@ -2104,6 +2107,7 @@ public partial class SubsonicController : ControllerBase
             // The songs the library already holds go out as the library's own copies.
             if (await OutsideAlbumWithOwnedSongsAsync(album, parameters, format) is { } owned) return owned;
 
+            _radioQueueStore.Register(album.Songs.Select(song => song.Id));
             return _responseBuilder.CreateAlbumResponse(format, album);
         }
 
@@ -3273,11 +3277,7 @@ public partial class SubsonicController : ControllerBase
         // What radio learns: a song it suggested, started and then played through, or started and
         // never finished. Before the early return below, so it works with stations off.
         _radioOutcomes?.Observe(username, ids, submissions, DateTime.UtcNow);
-        if (ids.FirstOrDefault() is { Length: > 0 } currentId)
-        {
-            var upcoming = _radioQueueStore.GetUpcomingFrom(currentId, count: 16);
-            if (upcoming.Count > 0) _ = PrewarmPlaybackIdsAsync(upcoming, 8);
-        }
+        if (ids.FirstOrDefault() is { Length: > 0 } currentId) PrewarmAfter(currentId);
         if (_deezerCache?.Enabled == true)
             foreach (var id in ids)
             {
@@ -4426,6 +4426,7 @@ public partial class SubsonicController : ControllerBase
 
         var arr = new JsonArray();
         foreach (var song in album.Songs) arr.Add(BuildNativeSongObject(song));
+        _radioQueueStore.Register(album.Songs.Select(song => song.Id));
 
         var bytes = Encoding.UTF8.GetBytes(arr.ToJsonString());
         Response.StatusCode = 200;

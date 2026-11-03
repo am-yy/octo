@@ -400,6 +400,51 @@ public sealed class ExternalSaveEndpointTests
     }
 
     [Fact]
+    public async Task APlayFromTheStartWarmsTheSongsAfterItButASeekDoesNot()
+    {
+        using var audio = new DeezerAudioCacheTests.Fixture();
+        using var fixture = new SavesFixture();
+        await using var app = fixture.App(audio.Cache);
+        using var client = app.CreateClient();
+        app.Services.GetRequiredService<Octo.Services.Soulseek.RadioQueueStore>()
+            .Register(["ext-deezer-123", "ext-deezer-next", "ext-deezer-later"]);
+        var warmed = new List<string[]>();
+        fixture.Metadata.Setup(m => m.PrewarmDeezerIdsForSongIdsAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback((IEnumerable<string> ids, int _, CancellationToken _) => { lock (warmed) warmed.Add(ids.ToArray()); })
+            .Returns(Task.CompletedTask);
+
+        await client.GetByteArrayAsync("/rest/stream?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json");
+        for (var i = 0; i < 100 && warmed.Count == 0; i++) await Task.Delay(20);
+        lock (warmed) Assert.Equal(["ext-deezer-next", "ext-deezer-later"], Assert.Single(warmed));
+
+        using var seek = new HttpRequestMessage(HttpMethod.Get, "/rest/stream?u=alice&t=tok&s=salt&id=ext-deezer-123&f=json");
+        seek.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(10, 19);
+        using var _ = await client.SendAsync(seek);
+        Assert.Contains("failed", await client.GetStringAsync("/rest/stream?u=bad&t=tok&s=salt&id=ext-deezer-123&f=json"));
+        await Task.Delay(200);
+        lock (warmed) Assert.Single(warmed);
+    }
+
+    [Fact]
+    public async Task AnOpenedCatalogAlbumIsAQueueForThePrewarm()
+    {
+        using var fixture = new SavesFixture();
+        fixture.Metadata.Setup(m => m.GetAlbumAsync("deezer", "album1")).ReturnsAsync(new Album
+        {
+            Id = "ext-deezer-album1", Title = "Record", Artist = "Artist",
+            Songs = [new Song { Id = "ext-deezer-a", Title = "A" }, new Song { Id = "ext-deezer-b", Title = "B" }],
+        });
+        await using var app = fixture.App();
+        using var client = app.CreateClient();
+
+        await client.GetStringAsync("/rest/getAlbum?u=alice&t=tok&s=salt&id=ext-deezer-album1&f=json");
+
+        Assert.Equal(["ext-deezer-b"], app.Services.GetRequiredService<Octo.Services.Soulseek.RadioQueueStore>()
+            .GetUpcomingFrom("ext-deezer-a", 8));
+    }
+
+    [Fact]
     public async Task RejectedCatalogCallerCannotPrefetchAudio()
     {
         using var audio = new DeezerAudioCacheTests.Fixture();

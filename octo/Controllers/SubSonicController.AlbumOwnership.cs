@@ -143,6 +143,7 @@ public partial class SubsonicController
             foreach (var (id, song) in songs) copies.TryAdd(id, song);
 
         var merged = new List<object>();
+        var order = new List<string>();
         var owned = 0;
         for (var i = 0; i < album.Songs.Count; i++)
         {
@@ -153,15 +154,21 @@ public partial class SubsonicController
                 if (song.Track is int track) placed["track"] = track;
                 if (song.DiscNumber is int disc) placed["discNumber"] = disc;
                 merged.Add(placed);
+                order.Add(copy.GetValueOrDefault("id")?.ToString() ?? song.Id);
                 owned++;
             }
-            else merged.Add(_responseBuilder.ConvertSongToJson(song));
+            else
+            {
+                merged.Add(_responseBuilder.ConvertSongToJson(song));
+                order.Add(song.Id);
+            }
         }
         album.OwnedCount = owned;
         if (owned == 0) return null;
 
         var fields = _responseBuilder.AlbumDetailFields(album);
         fields["song"] = merged;
+        _radioQueueStore.Register(order);
         _logger.LogDebug("getAlbum '{Artist} - {Album}': {Owned} of {Total} songs given as the library's copies in {Ms} ms",
             album.Artist, album.Title, owned, album.Songs.Count, clock.ElapsedMilliseconds);
         return _responseBuilder.CreateMergedResponse(format, "album", fields);

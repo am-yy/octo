@@ -107,6 +107,10 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         /// may be written to a cache.</summary>
         public bool Transient { get; init; }
 
+        /// <summary>A track search that ran as far as its budget allows without an error and
+        /// found no match. Transient too: the catalog may hold the song past where it looked.</summary>
+        public bool SearchedOut { get; init; }
+
         public void Dispose() => Doc?.Dispose();
     }
 
@@ -272,6 +276,8 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
                 ? await FindTrackAsync(artist, title, ct, background, duration: duration)
                 : await FindTrackByIdAsync(trackId, ct, background);
             using var response = r;
+            if (r?.SearchedOut == true && string.IsNullOrEmpty(trackId))
+                Put(SearchedOutKey(artist, title, duration), true, TrackMissTtl);
             if (r?.Transient == true) return null;
             if (found is JsonElement t)
             {
@@ -332,6 +338,17 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
     /// </summary>
     public bool KnownMissing(string? artist, string? title, int? duration) =>
         TryGetCached<TrackMeta?>(EnrichKey(artist, title, null, duration), out var meta) && meta is null;
+
+    /// <summary>
+    /// True when the last search for this song ran as far as it may, with no throttle or error,
+    /// and found no match. Not proof the catalog lacks it, so playback still searches; but a song
+    /// list should not offer it, since playing it would search the same way and find the same.
+    /// </summary>
+    public bool SearchedOut(string? artist, string? title, int? duration) =>
+        TryGetCached<bool>(SearchedOutKey(artist, title, duration), out var searchedOut) && searchedOut;
+
+    private static string SearchedOutKey(string? artist, string? title, int? duration) =>
+        "searched-out|" + EnrichKey(artist, title, null, duration);
 
     /// <summary>
     /// Full track metadata for tagging a downloaded file: one track search (album,

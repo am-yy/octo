@@ -153,10 +153,14 @@ public class SoulseekMetadataService : IMusicMetadataService
                         Remember(song, hit!);
                         return null;
                     }
-                    if (!_deezer.KnownMissing(song.Artist, song.Title, length)) return null;
+                    // Searched out: the search ran as far as it may and found nothing, so playing it
+                    // would search the same way and answer 502 ("Two Princes (Edit)", a title with
+                    // hundreds of covers and no edit on Deezer).
+                    var searchedOut = _deezer.SearchedOut(song.Artist, song.Title, length);
+                    if (!searchedOut && !_deezer.KnownMissing(song.Artist, song.Title, length)) return null;
                     _idRegistry.RememberDeezerMissing(song.Id);
-                    _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from",
-                        song.Artist, song.Title);
+                    _logger.LogInformation("Leaving out '{Artist} - {Title}': no Deezer match to play it from{Why}",
+                        song.Artist, song.Title, searchedOut ? " (searched as far as allowed)" : "");
                     return song;
                 }
                 finally { sem.Release(); }

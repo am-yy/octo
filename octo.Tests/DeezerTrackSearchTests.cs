@@ -38,6 +38,32 @@ public sealed class DeezerTrackSearchTests
         Assert.DoesNotContain(rig.Calls, call => call.Host == "auth.deezer.com");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ASearchThatRunsOutOfPagesIsSearchedOutButNotMissing(bool webFails)
+    {
+        // A title with hundreds of covers ("Two Princes (Edit)") fills every page the search may
+        // read without the version asked for. That is not proof Deezer lacks it, but a song list
+        // should not offer it: playing it would search the same way and answer 502. A search cut
+        // short by an error proves nothing either way.
+        var page = 0;
+        using var rig = new Rig((request, _) => Task.FromResult(request.Host switch
+        {
+            "api.deezer.com" when request.Path == "/search" => Json(RestResponse(
+                [RestTrack(500 + Interlocked.Increment(ref page), "Some Cover", "Someone Else")], total: 1000,
+                $"https://api.deezer.com/search?q={Uri.EscapeDataString(Query(request.Uri, "q")!)}&limit=100&index={100 * page}")),
+            "auth.deezer.com" => Json(new { jwt = TestJwt(DateTimeOffset.UtcNow.AddMinutes(10)) }),
+            "pipe.deezer.com" => webFails ? Json("{}", HttpStatusCode.InternalServerError) : Json(EmptyWeb),
+            _ => Json(EmptyRest),
+        }));
+
+        Assert.Null(await rig.Service.EnrichTrackAsync(Artist, Title, includeYear: false));
+
+        Assert.False(rig.Service.KnownMissing(Artist, Title, null));
+        Assert.Equal(!webFails, rig.Service.SearchedOut(Artist, Title, null));
+    }
+
     [Fact]
     public async Task RestSearchFollowsSameOriginNextPage()
     {

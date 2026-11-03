@@ -68,24 +68,26 @@ public partial class DeezerMetadataService
                     budget.Token.ThrowIfCancellationRequested();
                     var json = hit?.GetRawText();
                     var transient = response?.Transient == true || json is null && budget.Incomplete;
+                    var searchedOut = json is null && response?.Transient != true && budget.Incomplete;
                     if (json is not null)
                     {
                         _logger.LogDebug("deezer discovered '{Artist} - {Title}' as {Id} in {Requests} request(s)",
                             artist, title, hit is JsonElement row && row.TryGetProperty("id", out var id) ? id.ToString() : null,
                             budget.Requests);
                     }
-                    return (Json: json, Transient: transient);
+                    return (Json: json, Transient: transient, SearchedOut: searchedOut);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogDebug("deezer discovery '{Artist} - {Title}' stopped after {Requests} request(s): {Type}",
                     artist, title, budget.Requests, ex.GetType().Name);
-                return (Json: (string?)null, Transient: true);
+                return (Json: (string?)null, Transient: true, SearchedOut: false);
             }
         }, ct);
         var doc = answer.Json is null ? null : JsonDocument.Parse(answer.Json);
-        return (new DeezerResponse { Doc = doc, Transient = answer.Transient }, doc?.RootElement);
+        return (new DeezerResponse { Doc = doc, Transient = answer.Transient, SearchedOut = answer.SearchedOut },
+            doc?.RootElement);
     }
 
     private async Task<(DeezerResponse? Response, JsonElement? Hit)> FindTrackCoreAsync(string? artist, string? title,

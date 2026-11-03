@@ -1064,7 +1064,11 @@ public sealed class DeezerAudioCache : BackgroundService
                 var entry = GetEntrySnapshot(id);
                 var completed = entry?.Sources.TryGetValue(quality, out var source) == true
                     ? source.CompletedUtc : quality == "FLAC" ? entry?.CompletedUtc : null;
-                var lastPlayed = entry?.LastPlayedUtc ?? completed ?? file.LastWriteTimeUtc;
+                // A file is as recent as its last play or its download, whichever is later. By
+                // its last play alone, a song played weeks ago and fetched again was expired the
+                // moment it landed: deleted, then fetched again by the next warm-up.
+                var landed = completed ?? file.LastWriteTimeUtc;
+                var lastPlayed = entry?.LastPlayedUtc is { } played && played > landed ? played : landed;
                 return new CacheFile(id, file.FullName, file.Length, lastPlayed,
                     entry is { Pins.Count: > 0 }, quality, null);
             }).ToList();

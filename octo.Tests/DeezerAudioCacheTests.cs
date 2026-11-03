@@ -200,7 +200,10 @@ public sealed class DeezerAudioCacheTests
         await fixture.Cache.MarkPlayedAsync(Song());
         var indexPath = Path.Combine(fixture.Root, "cache-index.json");
         var index = JsonNode.Parse(await File.ReadAllTextAsync(indexPath))!.AsObject();
-        index["tracks"]!["42"]!["lastPlayedUtc"] = DateTime.UtcNow.AddDays(-8);
+        var track = index["tracks"]!["42"]!;
+        track["lastPlayedUtc"] = DateTime.UtcNow.AddDays(-8);
+        track["completedUtc"] = DateTime.UtcNow.AddDays(-9);
+        track["sources"]!["FLAC"]!["completedUtc"] = DateTime.UtcNow.AddDays(-9);
         await File.WriteAllTextAsync(indexPath, index.ToJsonString());
 
         using var restarted = new DeezerAudioCache(fixture.Resolver, fixture.Catalog,
@@ -208,6 +211,26 @@ public sealed class DeezerAudioCacheTests
         await restarted.CleanupAsync(CancellationToken.None);
 
         Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task AFreshDownloadOfASongPlayedLongAgoIsKept()
+    {
+        // The warm-up fetched songs last played weeks ago; cleanup judged them by that play
+        // alone, deleted each as soon as it landed, and the next warm-up fetched it again.
+        using var fixture = new Fixture();
+        var path = await fixture.Cache.EnsureAsync(Song());
+        await fixture.Cache.MarkPlayedAsync(Song());
+        var indexPath = Path.Combine(fixture.Root, "cache-index.json");
+        var index = JsonNode.Parse(await File.ReadAllTextAsync(indexPath))!.AsObject();
+        index["tracks"]!["42"]!["lastPlayedUtc"] = DateTime.UtcNow.AddDays(-30);
+        await File.WriteAllTextAsync(indexPath, index.ToJsonString());
+
+        using var restarted = new DeezerAudioCache(fixture.Resolver, fixture.Catalog,
+            fixture.Ids, fixture.Settings, NullLogger<DeezerAudioCache>.Instance);
+        await restarted.CleanupAsync(CancellationToken.None);
+
+        Assert.True(File.Exists(path));
     }
 
     [Fact]

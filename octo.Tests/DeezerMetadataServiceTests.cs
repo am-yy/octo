@@ -150,6 +150,43 @@ public class DeezerMetadataServiceTests
         Assert.Single(hits);
     }
 
+    private sealed class HeldHandler : HttpMessageHandler
+    {
+        public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> Paths = new();
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Paths.Enqueue(request.RequestUri!.AbsolutePath);
+            await Release.Task.WaitAsync(ct);
+            var body = request.RequestUri.AbsolutePath.EndsWith("/tracks", StringComparison.Ordinal)
+                ? """{"data":[{"title":"One","duration":100,"track_position":1,"disk_number":1,"artist":{"name":"A"}}]}"""
+                : """{"id":5,"title":"Album","nb_tracks":1,"release_date":"2001-01-01","artist":{"name":"A"}}""";
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
+        }
+    }
+
+    [Fact]
+    public async Task OneAlbumAskedForByManyAtOnceIsOneRequest()
+    {
+        // An artist page and the track counts beside it both read /album/N, and pages opened
+        // together read it again: every copy spent one of the limiter's permits.
+        var handler = new HeldHandler();
+        var factory = new Mock<IHttpClientFactory>();
+        factory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(() => new HttpClient(handler, disposeHandler: false));
+        using var svc = new DeezerMetadataService(factory.Object, TestOptions.Monitor(new MetadataSettings()),
+            new Mock<ILogger<DeezerMetadataService>>().Object);
+
+        var details = Enumerable.Range(0, 3).Select(_ => svc.GetAlbumDetailAsync("5")).ToList();
+        var count = svc.AlbumTrackCountAsync("5");
+        while (handler.Paths.Count < 2) await Task.Delay(10);
+        handler.Release.SetResult();
+
+        Assert.All(await Task.WhenAll(details), detail => Assert.Equal("Album", detail?.Title));
+        Assert.Equal(1, await count);
+        Assert.Equal(1, handler.Paths.Count(path => path == "/album/5"));
+        Assert.Equal(1, handler.Paths.Count(path => path == "/album/5/tracks"));
+    }
+
     [Fact]
     public async Task GetAlbumDetailAsync_OrdersByDiscThenTrackPosition()
     {

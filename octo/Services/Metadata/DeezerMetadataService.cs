@@ -1077,7 +1077,24 @@ public partial class DeezerMetadataService : IDisposable, IHostedService
         }
     }
 
+    /// <summary>
+    /// One GET for every caller asking for the same URL on the same lane at once; each gets its
+    /// own document. Bursts ask for the same thing many times over (an artist page and the
+    /// track counts beside it both read /album/N, and five pages opened together read it five
+    /// times), and every copy spent a permit: 350 album reads were refused by the limiter in one
+    /// minute, taking searches and playback matches down with them.
+    /// </summary>
     private async Task<DeezerResponse> GetJsonAsync(string url, CancellationToken ct, bool background = false)
+    {
+        var (json, transient) = await SharedAsync($"http|{background}|{url}", async () =>
+        {
+            using var response = await FetchJsonAsync(url, _stopping.Token, background);
+            return (Json: response.Doc?.RootElement.GetRawText(), response.Transient);
+        }, ct);
+        return new DeezerResponse { Doc = json is null ? null : JsonDocument.Parse(json), Transient = transient };
+    }
+
+    private async Task<DeezerResponse> FetchJsonAsync(string url, CancellationToken ct, bool background)
     {
         JsonDocument? doc = null;
         try

@@ -705,6 +705,10 @@ freezes source identity after opening. Shutdown rejects new delivery with HTTP 5
 `Retry-After: 5`, cancels owned work, and reaps encoders without publishing incomplete audio.
 Temporary staging is removed after readers release it; startup removes abrupt-stop orphans.
 Only one process may own a `CachePath`; no cross-process locking is provided.
+A stream or download that ends before its last byte is logged with bytes sent, elapsed time and
+cause (client hung up, or why Octo cut it). Set `Server:LogStreamRequests` to `true` in
+`settings.json` to also log every stream request with its Range, status, bytes and client;
+the change applies without a restart.
 Cache quality and concurrency changes require restart. Compose exposes
 `DEEZER_CACHE_QUALITY`, `DEEZER_MAX_CONCURRENT_DOWNLOADS`,
 `DEEZER_MAX_CONCURRENT_BACKGROUND_DOWNLOADS` and `DEEZER_MAX_CONCURRENT_TRANSCODES`.

@@ -217,8 +217,14 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
         { return FailUnavailable(context, StatusCodes.Status503ServiceUnavailable); }
         catch (Exception ex)
         {
-            _logger.LogWarning("Deezer delivery failed: {Type}", ex.GetType().Name);
-            if (context.Response.HasStarted) { context.Abort(); return new EmptyResult(); }
+            _logger.LogWarning("Deezer delivery of '{Artist} - {Title}' ({Id}) failed: {Type}: {Message}",
+                song.Artist, song.Title, song.Id, ex.GetType().Name, ex.Message);
+            if (context.Response.HasStarted)
+            {
+                context.Items[Octo.Middleware.StreamRequestLog.EndReasonKey] = $"delivery failed: {ex.GetType().Name}";
+                context.Abort();
+                return new EmptyResult();
+            }
             context.Response.Clear();
             return new StatusCodeResult(502);
         }
@@ -573,6 +579,8 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
     {
         if (context.Response.HasStarted)
         {
+            context.Items[Octo.Middleware.StreamRequestLog.EndReasonKey] =
+                status == StatusCodes.Status429TooManyRequests ? "Deezer refused more work (429)" : "Octo is stopping";
             context.Abort();
             return new EmptyResult();
         }

@@ -600,6 +600,8 @@ app.UseExceptionHandler(_ => { });
 app.UseAdminRequestGuard();
 // Then the sign-in itself: nothing under /api/admin answers a caller who is not signed in.
 app.UseAdminSignInGate();
+// Counts the bytes of every stream and download answer, so one that ends early is logged.
+app.UseStreamRequestLog();
 
 // Capture the raw request body for body-carrying methods so the proxy can
 // faithfully forward it after parameter extraction has consumed/closed the

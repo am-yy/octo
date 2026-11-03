@@ -498,8 +498,10 @@ public sealed class MergedFormatTests
     }
 
     [Fact]
-    public async Task NativeArtist_ALibraryArtistStillComesFromNavidrome()
+    public async Task NativeArtist_ALibraryArtistShowsTheCatalogsAlbumsAfterItsOwn()
     {
+        // Feishin lists a library artist's albums with /api/album?artist_id=. Relayed, the page
+        // held only the library's albums; getArtist's merge never ran for it.
         await using var factory = new WebFactory();
         using var client = factory.CreateClient();
 
@@ -507,8 +509,23 @@ public sealed class MergedFormatTests
         Assert.Equal(1, detail.RootElement.GetProperty("size").GetInt32());
 
         using var response = await client.GetAsync("/api/album?_start=0&_end=-1&artist_id=ar-1");
+        response.EnsureSuccessStatusCode();
         using var list = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal(["al-1"], list.RootElement.EnumerateArray().Select(a => a.GetProperty("id").GetString()));
+        var albums = list.RootElement.EnumerateArray().ToList();
+        // The library's own album first, as Navidrome gave it, and the catalog's copy of it not again.
+        Assert.Equal("al-1", albums[0].GetProperty("id").GetString());
+        var names = albums.Select(a => a.GetProperty("name").GetString()).ToList();
+        Assert.Single(names, "Test Album");
+        Assert.Contains("Other Album", names);
+        Assert.Contains("A Single", names);
+        Assert.All(albums.Skip(1), a => Assert.Equal("ar-1", a.GetProperty("albumArtistId").GetString()));
+        Assert.Equal(albums.Count.ToString(), response.Headers.GetValues("X-Total-Count").Single());
+
+        // A page of the merged list, counted whole.
+        using var paged = await client.GetAsync("/api/album?_start=1&_end=2&artist_id=ar-1");
+        using var page = JsonDocument.Parse(await paged.Content.ReadAsStringAsync());
+        Assert.Equal([names[1]], page.RootElement.EnumerateArray().Select(a => a.GetProperty("name").GetString()));
+        Assert.Equal(albums.Count.ToString(), paged.Headers.GetValues("X-Total-Count").Single());
     }
 
     [Fact]

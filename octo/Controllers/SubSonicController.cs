@@ -1955,6 +1955,31 @@ public partial class SubsonicController : ControllerBase
             return await RelayAsAskedAsync("rest/getArtist", parameters, format, navidromeResult.Body, navidromeResult.ContentType);
         }
 
+        var deezerAlbums = await LibraryArtistCatalogAlbumsAsync(artistName, localArtistId, localAlbums);
+
+        var mergedAlbums = localAlbums.ToList();
+        foreach (var deezerAlbum in deezerAlbums)
+        {
+            mergedAlbums.Add(_responseBuilder.ConvertAlbumToJson(deezerAlbum));
+        }
+
+        if (artistData is Dictionary<string, object> artistDict)
+        {
+            artistDict["album"] = mergedAlbums;
+            artistDict["albumCount"] = mergedAlbums.Count;
+        }
+
+        return _responseBuilder.CreateMergedResponse(format, "artist", artistData);
+    }
+
+    /// <summary>
+    /// The catalog's albums for a library artist that the library's own albums do not already
+    /// cover, each naming the artist and linking back to the library artist's id. The local
+    /// albums are rows carrying an "id" and a "name", as getArtist and the native list give them.
+    /// </summary>
+    private async Task<List<Album>> LibraryArtistCatalogAlbumsAsync(string artistName, string localArtistId,
+        IReadOnlyList<object> localAlbums)
+    {
         var localAlbumTitles = localAlbums
             .OfType<Dictionary<string, object>>()
             .Select(dict => dict.TryGetValue("name", out var nameObj) ? nameObj?.ToString() : null)
@@ -2002,23 +2027,7 @@ public partial class SubsonicController : ControllerBase
         // Each outside album says how much of it the library holds; one the page's own albums
         // hold whole, or by name, is left out.
         deezerAlbums = await SettleArtistAlbumsAsync(deezerAlbums, localAlbums);
-
-        var mergedAlbums = localAlbums.ToList();
-        foreach (var deezerAlbum in deezerAlbums)
-        {
-            if (!localAlbumNames.Contains(SongIdentity.Key(deezerAlbum.Title)))
-            {
-                mergedAlbums.Add(_responseBuilder.ConvertAlbumToJson(deezerAlbum));
-            }
-        }
-
-        if (artistData is Dictionary<string, object> artistDict)
-        {
-            artistDict["album"] = mergedAlbums;
-            artistDict["albumCount"] = mergedAlbums.Count;
-        }
-
-        return _responseBuilder.CreateMergedResponse(format, "artist", artistData);
+        return deezerAlbums.Where(album => !localAlbumNames.Contains(SongIdentity.Key(album.Title))).ToList();
     }
 
     /// <summary>
@@ -3936,6 +3945,8 @@ public partial class SubsonicController : ControllerBase
         if (nativeArtist != null) return nativeArtist;
         var nativeArtistAlbums = await TryServeNativeArtistAlbumsAsync(endpoint, parameters);
         if (nativeArtistAlbums != null) return nativeArtistAlbums;
+        var libraryArtistAlbums = await TryMergeNativeLibraryArtistAlbumsAsync(endpoint, parameters);
+        if (libraryArtistAlbums != null) return libraryArtistAlbums;
 
         // Native album search, the twin of the search3 album injection.
         var nativeAlbumSearch = await TryInjectNativeAlbumSearchAsync(endpoint, parameters);
@@ -4485,6 +4496,103 @@ public partial class SubsonicController : ControllerBase
         Response.Headers["X-Total-Count"] = albums.Count.ToString();
         Response.ContentType = "application/json";
         await Response.Body.WriteAsync(bytes);
+        return new EmptyResult();
+    }
+
+    /// <summary>
+    /// Native albums by artist for a library artist: GET /api/album?artist_id={library id}.
+    /// Navidrome's list holds only the library's albums, so a Navidrome-mode client (Feishin)
+    /// showed none of the artist's other releases. The catalog's albums are added as getArtist
+    /// adds them, and the whole list is then sorted and paged here, since Navidrome only saw
+    /// its own part of it. Null when Navidrome does not answer, so the request relays as before.
+    /// </summary>
+    private async Task<IActionResult?> TryMergeNativeLibraryArtistAlbumsAsync(
+        string endpoint, Dictionary<string, string> parameters)
+    {
+        if (!string.Equals(endpoint, "api/album", StringComparison.OrdinalIgnoreCase)) return null;
+        var artistId = parameters.GetValueOrDefault("artist_id", "").Trim();
+        if (string.IsNullOrEmpty(artistId) || parameters.ContainsKey("name")) return null;
+
+        // The whole of Navidrome's list: the page asked for is cut from the merged one.
+        var whole = new Dictionary<string, string>(parameters);
+        whole.Remove("_start");
+        whole.Remove("_end");
+        RawRelayResult raw;
+        try { raw = await _proxyService.RelayRawAsync(endpoint, whole); }
+        catch { return null; }
+        if (raw.Status != 200) return null;
+
+        JsonArray? rows;
+        try { rows = JsonNode.Parse(raw.Body) as JsonArray; }
+        catch { return null; }
+        if (rows == null) return null;
+
+        var localAlbums = rows.OfType<JsonObject>()
+            .Select(row => (object)new Dictionary<string, object>
+            {
+                ["id"] = row["id"]?.ToString() ?? "",
+                ["name"] = row["name"]?.ToString() ?? "",
+            })
+            .ToList();
+
+        var artistName = rows.OfType<JsonObject>()
+            .FirstOrDefault(row => row["albumArtistId"]?.ToString() == artistId)?["albumArtist"]?.ToString();
+        if (string.IsNullOrEmpty(artistName))
+        {
+            try
+            {
+                var detail = await _proxyService.RelayRawAsync("api/artist/" + Uri.EscapeDataString(artistId), new(), "GET");
+                if (detail.Status == 200) artistName = JsonNode.Parse(detail.Body)?["name"]?.ToString();
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { }
+        }
+
+        var libraryId = rows.OfType<JsonObject>().Select(row => row["libraryId"]?.ToString())
+            .Select(lib => int.TryParse(lib, out var parsed) ? parsed : (int?)null).FirstOrDefault(lib => lib != null) ?? 1;
+
+        var merged = rows.Select(row => row?.DeepClone()).ToList();
+        if (!string.IsNullOrEmpty(artistName))
+        {
+            try
+            {
+                foreach (var album in await LibraryArtistCatalogAlbumsAsync(artistName, artistId, localAlbums))
+                    merged.Add(BuildNativeAlbumObject(album, libraryId));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                // The library's own albums still show when the catalog cannot be read.
+                _logger.LogWarning(ex, "Artist {ArtistId}: catalog albums not added to the native list", artistId);
+            }
+        }
+
+        // Feishin asks for an artist's page newest first (_sort=max_year). Navidrome sorted its
+        // own rows; the added ones go in by year as well. Other sorts keep the catalog's last.
+        if (string.Equals(parameters.GetValueOrDefault("_sort"), "max_year", StringComparison.OrdinalIgnoreCase))
+        {
+            static int Year(JsonNode? row) => int.TryParse(row?["maxYear"]?.ToString(), out var y) ? y : 0;
+            merged = string.Equals(parameters.GetValueOrDefault("_order"), "DESC", StringComparison.OrdinalIgnoreCase)
+                ? merged.OrderByDescending(Year).ToList()
+                : merged.OrderBy(Year).ToList();
+        }
+
+        // Feishin asks for a whole discography with _end=-1: an end not past the start means
+        // the rest of the list.
+        var start = parameters.TryGetValue("_start", out var startStr)
+            && int.TryParse(startStr, out var s) && s > 0 ? Math.Min(s, merged.Count) : 0;
+        var end = parameters.TryGetValue("_end", out var endStr)
+            && int.TryParse(endStr, out var e) && e > start ? Math.Min(e, merged.Count) : merged.Count;
+        var page = new JsonArray(merged.Skip(start).Take(end - start).ToArray());
+
+        Response.StatusCode = 200;
+        foreach (var h in raw.ResponseHeaders)
+        {
+            // Navidrome's validators describe its own list, not this one.
+            if (h.Key is "X-Total-Count" or "ETag" or "Last-Modified") continue;
+            Response.Headers[h.Key] = h.Value;
+        }
+        Response.Headers["X-Total-Count"] = merged.Count.ToString();
+        Response.ContentType = raw.ContentType ?? "application/json";
+        await Response.Body.WriteAsync(Encoding.UTF8.GetBytes(page.ToJsonString()));
         return new EmptyResult();
     }
 

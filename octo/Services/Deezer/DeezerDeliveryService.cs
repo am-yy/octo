@@ -82,6 +82,12 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
             if (localPath is not null && request.Codec is null)
                 return CompletedFile(localPath, Mime(localPath), song, download);
 
+            // A cold raw read from the first byte cannot be an invalid range, so it skips the
+            // probe: that is a CDN round trip before the first byte, and the fill opened next
+            // carries the same validators.
+            if (localPath is null && request.Codec is null && !head && StartsAtFirstByte(context.Request))
+                return await ServeProgressiveRawAsync(context, song, download, workToken);
+
             var info = localPath is null ? await _cache.ProbeAsync(song, workToken) : null;
             if (localPath is null && info is null) return NoSource(song);
             var type = localPath is null ? info!.ContentType : Mime(localPath);
@@ -135,14 +141,7 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
                 return new EmptyResult();
             }
 
-            if (request.Codec is null)
-            {
-                await using var lease = await _cache.OpenProgressiveAsync(song,
-                    DeezerCachePriority.Playback, workToken);
-                if (lease is null) return NoSource(song);
-                await ServeRawAsync(context, lease, song, download, workToken);
-                return new EmptyResult();
-            }
+            if (request.Codec is null) return await ServeProgressiveRawAsync(context, song, download, workToken);
 
             SourceAccess? source = localPath is not null
                 ? SourceAccess.Local(localPath)
@@ -228,6 +227,22 @@ public sealed class DeezerDeliveryService : IHostedService, IDisposable
             context.Response.Clear();
             return new StatusCodeResult(502);
         }
+    }
+
+    private async Task<IActionResult> ServeProgressiveRawAsync(HttpContext context, Song song, bool download,
+        CancellationToken cancellationToken)
+    {
+        await using var lease = await _cache.OpenProgressiveAsync(song, DeezerCachePriority.Playback, cancellationToken);
+        if (lease is null) return NoSource(song);
+        await ServeRawAsync(context, lease, song, download, cancellationToken);
+        return new EmptyResult();
+    }
+
+    private static bool StartsAtFirstByte(HttpRequest request)
+    {
+        if (string.IsNullOrEmpty(request.Headers.Range)) return true;
+        var ranges = request.GetTypedHeaders().Range;
+        return ranges is { Unit.Value: "bytes", Ranges.Count: 1 } && ranges.Ranges.First().From == 0;
     }
 
     private async Task ServeRawAsync(HttpContext context, DeezerProgressiveLease lease, Song song, bool download,

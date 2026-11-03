@@ -297,6 +297,22 @@ public sealed class ProgressiveDeliveryIntegrationTests
         await response.Content.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(15));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AColdPlayFromTheFirstByteSkipsTheSourceProbe(bool ranged)
+    {
+        await using var fixture = await Fixture.CreateAsync("FLAC");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/stream?format=raw");
+        if (ranged) request.Headers.Range = new RangeHeaderValue(0, null);
+        fixture.Release.TrySetResult();
+        using var response = await fixture.Client.SendAsync(request);
+        Assert.Equal(ranged ? HttpStatusCode.PartialContent : HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(fixture.Audio, await response.Content.ReadAsByteArrayAsync());
+        Assert.Equal(0, fixture.HeadProbes);
+        Assert.Equal(1, fixture.SourceStartRequests);
+    }
+
     [Fact]
     public async Task ColdRawSuffixUsesSameRepresentationAnd416StartsNoFill()
     {

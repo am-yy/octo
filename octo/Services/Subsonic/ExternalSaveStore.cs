@@ -69,6 +69,8 @@ public sealed class ExternalAcquisitionIntent
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
     public DateTime? RetryAfterUtc { get; set; }
+    /// <summary>How many times Octo asked Lidarr to search again after the first search found nothing.</summary>
+    public int SearchAttempts { get; set; }
 }
 
 public sealed class ExternalAlbumSearch
@@ -469,6 +471,22 @@ public sealed class ExternalSaveStore
             intent.LastError = error;
             intent.RetryAfterUtc = intent.Status == "pending" ? DateTime.UtcNow + RetryDelay : null;
             intent.UpdatedUtc = DateTime.UtcNow;
+        });
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Records one more Lidarr search for a submitted album that has not arrived; every
+    /// intent waiting on that album shares the count, since Lidarr searches the album, not the song.</summary>
+    public Task NoteSearchedAgainAsync(int lidarrAlbumId, string? error)
+    {
+        Mutate(state =>
+        {
+            foreach (var intent in state.Acquisitions.Where(i => i.LidarrAlbumId == lidarrAlbumId && i.Status == "submitted"))
+            {
+                intent.SearchAttempts++;
+                intent.LastError = error;
+                intent.UpdatedUtc = DateTime.UtcNow;
+            }
         });
         return Task.CompletedTask;
     }

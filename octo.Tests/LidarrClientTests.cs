@@ -679,4 +679,66 @@ public class LidarrClientTests
         };
         return new LidarrAlbumCandidate(0, foreignId, title, artist, year, resource);
     }
+
+    private static Handler ReleasesHandler(int monitored) => new()
+    {
+        Respond = req => req.RequestUri!.PathAndQuery switch
+        {
+            "/api/v1/album/701" => $$"""
+                {"id":701,"title":"The Powers That B","anyReleaseOk":true,"releases":[
+                  {"id":1,"title":"Vinyl","trackCount":17,"monitored":{{(monitored == 1 ? "true" : "false")}},"status":"Official","format":"2x12\" Vinyl"},
+                  {"id":2,"title":"Digital","trackCount":18,"monitored":{{(monitored == 2 ? "true" : "false")}},"status":"Official","format":"Digital Media"},
+                  {"id":3,"title":"CD","trackCount":18,"monitored":{{(monitored == 3 ? "true" : "false")}},"status":"Official","format":"2xCD"}]}
+                """,
+            "/api/v1/track?albumReleaseId=1" => "[{\"title\":\"Up My Sleeves\"}]",
+            "/api/v1/track?albumReleaseId=2" or "/api/v1/track?albumReleaseId=3"
+                => "[{\"title\":\"Up My Sleeves\"},{\"title\":\"Have a Sad Cum\"}]",
+            _ => "{}",
+        },
+    };
+
+    [Fact]
+    public async Task PreferReleaseWith_MonitorsOnlyTheEditionHoldingTheSong()
+    {
+        var handler = ReleasesHandler(monitored: 1);
+
+        Assert.True(await Build(handler).PreferReleaseWithAsync(701, ["Have a Sad Cum"]));
+
+        var put = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Put);
+        Assert.Equal("/api/v1/album/701", put.Path);
+        var album = JsonNode.Parse(put.Body!)!.AsObject();
+        Assert.False(album["anyReleaseOk"]!.GetValue<bool>());
+        Assert.Equal([false, true, false],
+            album["releases"]!.AsArray().Select(r => r!["monitored"]!.GetValue<bool>()));
+    }
+
+    [Fact]
+    public async Task PreferReleaseWith_LeavesAnEditionThatAlreadyHasTheSong()
+    {
+        var handler = ReleasesHandler(monitored: 3);
+
+        Assert.False(await Build(handler).PreferReleaseWithAsync(701, ["Have a Sad Cum"]));
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Put);
+    }
+
+    [Fact]
+    public void ChooseRelease_PrefersTheCommonDigitalEditionOverAShortVinyl()
+    {
+        LidarrReleaseChoice[] releases =
+        [
+            new(1, true, 16, "Official", "Vinyl", 0),
+            new(2, false, 17, "Official", "Vinyl", 1),
+            new(3, false, 18, "Official", "CD", 1),
+            new(4, false, 18, "Official", "Digital Media", 1),
+            new(5, false, 18, "Promotion", "Digital Media", 1),
+        ];
+
+        Assert.Equal(4, LidarrClient.ChooseRelease(releases));
+    }
+
+    [Fact]
+    public void ChooseRelease_NoneWhenNoEditionHasTheSong()
+    {
+        Assert.Null(LidarrClient.ChooseRelease([new(1, true, 12, "Official", null, 0), new(2, false, 14, "Official", null, 0)]));
+    }
 }

@@ -1,3 +1,4 @@
+using Octo.Services.Lidarr;
 using Octo.Services.Local;
 
 namespace Octo.Services.Subsonic;
@@ -9,7 +10,8 @@ namespace Octo.Services.Subsonic;
 public sealed class ExternalSaveReconciler(
     ExternalSaveStore saves,
     ILocalLibraryService library,
-    ILogger<ExternalSaveReconciler> logger) : BackgroundService
+    ILogger<ExternalSaveReconciler> logger,
+    LidarrImportReconciler? lidarr = null) : BackgroundService
 {
     internal static readonly TimeSpan BurstInterval = TimeSpan.FromSeconds(5);
     internal static readonly TimeSpan BurstLength = TimeSpan.FromMinutes(2);
@@ -53,6 +55,16 @@ public sealed class ExternalSaveReconciler(
             {
                 logger.LogDebug("External import reconciliation for {Provider}:{Id} will retry: {Reason}",
                     intent.Provider, intent.ExternalId, ex.Message);
+            }
+        }
+        // What the title search missed, Lidarr's track list for the requested album can still place.
+        if (lidarr is not null)
+        {
+            try { replaced += await lidarr.ReconcileAsync(saves.GetUnresolvedAcquisitions(), cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                logger.LogDebug("Lidarr import reconciliation will retry: {Reason}", ex.Message);
             }
         }
         return replaced;

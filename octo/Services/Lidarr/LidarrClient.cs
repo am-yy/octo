@@ -14,6 +14,9 @@ public sealed record LidarrOptions(
     IReadOnlyList<LidarrChoice> QualityProfiles,
     IReadOnlyList<LidarrChoice> MetadataProfiles);
 
+/// <summary>One edition (Lidarr "release") of an album, and how many wanted songs it holds.</summary>
+public sealed record LidarrReleaseChoice(int Id, bool Monitored, int TrackCount, string? Status, string? Format, int Holds);
+
 public sealed record LidarrAlbumCandidate(
     int Id, string ForeignAlbumId, string Title, string Artist, int? Year, JsonObject Resource);
 
@@ -228,6 +231,85 @@ public sealed class LidarrClient
             ["albumIds"] = new JsonArray(albumId),
         }, ct);
         return albumId;
+    }
+
+    /// <summary>
+    /// Asks Lidarr to search again for an album Octo requested that never arrived, monitoring it
+    /// (and its artist) again first when requested albums are monitored, since an unmonitored
+    /// album is never grabbed from RSS.
+    /// </summary>
+    public async Task SearchAlbumAgainAsync(int albumId, CancellationToken ct = default)
+    {
+        var settings = RequireSettings();
+        if (settings.MonitorRequestedAlbums)
+        {
+            var album = await GetObjectAsync($"/api/v1/album/{albumId}", ct);
+            if (album["artist"] is JsonObject artist) await EnsureArtistMonitoredAsync(artist, ct);
+            if (album["monitored"]?.GetValue<bool>() != true)
+            {
+                using var request = CreateRequest(HttpMethod.Put, "/api/v1/album/monitor");
+                request.Content = JsonContent.Create(new JsonObject
+                {
+                    ["albumIds"] = new JsonArray(albumId),
+                    ["monitored"] = true,
+                });
+                using var response = await SendAsync(request, ct);
+            }
+        }
+        await SendJsonAsync(HttpMethod.Post, "/api/v1/command", new JsonObject
+        {
+            ["name"] = "AlbumSearch",
+            ["albumIds"] = new JsonArray(albumId),
+        }, ct);
+    }
+
+    /// <summary>
+    /// Makes Lidarr fetch an edition that holds the wanted songs. Lidarr picks an album's edition
+    /// itself, and its pick can lack a requested song: a bonus track only on the deluxe or
+    /// remastered edition, or one disc of a double album. When the monitored edition holds fewer
+    /// of <paramref name="titles"/> than another, that one is monitored instead and Lidarr may no
+    /// longer swap it for any edition on import. True when the edition changed.
+    /// </summary>
+    public async Task<bool> PreferReleaseWithAsync(int albumId, IReadOnlyCollection<string> titles,
+        CancellationToken ct = default)
+    {
+        if (titles.Count == 0) return false;
+        var album = await GetObjectAsync($"/api/v1/album/{albumId}", ct);
+        if (album["releases"] is not JsonArray releases || releases.Count < 2) return false;
+        var choices = new List<LidarrReleaseChoice>();
+        foreach (var release in releases.OfType<JsonObject>())
+        {
+            var tracks = await GetArrayAsync($"/api/v1/track?albumReleaseId={Int(release, "id")}", ct);
+            var holds = titles.Count(title => tracks.Any(track =>
+                SongIdentity.SameTitle(Str(track, "title"), title, SongIdentity.StrictTitles).IsSame));
+            choices.Add(new LidarrReleaseChoice(Int(release, "id"), release["monitored"]?.GetValue<bool>() == true,
+                Int(release, "trackCount"), NullableStr(release, "status"), NullableStr(release, "format"), holds));
+        }
+        if (ChooseRelease(choices) is not int chosen) return false;
+        foreach (var release in releases.OfType<JsonObject>()) release["monitored"] = Int(release, "id") == chosen;
+        album["anyReleaseOk"] = false;
+        await SendJsonAsync(HttpMethod.Put, $"/api/v1/album/{albumId}", album, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// The edition to monitor instead, or null to keep the current one: among the editions holding
+    /// the most wanted songs, the one whose track count most editions share (what downloads
+    /// usually are, unlike a vinyl or promo cut), then official, then digital, then the shortest.
+    /// </summary>
+    internal static int? ChooseRelease(IReadOnlyList<LidarrReleaseChoice> releases)
+    {
+        var most = releases.Count == 0 ? 0 : releases.Max(r => r.Holds);
+        if (most == 0 || releases.Any(r => r.Monitored && r.Holds == most)) return null;
+        var holding = releases.Where(r => r.Holds == most).ToList();
+        var shared = holding.GroupBy(r => r.TrackCount).ToDictionary(g => g.Key, g => g.Count());
+        return holding
+            .OrderByDescending(r => shared[r.TrackCount])
+            .ThenBy(r => string.Equals(r.Status, "Official", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(r => r.Format?.Contains("Digital", StringComparison.OrdinalIgnoreCase) == true ? 0 : 1)
+            .ThenBy(r => r.TrackCount)
+            .ThenBy(r => r.Id)
+            .First().Id;
     }
 
     private async Task EnsureAlbumMetadataAsync(int albumId, int? artistId, bool refreshNewArtist,

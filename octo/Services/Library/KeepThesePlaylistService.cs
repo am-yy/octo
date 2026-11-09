@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Octo.Models.Domain;
 using Octo.Models.Radio;
 using Octo.Models.Settings;
 using Octo.Services.Common;
@@ -11,8 +12,8 @@ namespace Octo.Services.Library;
 
 /// <summary>
 /// "Keep these?": outside songs a listener keeps coming back to but has never added, as a
-/// read-only playlist made like "Popular right now". A heart keeps a song, as anywhere; one star
-/// says no, and the song never comes back. A song the library has, or the listener hearted, is
+/// read-only playlist made like "Popular right now". A heart or a playlist keeps a song; one
+/// star says no, and the song never comes back. A song the library has, or the listener hearted, is
 /// left out. Its plays are the ones radio learns from, so it is empty while radio does not learn.
 /// </summary>
 public sealed class KeepThesePlaylistService : PopularPlaylistService
@@ -52,10 +53,8 @@ public sealed class KeepThesePlaylistService : PopularPlaylistService
         string username, CancellationToken ct)
     {
         var user = _plays.GetUser(username);
-        var kept = (_saves?.GetHearts(username) ?? [])
-            .Select(heart => LastFmRadioSeedNormalizer.TrackKey(heart.Song.Artist ?? "", heart.Song.Title ?? ""))
-            .Concat((user.RadioBans ?? []).Select(ban => ban.Key))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var kept = Kept(_saves?.GetHearts(username).Select(heart => heart.Song) ?? [],
+            _saves?.GetPlaylists(username) ?? [], (user.RadioBans ?? []).Select(ban => ban.Key));
         var rows = Pick(user.Plays, kept, Clock())
             .Select((pick, index) => new TopSongsService.TopSong(index + 1,
                 TopSongsService.CatalogSong(Registry, new DeezerMetadataService.ChartTrack(
@@ -64,6 +63,15 @@ public sealed class KeepThesePlaylistService : PopularPlaylistService
             .ToList();
         return Task.FromResult<(IReadOnlyList<TopSongsService.TopSong>, string)>((rows, "their plays"));
     }
+
+    /// <summary>The songs not to ask about, by track key: hearted, already in one of the
+    /// listener's playlists (adding one is keeping it), or rated one star.</summary>
+    internal static IReadOnlySet<string> Kept(IEnumerable<Song> hearted, IEnumerable<ExternalSavedPlaylist> playlists,
+        IEnumerable<string> dismissed) =>
+        hearted.Concat(playlists.SelectMany(playlist => playlist.Tracks).Select(track => track.Song).OfType<Song>())
+            .Select(song => LastFmRadioSeedNormalizer.TrackKey(song.Artist ?? "", song.Title ?? ""))
+            .Concat(dismissed)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The outside songs to ask about: played <see cref="MinimumPlays"/> times or more on

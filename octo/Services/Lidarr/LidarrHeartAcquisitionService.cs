@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using Octo.Models.Domain;
@@ -323,8 +324,12 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             try
             {
                 albumId = await _client.EnsureAlbumAndSearchAsync(candidate,
-                    beforeSearch: _externalSaves is null ? null : id =>
-                        _externalSaves.MarkAlbumSearchSubmittingAsync(candidate.ForeignAlbumId, id));
+                    beforeSearch: async id =>
+                    {
+                        await PreferReleaseWithSongsAsync(id, album);
+                        if (_externalSaves is not null)
+                            await _externalSaves.MarkAlbumSearchSubmittingAsync(candidate.ForeignAlbumId, id);
+                    });
                 if (_externalSaves is not null)
                     await _externalSaves.MarkAlbumSearchSubmittedAsync(candidate.ForeignAlbumId, albumId);
             }
@@ -385,6 +390,25 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 _albumJobs.TryRemove(candidate.ForeignAlbumId, out _);
             }
         });
+    }
+
+    /// <summary>Before the search, point Lidarr at an edition that holds the requested songs; a
+    /// failure here only leaves Lidarr's own pick, so it never stops the search.</summary>
+    private async Task PreferReleaseWithSongsAsync(int albumId, Album album)
+    {
+        var titles = album.Songs.Select(song => song.Title).OfType<string>()
+            .Where(title => title.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        try
+        {
+            if (await _client.PreferReleaseWithAsync(albumId, titles))
+                _logger.LogInformation("Monitored the edition of '{Artist} - {Album}' that holds the requested songs",
+                    album.Artist, album.Title);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException
+                                       or TaskCanceledException)
+        {
+            _logger.LogDebug("Kept Lidarr's edition of '{Album}': {Reason}", album.Title, ex.Message);
+        }
     }
 
     private async Task ReconcileImportsAsync(int albumId, Album album, LidarrSettings settings,

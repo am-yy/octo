@@ -150,6 +150,7 @@ builder.Services.AddSingleton(sp => new ExternalSaveStore(
     System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-saves.json"),
     sp.GetRequiredService<ILogger<ExternalSaveStore>>(),
     sp.GetRequiredService<Octo.Services.Common.AcquisitionTracker>()));
+builder.Services.AddSingleton<Octo.Services.Lidarr.LidarrImportReconciler>();
 builder.Services.AddSingleton<ExternalSaveReconciler>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalSaveReconciler>());
 builder.Services.AddSingleton<ExternalSaveWorker>();

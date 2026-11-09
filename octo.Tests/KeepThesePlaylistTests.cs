@@ -7,6 +7,7 @@ using Octo.Models.Settings;
 using Octo.Services.Common;
 using Octo.Services.LastFm;
 using Octo.Services.Library;
+using Octo.Services.Subsonic;
 
 namespace Octo.Tests;
 
@@ -51,6 +52,23 @@ public sealed class KeepThesePlaylistTests
                 .Concat(Thrice("Random pick", day => Play("Random pick", day + 1, source: "bootstrap-random")))
                 .Concat(Thrice("Wanted")),
             dismissed, Now);
+        Assert.Equal(["Wanted"], picks.Select(pick => pick.Play.Title));
+    }
+
+    [Fact]
+    public void ASongAlreadyInAPlaylist_IsKept_SoItIsNotAskedAbout()
+    {
+        var playlist = new ExternalSavedPlaylist
+        {
+            UserId = "admin",
+            Tracks = [new ExternalPlaylistTrack { Song = new Song { Artist = "Band", Title = "Saved in a playlist" } }],
+        };
+        var kept = KeepThesePlaylistService.Kept([new Song { Artist = "Band", Title = "Hearted" }], [playlist],
+            [LastFmRadioSeedNormalizer.TrackKey("Band", "One star")]);
+        IEnumerable<LastFmRadioPlay> Thrice(string title) => Enumerable.Range(0, 3).Select(day => Play(title, day + 1));
+        var picks = KeepThesePlaylistService.Pick(
+            Thrice("Saved in a playlist").Concat(Thrice("Hearted")).Concat(Thrice("One star")).Concat(Thrice("Wanted")),
+            kept, Now);
         Assert.Equal(["Wanted"], picks.Select(pick => pick.Play.Title));
     }
 

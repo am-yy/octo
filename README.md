@@ -635,9 +635,9 @@ sync catalog, so the playlist finds them there.
 
 Every listener also gets **Keep these?**, a read-only playlist of the outside songs they keep
 coming back to but never added: played three times or more, on two days or more, the last time
-in the last 90 days. A heart keeps a song, as it does anywhere, and it leaves the list once it is
-in the library. One star dismisses it, and it does not come back. Songs the library already has,
-or the listener hearted, are left out. Most played comes first, 50 at most. It is made with the
+in the last 90 days. A heart or adding it to a playlist keeps a song, and it leaves the list. One star dismisses it,
+and it does not come back. Songs the library already has, the listener hearted, or that are in
+one of their playlists are left out. Most played comes first, 50 at most. It is made with the
 listener's own sign-in when their app lists playlists and holds still for 6 hours, like Popular
 right now. It reads the plays personal stations are made from, so it stays empty while radio
 (`LASTFM_ENABLE_RADIO`) or its personal stations are off. It is on by default; `KEEP_THESE=false` or
@@ -713,7 +713,14 @@ Cache quality and concurrency changes require restart. Compose exposes
 `DEEZER_CACHE_QUALITY`, `DEEZER_MAX_CONCURRENT_DOWNLOADS`,
 `DEEZER_MAX_CONCURRENT_BACKGROUND_DOWNLOADS` and `DEEZER_MAX_CONCURRENT_TRANSCODES`.
 Encoded copies remain unpinned and share the unpinned budget. Continuous radio keeps MP3.
-Lidarr preparation retries after restart, while accepted album searches are not repeated.
+Lidarr preparation retries after restart. An accepted album search is not resent at once, but an
+album that has no files a day later is monitored again (with its artist, when **Monitor requested
+albums** is on) and searched again after 1, 2, 4 and 8 more days, at most 5 times and 3 albums a
+minute; the saved songs then keep "Lidarr found no release" as their last error.
+Before searching, Octo monitors the album's edition (Lidarr release) that holds the requested songs
+when Lidarr's pick lacks them, preferring the track count most editions share, official and digital,
+and turns off "any release OK" for that album. An album imported as an edition without a saved song
+gets the same switch and a new search on the schedule above.
 If Octo loses the response during command submission, it keeps the claim and checks imports;
 Lidarr offers no idempotency key, so that ambiguous window requires checking Lidarr before a manual retry.
 
@@ -721,7 +728,9 @@ Song hearts and mixed playlists edited through Octo save immediately to
 `/app/config/external-saves.json`, including duplicates, order, metadata and acquisition intents.
 Manual references pin one shared cache copy until a usable FLAC import replaces them in place;
 generated playlists do not pin, and pinned copies may exceed the cache budget. Imports reconcile
-every minute after restart; ambiguous or lossy matches remain virtual. Old external IDs remain
+every minute after restart. When Navidrome's title search cannot place a song, Octo reads the
+track list of the album Lidarr imported for it, which carries MusicBrainz titles, and takes the
+same-titled track nearest the song's length (never a live or demo cut); lossy imports remain virtual. Old external IDs remain
 playback aliases. Navidrome writes use the caller's authorized session and retry on later sessions.
 Direct Navidrome displays only imported entries. Store no caller credentials on disk.
 

@@ -78,6 +78,22 @@ public sealed class LastFmRadioControllerTests
     }
 
     [Fact]
+    public async Task StarAndUnstar_OfALibrarySong_AddAndTakeBackARadioPick()
+    {
+        await using var fixture = new RadioWebFactory();
+        using var client = fixture.CreateClient();
+
+        using (var star = await client.GetAsync("/rest/star?u=alice&t=token&s=salt&f=json&id=lib-7"))
+            star.EnsureSuccessStatusCode();
+        var heart = Assert.Single(fixture.State.GetUser("alice").Hearts);
+        Assert.Equal(("lib-7", "Artist lib-7", "Title lib-7", "star"), (heart.SongId, heart.Artist, heart.Title, heart.Origin));
+
+        using (var unstar = await client.GetAsync("/rest/unstar?u=alice&t=token&s=salt&f=json&id=lib-7"))
+            unstar.EnsureSuccessStatusCode();
+        Assert.Empty(fixture.State.GetUser("alice").Hearts);
+    }
+
+    [Fact]
     public async Task ScrobbleBatch_PreservesRepeatedIdsAndLearnsOnlyCompletedAuthenticatedPlays()
     {
         await using var fixture = new RadioWebFactory();

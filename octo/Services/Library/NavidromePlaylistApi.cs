@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Octo.Models.Settings;
+using Octo.Services.LastFm;
 using Octo.Services.Subsonic;
 
 namespace Octo.Services.Library;
@@ -14,7 +15,7 @@ namespace Octo.Services.Library;
 /// An admin may edit any user's playlist (Navidrome's checkWritable), which is what lets Octo
 /// fill a playlist the user owns while the user keeps it private.
 /// </summary>
-public sealed class NavidromePlaylistApi
+public sealed class NavidromePlaylistApi : IRadioPlaylistSource
 {
     private readonly IHttpClientFactory _http;
     private readonly NavidromeIdentityService _identity;
@@ -63,6 +64,41 @@ public sealed class NavidromePlaylistApi
         {
             _logger.LogWarning("Could not list tracks in playlist {Id}: {M}", playlistId, ex.Message);
             return [];
+        }
+    }
+
+    /// <summary>Every playlist with its owner and when it last changed; null when Navidrome did not answer.</summary>
+    public async Task<IReadOnlyList<RadioPlaylist>?> ListRadioPlaylistsAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var response = await SendAsync(jwt => Request(HttpMethod.Get, $"{BaseUrl}/api/playlist?_start=0&_end=1000", jwt), ct);
+            if (response is not { IsSuccessStatusCode: true }) return null;
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+            return RadioPlaylistRows.ParsePlaylists(doc.RootElement);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            _logger.LogWarning("Could not list playlists for radio: {M}", ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>A playlist's songs in order; null when Navidrome did not answer.</summary>
+    public async Task<IReadOnlyList<RadioPlaylistSong>?> ListRadioPlaylistSongsAsync(string playlistId, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await SendAsync(jwt => Request(HttpMethod.Get,
+                $"{BaseUrl}/api/playlist/{Uri.EscapeDataString(playlistId)}/tracks?_start=0&_end=5000", jwt), ct);
+            if (response is not { IsSuccessStatusCode: true }) return null;
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
+            return RadioPlaylistRows.ParseSongs(doc.RootElement);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            _logger.LogWarning("Could not read playlist {Id} for radio: {M}", playlistId, ex.Message);
+            return null;
         }
     }
 

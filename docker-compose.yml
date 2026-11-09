@@ -111,6 +111,7 @@ services:
       LastFm__EnableDiscoveryMix: ${LASTFM_ENABLE_DISCOVERY_MIX:-true}
       LastFm__ArtistStationCount: ${LASTFM_ARTIST_STATION_COUNT:-2}
       LastFm__GenreStationCount: ${LASTFM_GENRE_STATION_COUNT:-3}
+      LastFm__PlaylistStationCount: ${LASTFM_PLAYLIST_STATION_COUNT:-3}
       LastFm__EnableDiscoveryStations: ${LASTFM_ENABLE_DISCOVERY_STATIONS:-true}
       LastFm__ExposeRadioAsPlaylists: ${LASTFM_EXPOSE_AS_PLAYLISTS:-true}
       LastFm__ExposeRadioAsStreams: ${LASTFM_EXPOSE_AS_STREAMS:-true}

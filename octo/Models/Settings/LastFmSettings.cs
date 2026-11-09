@@ -84,6 +84,13 @@ public class LastFmSettings
     /// </summary>
     public int GenreStationCount { get; set; } = 3;
 
+    /// <summary>
+    /// How many "More like" stations to build, one per playlist the listener added a song to in
+    /// the last month, newest first, seeded by its songs. 0 disables them.
+    /// Environment variable: LASTFM_PLAYLIST_STATION_COUNT
+    /// </summary>
+    public int PlaylistStationCount { get; set; } = 3;
+
     /// <summary>Expose administrator-pinned Last.fm tag stations.</summary>
     public bool EnableDiscoveryStations { get; set; } = true;
 
@@ -129,6 +136,7 @@ public class LastFmSettings
     public int EffectiveMinimumPlays => Math.Clamp(MinimumPlays, 3, 100);
     public int EffectiveArtistStationCount => Math.Clamp(ArtistStationCount, 0, 5);
     public int EffectiveGenreStationCount => Math.Clamp(GenreStationCount, 0, 5);
+    public int EffectivePlaylistStationCount => Math.Clamp(PlaylistStationCount, 0, 5);
 
     /// <summary>
     /// Whether the settings ask for nothing to be built: dynamic stations are on, every
@@ -144,6 +152,7 @@ public class LastFmSettings
     public bool StationsExplicitlyEmpty => EnablePersonalizedStations
         && !EnableYourMix && !EnableDiscoveryMix
         && EffectiveArtistStationCount == 0 && EffectiveGenreStationCount == 0
+        && EffectivePlaylistStationCount == 0
         && !(EnableDiscoveryStations && EffectiveDiscoveryStations().Any(station => station.Enabled));
 
     public double? EffectiveRadioLoudnessTarget => RadioLoudnessTargetLufs == 0

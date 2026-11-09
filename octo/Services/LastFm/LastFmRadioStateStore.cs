@@ -21,6 +21,18 @@ public sealed class LastFmRadioStateStore
     private const int MaxRadioBansPerUser = 1_000;
     private static readonly TimeSpan UnavailableTrackCooldown = TimeSpan.FromHours(24);
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(5);
+    private const int MaxHeartsPerUser = 1_000;
+    private const int MaxPlaylistsPerUser = 200;
+
+    /// <summary>What one artist's songs added together count for, however many there are: a
+    /// whole album or discography added at once is a couple of picks of its artist, not a dozen.</summary>
+    internal const double BatchArtistShare = 2;
+
+    /// <summary>A new artist Discovery Mix offered in this many mixes the listener played from,
+    /// without them playing or keeping a song of theirs, rests for <see cref="OfferRest"/>.</summary>
+    internal const int OfferLimit = 3;
+    internal static readonly TimeSpan OfferRest = TimeSpan.FromDays(60);
+    private static readonly TimeSpan OfferForgotten = TimeSpan.FromDays(180);
 
     private readonly string _path;
     private readonly IOptionsMonitor<LastFmSettings> _settings;
@@ -81,19 +93,139 @@ public sealed class LastFmRadioStateStore
         }
     }
 
-    public bool MarkHeart(string username, string songId, string artist, string title)
+    /// <summary>A song the listener hearted. Hearting it again moves it to now.</summary>
+    public bool RecordHeart(string username, LastFmRadioPick pick)
     {
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(pick.Artist)
+            || string.IsNullOrWhiteSpace(pick.Title)) return false;
         lock (_lock)
         {
-            if (!LoadLocked().Users.TryGetValue(UserKey(username), out var user)) return false;
-            var key = LastFmRadioSeedNormalizer.TrackKey(artist, title);
-            var play = user.Plays.FirstOrDefault(item => item.SongId == songId
-                || LastFmRadioSeedNormalizer.TrackKey(item.Artist, item.Title) == key);
-            if (play is null || play.Hearted) return false;
-            play.Hearted = true;
-            SaveLocked(_state!);
+            var state = LoadLocked();
+            var user = GetOrCreateLocked(state, username);
+            var key = LastFmRadioSeedNormalizer.TrackKey(pick.Artist, pick.Title);
+            user.Hearts.RemoveAll(heart => heart.Origin == pick.Origin
+                && LastFmRadioSeedNormalizer.TrackKey(heart.Artist, heart.Title) == key);
+            user.Hearts.Insert(0, pick);
+            PruneLocked(state);
+            SaveLocked(state);
             return true;
         }
+    }
+
+    /// <summary>Takes back the hearts on these songs, by the ids the listener unstarred.</summary>
+    public bool RemoveHearts(string username, IReadOnlyCollection<string> songIds)
+    {
+        if (songIds.Count == 0) return false;
+        lock (_lock)
+        {
+            var state = LoadLocked();
+            if (!state.Users.TryGetValue(UserKey(username), out var user)) return false;
+            if (user.Hearts.RemoveAll(heart => heart.SongId.Length > 0 && songIds.Contains(heart.SongId)) == 0) return false;
+            SaveLocked(state);
+            return true;
+        }
+    }
+
+    /// <summary>A playlist as the reader found it. Null songs: unchanged since <see cref="PlaylistMarks"/>.</summary>
+    public sealed record PlaylistRead(string Id, string Name, DateTime ChangedUtc, IReadOnlyList<LastFmRadioPick>? Songs);
+
+    /// <summary>When each of the listener's playlists last changed, as last read.</summary>
+    public IReadOnlyDictionary<string, DateTime> PlaylistMarks(string username)
+    {
+        lock (_lock)
+            return LoadLocked().Users.TryGetValue(UserKey(username), out var user)
+                ? user.Playlists.ToDictionary(playlist => playlist.Id, playlist => playlist.ChangedUtc, StringComparer.Ordinal)
+                : new Dictionary<string, DateTime>(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// What the listener has chosen, read again: every playlist they own now (a null list means
+    /// the server did not answer, so the last reading stands), and Octo's own hearts on outside
+    /// songs. A playlist that is gone takes its songs with it. Returns how many songs are new.
+    /// </summary>
+    public int ApplyPicks(string username, IReadOnlyCollection<PlaylistRead>? playlists,
+        IReadOnlyCollection<LastFmRadioPick>? savedHearts)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return 0;
+        lock (_lock)
+        {
+            var state = LoadLocked();
+            var user = GetOrCreateLocked(state, username);
+            var added = 0;
+            if (playlists is not null)
+            {
+                var known = user.Playlists.ToDictionary(playlist => playlist.Id, StringComparer.Ordinal);
+                user.Playlists = playlists.Select(read =>
+                {
+                    var merged = MergePlaylist(known.GetValueOrDefault(read.Id), read, out var fresh);
+                    added += fresh;
+                    return merged;
+                }).ToList();
+            }
+            if (savedHearts is not null)
+            {
+                var keys = savedHearts.Select(heart => LastFmRadioSeedNormalizer.TrackKey(heart.Artist, heart.Title)).ToHashSet();
+                added += keys.Count(key => !user.Hearts.Any(heart => heart.Origin == SavedHeart
+                    && LastFmRadioSeedNormalizer.TrackKey(heart.Artist, heart.Title) == key));
+                user.Hearts = user.Hearts.Where(heart => heart.Origin != SavedHeart)
+                    .Concat(savedHearts.Select(heart => { heart.Origin = SavedHeart; return heart; }))
+                    .OrderByDescending(heart => heart.PickedAtUtc).ToList();
+            }
+            PruneLocked(state);
+            SaveLocked(state);
+            return added;
+        }
+    }
+
+    /// <summary>Hearts read from Octo's record of outside songs, replaced on every read.</summary>
+    public const string SavedHeart = "saved";
+
+    /// <summary>
+    /// A playlist as now read, against how it was last read: a song still there keeps when it was
+    /// added and what it counts for; a new one is dated by the playlist's last change, and the new
+    /// songs of one artist share <see cref="BatchArtistShare"/>. The first reading of a playlist is
+    /// all new, so a playlist of one artist's discography counts as a couple of picks.
+    /// </summary>
+    internal static LastFmRadioPlaylist MergePlaylist(LastFmRadioPlaylist? known, PlaylistRead read, out int added)
+    {
+        added = 0;
+        if (read.Songs is null)
+            // Unchanged, or unreadable this time: the last reading stands. Never read at all, it
+            // carries no date, so the next reading takes it in whole.
+            return known is null
+                ? new LastFmRadioPlaylist { Id = read.Id, Name = read.Name }
+                : new LastFmRadioPlaylist { Id = known.Id, Name = read.Name, ChangedUtc = known.ChangedUtc, Songs = known.Songs };
+        var before = new Dictionary<string, LastFmRadioPick>(StringComparer.Ordinal);
+        foreach (var song in known?.Songs ?? [])
+            before.TryAdd(LastFmRadioSeedNormalizer.TrackKey(song.Artist, song.Title), song);
+        var songs = new List<LastFmRadioPick>();
+        var fresh = new List<LastFmRadioPick>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var song in read.Songs ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(song.Artist) || string.IsNullOrWhiteSpace(song.Title)) continue;
+            var key = LastFmRadioSeedNormalizer.TrackKey(song.Artist, song.Title);
+            if (!seen.Add(key)) continue;
+            if (before.TryGetValue(key, out var old))
+            {
+                // The same song, perhaps imported since: its ids and tags are the new reading's.
+                song.PickedAtUtc = old.PickedAtUtc;
+                song.Weight = old.Weight;
+            }
+            else
+            {
+                song.PickedAtUtc = read.ChangedUtc;
+                fresh.Add(song);
+            }
+            songs.Add(song);
+        }
+        foreach (var artist in fresh.GroupBy(song => LastFmRadioRecommendationService.ArtistKey(song.Artist)))
+        {
+            var count = artist.Count();
+            foreach (var song in artist) song.Weight = Math.Min(1, BatchArtistShare / count);
+        }
+        added = fresh.Count;
+        return new LastFmRadioPlaylist { Id = read.Id, Name = read.Name, ChangedUtc = read.ChangedUtc, Songs = songs };
     }
 
     public IReadOnlyList<LastFmRadioUserSummary> GetSummaries()
@@ -224,6 +356,13 @@ public sealed class LastFmRadioStateStore
             var user = GetOrCreateLocked(state, username);
             var existing = user.Stations.GroupBy(station => station.Id, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var now = DateTime.UtcNow;
+            // A Discovery Mix is leaving: the new artists the listener got past in it were offered once more.
+            foreach (var prior in existing.Values.Where(station => station.Kind == LastFmRadioStationKind.Discovery))
+            {
+                var next = stations.FirstOrDefault(station => station.Id == prior.Id);
+                if (next is null || !SameSnapshot(prior, next)) CountOffers(user, prior, now);
+            }
             user.Stations = stations.Select(source =>
             {
                 var station = Clone(source);
@@ -240,6 +379,36 @@ public sealed class LastFmRadioStateStore
             user.LastSeenUtc = DateTime.UtcNow;
             RehydrateRoutes(user);
             SaveLocked(state);
+        }
+    }
+
+    /// <summary>
+    /// One more offer for each artist a leaving Discovery Mix put before the listener: one they
+    /// played nothing of, placed before the furthest song they played from it. Opening a mix is
+    /// not hearing it (an app that syncs playlists opens every one), and a mix they never played
+    /// from offered nobody. An artist they played or kept is known by the next build and never
+    /// offered again, so whoever reaches <see cref="OfferLimit"/> was passed over that many times.
+    /// </summary>
+    internal static void CountOffers(LastFmRadioUserState user, LastFmRadioStation station, DateTime now)
+    {
+        var played = user.Plays.Where(play => play.PlayedAtUtc >= station.ChangedUtc)
+            .Select(play => LastFmRadioSeedNormalizer.TrackKey(play.Artist, play.Title))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var furthest = station.Tracks.FindLastIndex(track =>
+            played.Contains(LastFmRadioSeedNormalizer.TrackKey(track.Artist, track.Title)));
+        if (furthest < 0) return;
+        foreach (var track in station.Tracks.Take(furthest + 1)
+                     .GroupBy(track => LastFmRadioRecommendationService.ArtistKey(track.Artist)))
+        {
+            if (track.Any(song => played.Contains(LastFmRadioSeedNormalizer.TrackKey(song.Artist, song.Title)))) continue;
+            var offer = user.Offers.FirstOrDefault(item => item.Key == track.Key);
+            if (offer is null) user.Offers.Add(offer = new LastFmRadioOffer { Key = track.Key, Artist = track.First().Artist });
+            if (offer.RestUntilUtc > now) continue;
+            offer.Times++;
+            offer.LastOfferedUtc = now;
+            if (offer.Times < OfferLimit) continue;
+            offer.Times = 0;
+            offer.RestUntilUtc = now + OfferRest;
         }
     }
 
@@ -342,6 +511,13 @@ public sealed class LastFmRadioStateStore
             user.RadioBans = (user.RadioBans ?? [])
                 .OrderByDescending(ban => ban.BannedAtUtc)
                 .Take(MaxRadioBansPerUser).ToList();
+            user.Hearts = (user.Hearts ?? [])
+                .OrderByDescending(heart => heart.PickedAtUtc)
+                .Take(MaxHeartsPerUser).ToList();
+            user.Playlists = (user.Playlists ?? []).Take(MaxPlaylistsPerUser).ToList();
+            var now = DateTime.UtcNow;
+            user.Offers = (user.Offers ?? [])
+                .Where(offer => offer.RestUntilUtc > now || offer.LastOfferedUtc > now - OfferForgotten).ToList();
         }
 
         foreach (var key in state.Users.OrderByDescending(pair => pair.Value.LastSeenUtc)

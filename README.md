@@ -539,18 +539,30 @@ artist and length.
 Each kind of dynamic station is configured on its own, so a listener can keep Your Mix
 without collecting an artist radio per favourite band. `LASTFM_ENABLE_YOUR_MIX` and
 `LASTFM_ENABLE_DISCOVERY_MIX` (both default true) switch those two stations,
-`LASTFM_ARTIST_STATION_COUNT` (default 2) and `LASTFM_GENRE_STATION_COUNT` (default 3)
-say how many of each to build, and 0 builds none. The defaults are what Octo has always
-produced. All four take effect without a restart, and switching one off removes those
+`LASTFM_ARTIST_STATION_COUNT` (default 2), `LASTFM_GENRE_STATION_COUNT` (default 3) and
+`LASTFM_PLAYLIST_STATION_COUNT` (default 3, at most 5) say how many of each to build, and 0
+builds none. All five take effect without a restart, and switching one off removes those
 stations from clients on the next request.
 
+Radio learns from what the listener chooses as well as what they play. A hearted song, and
+every song in a playlist they own, counts as a hearted play from the day it was added. Octo
+reads each listener's playlists from Navidrome as the admin before every refresh, so an add
+from any app counts, and it reads a playlist again only once Navidrome says it changed. Smart
+playlists and Octo's own action and notice playlists are not choices and are left out. Songs
+of one artist added at once share the weight of two picks, so a whole album or discography
+dropped into a playlist does not drown out everything else. A playlist that gained a song in
+the last 30 days and holds three or more gets a **More like** station: songs similar to its
+five newest, other than the ones already in it.
+
 Discovery Mix is artists the listener does not know yet. Octo walks Last.fm's similar artists
-out from their ten strongest artists, so an artist several favourites point to leads, then
-takes one more step from the best new names at half weight. Anyone they have played, anyone
-in the Navidrome library, and any artist with a one-star song is left out. Each of the 30
-best new artists gives up to three of its top songs, and at most two of an artist's songs
-make the station. When that finds fewer than five songs, Discovery Mix falls back to the
-charts of the listener's top tags. Elsewhere, known artists keep 30% of their weight among a
+out from ten starting artists: the artists of up to four songs they picked in the last 30
+days, then a weighted draw from their 30 strongest artists, so a different corner of their
+taste leads each time. It then takes one more step from the best new names at half weight.
+Anyone they have played or picked, anyone in the Navidrome library, and any artist with a
+one-star song is left out. Each of the 30 best new artists gives up to ten of its top songs,
+and at most two of an artist's songs make the station. A new artist the listener got past
+without playing in three Discovery Mixes they played from rests for 60 days. When all that
+finds fewer than five songs, Discovery Mix falls back to the charts of the listener's top tags. Elsewhere, known artists keep 30% of their weight among a
 station's suggestions in Your Mix and genre radio (Your Mix's familiar share is unaffected),
 and an artist radio's neighbours lean toward artists the listener has not heard. With a
 ListenBrainz token, LB Radio joins artist and genre stations in `RADIO_LISTENBRAINZ_MODE`

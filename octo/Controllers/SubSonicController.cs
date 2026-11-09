@@ -823,6 +823,7 @@ public partial class SubsonicController : ControllerBase
             LastFmRadioStationKind.Discovery => _lastFmSettings.EnableDiscoveryMix,
             LastFmRadioStationKind.Artist => _lastFmSettings.EffectiveArtistStationCount > 0,
             LastFmRadioStationKind.Genre => _lastFmSettings.EffectiveGenreStationCount > 0,
+            LastFmRadioStationKind.Playlist => _lastFmSettings.EffectivePlaylistStationCount > 0,
             _ => true,
         };
     }
@@ -2402,7 +2403,8 @@ public partial class SubsonicController : ControllerBase
     internal IReadOnlyList<CoverSeed> StationCoverSeeds(LastFmRadioStation station)
     {
         if (_coverArtAggregator is not { } covers) return [];
-        var seedArtists = station.Kind is LastFmRadioStationKind.Artist or LastFmRadioStationKind.YourMix or LastFmRadioStationKind.Starter
+        var seedArtists = station.Kind is LastFmRadioStationKind.Artist or LastFmRadioStationKind.YourMix
+            or LastFmRadioStationKind.Starter or LastFmRadioStationKind.Playlist
             ? station.Seeds.Take(3).Select(SongIdentity.Key).Where(key => key.Length > 0).ToList()
             : [];
         int Rank(LastFmRadioTrack track)
@@ -2782,11 +2784,18 @@ public partial class SubsonicController : ControllerBase
         {
             var result = await _proxyService.RelayAsync("rest/star", parameters);
             if (_radioStateStore is not null && IsSuccessfulSubsonicResponse(result.Body, format)
-                && parameters.GetValueOrDefault("u") is { Length: > 0 } username
                 && !string.IsNullOrEmpty(itemId))
             {
+                // A heart is a pick: radio reads it as the strongest liking there is, played or not.
+                // API-key clients send no u, so the user comes from the sign-in itself.
+                var username = await SignedInUserAsync(parameters);
                 var song = await _radioTrackResolver.ResolveScrobbleAsync(itemId, parameters);
-                if (song is not null) _radioStateStore.MarkHeart(username, itemId, song.Artist, song.Title);
+                if (song is not null)
+                    _radioStateStore.RecordHeart(username, new LastFmRadioPick
+                    {
+                        SongId = itemId, Artist = song.Artist, Title = song.Title, Album = song.Album,
+                        Genre = song.Genre, Duration = song.Duration, IsLocal = song.IsLocal, Origin = "star",
+                    });
             }
             var contentType = result.ContentType ?? $"application/{format}";
             return File(result.Body, contentType);
@@ -3965,6 +3974,16 @@ public partial class SubsonicController : ControllerBase
             // Navidrome endpoints (e.g. the POST /auth/login some clients use) work,
             // not just GET-shaped Subsonic calls.
             var raw = await _proxyService.RelayRawAsync(endpoint, parameters);
+
+            // An unstarred library song is no longer one of radio's picks. (Outside songs are
+            // unstarred through Octo's own record, which radio reads again before each build.)
+            if (raw.Status == 200 && _radioStateStore is not null
+                && endpoint.Replace(".view", "").Equals("rest/unstar", StringComparison.OrdinalIgnoreCase)
+                && IsSuccessfulSubsonicResponse(raw.Body, format))
+            {
+                var unstarred = await _requestParser.ExtractParameterValuesAsync(Request, "id");
+                if (unstarred.Count > 0) _radioStateStore.RemoveHearts(await SignedInUserAsync(parameters), unstarred);
+            }
 
             // Learn Octo's own Navidrome identity from a client's native sign-in as
             // it passes through, so background work (music-folder detection, an

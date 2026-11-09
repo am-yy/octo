@@ -124,6 +124,8 @@ builder.Services.AddSingleton<ILastFmRadioAudioTranscoder, FfmpegLastFmRadioAudi
 builder.Services.AddSingleton<LastFmRadioWarmupService>();
 builder.Services.AddHostedService<LastFmRadioWarmupService>(provider =>
     provider.GetRequiredService<LastFmRadioWarmupService>());
+builder.Services.AddSingleton<IRadioPlaylistSource>(sp => sp.GetRequiredService<Octo.Services.Library.NavidromePlaylistApi>());
+builder.Services.AddSingleton<LastFmRadioPickReader>();
 builder.Services.AddHostedService<LastFmRadioRefreshWorker>();
 
 // Soulseek permanent copies and native Deezer playback/downloads.

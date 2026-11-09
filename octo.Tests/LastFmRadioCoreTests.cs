@@ -76,9 +76,10 @@ public class LastFmRadioCoreTests
     public void StationCounts_AreClampedAtReadTime(int configured, int effective)
     {
         var settings = new LastFmSettings
-            { ArtistStationCount = configured, GenreStationCount = configured };
+            { ArtistStationCount = configured, GenreStationCount = configured, PlaylistStationCount = configured };
         Assert.Equal(effective, settings.EffectiveArtistStationCount);
         Assert.Equal(effective, settings.EffectiveGenreStationCount);
+        Assert.Equal(effective, settings.EffectivePlaylistStationCount);
     }
 
     /// <summary>
@@ -93,16 +94,23 @@ public class LastFmRadioCoreTests
         var allOff = new LastFmSettings
         {
             EnablePersonalizedStations = true, EnableYourMix = false, EnableDiscoveryMix = false,
-            ArtistStationCount = 0, GenreStationCount = 0, EnableDiscoveryStations = false,
+            ArtistStationCount = 0, GenreStationCount = 0, PlaylistStationCount = 0, EnableDiscoveryStations = false,
         };
         Assert.True(allOff.StationsExplicitlyEmpty);
+
+        var onlyPlaylists = new LastFmSettings
+        {
+            EnablePersonalizedStations = true, EnableYourMix = false, EnableDiscoveryMix = false,
+            ArtistStationCount = 0, GenreStationCount = 0, PlaylistStationCount = 1, EnableDiscoveryStations = false,
+        };
+        Assert.False(onlyPlaylists.StationsExplicitlyEmpty);
 
         Assert.False(new LastFmSettings().StationsExplicitlyEmpty);
 
         var onlyGenre = new LastFmSettings
         {
             EnablePersonalizedStations = true, EnableYourMix = false, EnableDiscoveryMix = false,
-            ArtistStationCount = 0, GenreStationCount = 1, EnableDiscoveryStations = false,
+            ArtistStationCount = 0, GenreStationCount = 1, PlaylistStationCount = 0, EnableDiscoveryStations = false,
         };
         Assert.False(onlyGenre.StationsExplicitlyEmpty);
 
@@ -110,7 +118,7 @@ public class LastFmRadioCoreTests
         var pinnedSurvives = new LastFmSettings
         {
             EnablePersonalizedStations = true, EnableYourMix = false, EnableDiscoveryMix = false,
-            ArtistStationCount = 0, GenreStationCount = 0, EnableDiscoveryStations = true,
+            ArtistStationCount = 0, GenreStationCount = 0, PlaylistStationCount = 0, EnableDiscoveryStations = true,
             DiscoveryStations = [new() { Id = "rock", Name = "Rock", Tags = ["rock"] }],
         };
         Assert.False(pinnedSurvives.StationsExplicitlyEmpty);

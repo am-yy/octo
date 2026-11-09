@@ -15,6 +15,7 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
     private readonly SingleFlight<string, bool> _singleFlight = new();
     private readonly ILogger<LastFmRadioRefreshWorker> _logger;
     private readonly LastFmRadioWarmupService? _warmup;
+    private readonly LastFmRadioPickReader? _picks;
     private Dictionary<string, string> _definitions;
     private bool _radioEnabled;
     private string _personalizedShape;
@@ -22,10 +23,12 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
 
     public LastFmRadioRefreshWorker(LastFmRadioRefreshQueue queue, IServiceScopeFactory scopes,
         LastFmRadioStateStore state, IOptionsMonitor<LastFmSettings> settings,
-        ILogger<LastFmRadioRefreshWorker> logger, LastFmRadioWarmupService? warmup = null)
+        ILogger<LastFmRadioRefreshWorker> logger, LastFmRadioWarmupService? warmup = null,
+        LastFmRadioPickReader? picks = null)
     {
         _queue = queue; _scopes = scopes; _state = state; _settings = settings; _logger = logger;
         _warmup = warmup;
+        _picks = picks;
         _definitions = Fingerprints(settings.CurrentValue);
         _radioEnabled = settings.CurrentValue.EnableRadio;
         _personalizedShape = PersonalizedShape(settings.CurrentValue);
@@ -60,7 +63,8 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
     /// </summary>
     private static string PersonalizedShape(LastFmSettings settings) => string.Join('|',
         settings.EnablePersonalizedStations, settings.EnableYourMix, settings.EnableDiscoveryMix,
-        settings.EffectiveArtistStationCount, settings.EffectiveGenreStationCount);
+        settings.EffectiveArtistStationCount, settings.EffectiveGenreStationCount,
+        settings.EffectivePlaylistStationCount);
 
     private static Dictionary<string, string> Fingerprints(LastFmSettings settings) =>
         settings.EffectiveDiscoveryStations().Where(definition => definition.Enabled).ToDictionary(definition => definition.Id,
@@ -120,8 +124,9 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
     {
         try
         {
+            // The build's own budget, with room to read the listener's playlists first.
             return await _singleFlight.RunAsync(job.Username, ct => RefreshAsync(job, ct),
-                TimeSpan.FromSeconds(35));
+                LastFmRadioRecommendationService.BuildBudget + TimeSpan.FromSeconds(30));
         }
         catch (Exception ex)
         {
@@ -139,6 +144,16 @@ public sealed class LastFmRadioRefreshWorker : BackgroundService
         _logger.LogInformation("Radio refresh for {User}, {Stations}: {Reason}", job.Username,
             job.StationKey ?? "all stations", job.Reason);
         _state.MarkRefreshing(job.Username);
+        // What they chose since the last build: new playlist songs and hearts. A failed reading
+        // keeps the last one, and the build goes on without it.
+        if (_picks is not null)
+        {
+            try { await _picks.SyncAsync(job.Username, cancellationToken); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning("Could not read {User}'s playlists for radio: {Reason}", job.Username, ex.Message);
+            }
+        }
         using var scope = _scopes.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<LastFmRadioRecommendationService>();
         var built = await service.BuildAsync(job.Username, cancellationToken);
